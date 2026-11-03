@@ -227,3 +227,16 @@ async def cancel_message(session: AsyncSession, message_id: str, content: str) -
     except Exception:
         await session.rollback()
         raise
+
+async def recover_interrupted_messages(session: AsyncSession) -> int:  # 将上次遗留的生成中消息标记为失败
+    try:
+        result = await session.execute(
+            update(Message)
+            .where(Message.role == "assistant", Message.status == "generating")
+            .values(status="failed", error="上次生成因后端退出而中断，请重试", updated_at=int(time.time()))
+        )  # 保留已有正文和结构化输出，只更新状态与错误说明
+        await session.commit()
+        return result.rowcount
+    except Exception:
+        await session.rollback()
+        raise

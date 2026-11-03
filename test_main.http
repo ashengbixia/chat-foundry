@@ -1,0 +1,31 @@
+### 检查后端是否启动
+GET http://127.0.0.1:8000/health
+Accept: application/json
+
+
+### 测试发送聊天消息
+POST http://127.0.0.1:8000/api/chat
+Content-Type: application/json
+
+{
+  "message": "你好，我正在学习这个项目"
+}
+
+### 测试流式聊天
+POST http://127.0.0.1:8000/api/chat/stream
+Content-Type: application/json
+
+{
+  "message": "请分五点介绍 Python，每点写两句话。"
+}
+
+### 创建会话
+POST http://127.0.0.1:8000/api/chats
+Content-Type: application/json
+
+{
+  "title": "Python 学习"
+}
+### 查看已保存消息
+GET http://127.0.0.1:8000/api/chats/60a915f6-3f92-4f47-8e60-28c3add34267/messages
+Accept: application/json

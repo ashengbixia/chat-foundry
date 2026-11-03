@@ -1,0 +1,105 @@
+import time
+import uuid
+
+from sqlalchemy import ForeignKey, JSON, String, Text, UniqueConstraint
+from sqlalchemy.orm import Mapped, mapped_column
+
+from backend.app.core.database import Base
+
+
+class Chat(Base):
+    """聊天会话表，一条记录代表一个会话。"""
+
+    __tablename__ = "chats"
+
+    # 自动生成唯一的会话 ID。
+    id: Mapped[str] = mapped_column(
+        String(36),
+        primary_key=True,
+        default=lambda: str(uuid.uuid4()),
+    )
+
+    # 会话标题。
+    title: Mapped[str] = mapped_column(
+        String(200),
+        default="新会话",
+    )
+
+    # 创建时间：Unix 秒级时间戳。
+    created_at: Mapped[int] = mapped_column(
+        default=lambda: int(time.time()),
+    )
+
+    # 更新时间：通过 ORM 更新这条记录时自动更新。
+    updated_at: Mapped[int] = mapped_column(
+        default=lambda: int(time.time()),
+        onupdate=lambda: int(time.time()),
+    )
+class Message(Base):
+    """聊天消息表，一条记录代表一条用户或助手消息。"""
+
+    __tablename__ = "messages"
+    # 同一个会话内，消息序号不能重复。
+    __table_args__ = (
+        UniqueConstraint(
+            "chat_id",
+            "sequence",
+            name="uq_messages_chat_sequence",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(
+        String(36),
+        primary_key=True,
+        default=lambda: str(uuid.uuid4()),
+    )
+
+    # 这条消息属于哪个会话。
+    chat_id: Mapped[str] = mapped_column(
+        ForeignKey("chats.id"),
+        index=True,
+    )
+    # 会话内的消息顺序，从 1 开始，由保存逻辑分配。
+    sequence: Mapped[int] = mapped_column(nullable=False)
+
+    # user：用户；assistant：助手。
+    role: Mapped[str] = mapped_column(String(20))
+
+    # 消息正文。
+    content: Mapped[str] = mapped_column(Text, default="")
+
+    # 结构化输出：以后保存正文、思考、工具调用等条目。
+    output: Mapped[list] = mapped_column(JSON, default=list)
+
+    # generating / completed / cancelled / failed。
+    status: Mapped[str] = mapped_column(
+        String(20),
+        default="completed",
+    )
+
+    # 用户消息不需要模型名称，所以允许为空。
+    model: Mapped[str | None] = mapped_column(
+        String(200),
+        nullable=True,
+    )
+
+    # 模型返回的用量；尚未获取时为空。
+    usage: Mapped[dict | None] = mapped_column(
+        JSON,
+        nullable=True,
+    )
+
+    # 失败时保存经过脱敏的错误说明。
+    error: Mapped[str | None] = mapped_column(
+        Text,
+        nullable=True,
+    )
+
+    created_at: Mapped[int] = mapped_column(
+        default=lambda: int(time.time()),
+    )
+
+    updated_at: Mapped[int] = mapped_column(
+        default=lambda: int(time.time()),
+        onupdate=lambda: int(time.time()),
+    )

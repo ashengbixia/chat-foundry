@@ -1,15 +1,15 @@
 <script setup lang="ts">
 import { createChat, deleteChat, getChat, listChats, listMessages, renameChat, saveUserMessage } from './api/chats'
 import {streamChatReply} from "./api/stream.ts";
-import type { Chat, ChatMessage } from './api/chats'
+import type { Chat } from './api/chats'
+import type { DisplayMessage } from './types/chat'
+import MessageList from './components/chat/MessageList.vue'
+import MessageInput from './components/chat/MessageInput.vue'
 import { computed, onMounted, reactive, ref, shallowRef, watch } from 'vue'
 // 输入框中的文字。
 const inputText = ref('')
 
-// 当前页面上的消息，暂时只保存正文。
-type DisplayMessage = Pick<ChatMessage,'id' | 'role' | 'content' | 'status' | 'error'>
-
-const messages = ref<DisplayMessage[]>([])
+const messages = ref<DisplayMessage[]>([]) // 当前页面的消息，由 MessageList 组件负责展示
 const sendingMessage = ref(false)//正在发送消息或等待回答。
 const currentChat = ref<Chat | null>(null)//会话对象
 const creatingChat = ref(false)//正在创建会话
@@ -301,25 +301,7 @@ async function sendMessage() { // 保存用户问题，再生成回答
   {{ errorMessage }}
 </p>
     <section ref="messageListElement" class="message-list" @scroll="updateScrollFollow">
-      <p v-if="messages.length === 0">还没有消息，发送一句话试试。</p>
-
-      <div
-        v-for="message in messages"
-        :key="message.id"
-        class="message"
-      >
-        <strong>{{ message.role === 'user' ? '我' : '助手' }}：</strong>
-        <span>{{ message.content }}</span>
-
-        <small v-if="message.status === 'generating'">
-          正在生成…
-        </small>
-        <small v-if="message.status === 'cancelled'">已停止</small>
-
-        <small v-if="message.status === 'failed'">
-          {{ message.error }}
-        </small>
-      </div>
+      <MessageList :messages="messages" />
     </section>
     <button type="button" :disabled="replyController === null" @click="stopReply">
       停止生成
@@ -332,20 +314,13 @@ async function sendMessage() { // 保存用户问题，再生成回答
     >
       重试回答
     </button>
-    <form class="input-area" @submit.prevent="sendMessage">
-      <input
-        v-model="inputText"
-        :disabled="sendingMessage || creatingChat || deletingChatId !== null || renamingChatId !== null"
-        placeholder="输入你的问题"
-      />
-
-      <button
-        type="submit"
-        :disabled="!currentChat || !inputText.trim() || sendingMessage || creatingChat || deletingChatId !== null || renamingChatId !== null"
-      >
-        {{ sendingMessage ? '处理中…' : '发送' }}
-      </button>
-    </form>
+    <MessageInput
+      v-model="inputText"
+      :input-disabled="sendingMessage || creatingChat || deletingChatId !== null || renamingChatId !== null"
+      :send-disabled="!currentChat || !inputText.trim() || sendingMessage || creatingChat || deletingChatId !== null || renamingChatId !== null"
+      :sending="sendingMessage"
+      @send="sendMessage"
+    />
   </main>
 </template>
 
@@ -365,24 +340,6 @@ async function sendMessage() { // 保存用户问题，再生成回答
   padding: 16px;
   border: 1px solid #ccc;
   border-radius: 8px;
-}
-
-.message {
-  margin-bottom: 16px;
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-}
-
-.input-area {
-  display: flex;
-  gap: 12px;
-  margin-top: 16px;
-}
-
-input {
-  flex: 1;
-  min-width: 0;
-  padding: 12px;
 }
 
 button {

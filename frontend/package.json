@@ -8,7 +8,10 @@
     "build": "run-p type-check \"build-only {@}\" --",
     "preview": "vite preview",
     "build-only": "vite build",
-    "type-check": "vue-tsc --build"
+    "type-check": "vue-tsc --build",
+    "test:api": "node --test tests/api.test.mjs",
+    "test:chat": "node --test tests/chat-initialization.test.mjs tests/message-pagination.test.mjs tests/message-scroll.test.mjs",
+    "test": "node --test tests/api.test.mjs tests/chat-initialization.test.mjs tests/message-pagination.test.mjs tests/message-scroll.test.mjs"
   },
   "dependencies": {
     "pinia": "^4.0.3",

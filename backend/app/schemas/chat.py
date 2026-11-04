@@ -38,6 +38,11 @@ class MessageResponse(BaseModel):
     created_at: int
     updated_at: int
 
+class MessagePageResponse(BaseModel):  # 一批消息和继续加载所需的信息
+    items: list[MessageResponse]  # 本批消息，按序号从小到大排列
+    has_more: bool  # 是否还有更早消息
+    next_before_sequence: int | None  # 下一批查询边界，没有下一批时为 None
+
 class MessageCreate(BaseModel):
     """客户端提交的用户消息。"""
     model_config = ConfigDict(str_strip_whitespace=True)

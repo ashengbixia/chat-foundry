@@ -1,3 +1,5 @@
+import { createApiError } from './errors'
+
 export type ChatStreamEvent =
   | { type: 'text_delta'; text: string }
   | { type: 'done'; messageId: string }
@@ -60,16 +62,8 @@ export async function streamChatReply(
   })
 
   if (!response.ok) {
-    throw new Error(`生成回答失败，状态码：${response.status}`)
+    throw await createApiError(response, '生成回答失败')
   }
-  if (!response.ok) {
-    const data: unknown = await response.json().catch(() => null) // 尝试读取后端错误，非 JSON 时使用 null
-    let message = `生成回答失败，状态码：${response.status}` // 默认错误说明
-    if (typeof data === 'object' && data !== null && 'detail' in data && typeof data.detail === 'string') {
-      message = data.detail
-    }
-    throw new Error(message)
-}
 
   if (!response.body) {
     throw new Error('浏览器未获取到响应流')

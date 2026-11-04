@@ -14,8 +14,8 @@ async def create_chat(session: AsyncSession,title: str = "新会话",) -> Chat:
     await session.refresh(chat)#从数据库重新读取这条记录，更新对象里的字段。
     return chat
 
-async def list_chats(session: AsyncSession,offset: int = 0,limit: int = 20,) -> list[Chat]:
-    """分页查询会话，最近更新的排在前面。"""
+async def list_chats(session: AsyncSession) -> list[Chat]:
+    """查询全部会话的基本信息，最近更新的排在前面。"""
 
     statement = (
         select(Chat)#找全部会话行
@@ -23,8 +23,6 @@ async def list_chats(session: AsyncSession,offset: int = 0,limit: int = 20,) -> 
             Chat.updated_at.desc(),
             Chat.id.desc(),
         )#更新时间降序、id降序
-        .offset(offset)#跳过多少条
-        .limit(limit)#最多多少条
     )
 
     result = await session.execute(statement)#执行查询
@@ -111,6 +109,19 @@ async def list_messages(
     result = await session.execute(statement)
 
     return list(result.scalars().all())
+
+async def list_messages_page(session: AsyncSession, chat_id: str, before_sequence: int | None = None, limit: int = 8) -> tuple[list[Message], bool, int | None]:  # 页面每批默认查询 8 条消息
+    statement = select(Message).where(Message.chat_id == chat_id)  # 限定当前会话
+    if before_sequence is not None:
+        statement = statement.where(Message.sequence < before_sequence)
+    statement = statement.order_by(Message.sequence.desc()).limit(limit + 1)  # 多取一条，判断是否还有旧消息
+    result = await session.execute(statement)  # 执行查询
+    rows = list(result.scalars().all())  # 数据库返回的消息
+    has_more = len(rows) > limit  # 多查到一条表示还有更早消息
+    items = rows[:limit]  # 只保留本次需要的数量
+    items.reverse()  # 恢复页面从旧到新的显示顺序
+    next_before_sequence = items[0].sequence if has_more and items else None  # 下次从本批最早消息之前继续查询
+    return items, has_more, next_before_sequence
 
 async def list_recent_messages(
     session: AsyncSession,

@@ -3,8 +3,8 @@ from fastapi import APIRouter, Depends, Query, HTTPException, Response
 from fastapi.responses import StreamingResponse
 
 from backend.app.core.database import get_db
-from backend.app.repositories.chat import get_latest_message,rename_chat,delete_chat,create_chat, list_chats, get_chat, list_messages,create_message,list_recent_messages
-from backend.app.schemas.chat import ChatCreate, ChatResponse, MessageResponse,MessageCreate,ChatRename
+from backend.app.repositories.chat import get_latest_message, rename_chat, delete_chat, create_chat, list_chats, get_chat, list_messages_page, create_message
+from backend.app.schemas.chat import ChatCreate, ChatResponse, MessageResponse, MessagePageResponse, MessageCreate, ChatRename
 from backend.app.chat.service import stream_chat_history_events
 from backend.app.chat.response import ChatStreamingResponse  # 带生成器清理的聊天流式响应
 from backend.app.chat.guards import acquire_generation, release_generation  # 占用和释放会话的生成资格
@@ -22,13 +22,11 @@ async def create_chat_endpoint(request: ChatCreate,session: AsyncSession = Depen
     return chat
 @router.get("", response_model=list[ChatResponse])
 async def list_chats_endpoint(
-    offset: int = Query(default=0, ge=0),
-    limit: int = Query(default=20, ge=1, le=100),
     session: AsyncSession = Depends(get_db),
 ):
-    """分页获取会话列表。"""
+    """一次获取全部会话的基本信息，不包含消息正文。"""
 
-    return await list_chats(session=session,offset=offset,limit=limit)
+    return await list_chats(session=session)
 @router.get("/{chat_id}", response_model=ChatResponse)
 async def get_chat_endpoint(chat_id: str,session: AsyncSession = Depends(get_db)):
     """根据 ID 获取一个会话。"""
@@ -38,25 +36,13 @@ async def get_chat_endpoint(chat_id: str,session: AsyncSession = Depends(get_db)
         raise HTTPException(status_code=404,detail="会话不存在",)
 
     return chat
-@router.get("/{chat_id}/messages",response_model=list[MessageResponse],)
-async def list_messages_endpoint(
-    chat_id: str,
-    offset: int = Query(default=0, ge=0),
-    limit: int = Query(default=100, ge=1, le=500),
-    session: AsyncSession = Depends(get_db)):
-    """查询指定会话的消息列表。"""
-
-    chat = await get_chat(session, chat_id)#对应会话id行的chat对象
-
+@router.get("/{chat_id}/messages", response_model=MessagePageResponse)
+async def list_messages_endpoint(chat_id: str, before_sequence: int | None = Query(default=None, ge=1), limit: int = Query(default=8, ge=1, le=100), session: AsyncSession = Depends(get_db)):  # 获取最近消息或加载更早消息，每批默认 8 条
+    chat = await get_chat(session, chat_id)  # 检查会话是否存在
     if chat is None:
-        raise HTTPException(status_code=404,detail="会话不存在")
-
-    return await list_messages(
-        session=session,
-        chat_id=chat_id,
-        offset=offset,
-        limit=limit,
-    )
+        raise HTTPException(status_code=404, detail="会话不存在")
+    items, has_more, next_before_sequence = await list_messages_page(session, chat_id, before_sequence, limit)  # 本批消息、是否还有旧消息、下批边界
+    return {"items": items, "has_more": has_more, "next_before_sequence": next_before_sequence}
 @router.post("/{chat_id}/messages",
     response_model=MessageResponse,
     status_code=201)

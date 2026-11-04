@@ -5,6 +5,7 @@ import type { Chat } from './api/chats'
 import type { DisplayMessage } from './types/chat'
 import MessageList from './components/chat/MessageList.vue'
 import MessageInput from './components/chat/MessageInput.vue'
+import ChatSidebar from './components/chat/ChatSidebar.vue'
 import { computed, onMounted, reactive, ref, shallowRef, watch } from 'vue'
 // 输入框中的文字。
 const inputText = ref('')
@@ -24,6 +25,10 @@ const renamingChatId = ref<string | null>(null) // 正在重命名的会话 ID
 const messageListElement = ref<HTMLElement | null>(null) // 消息区域的页面元素
 let autoFollowMessages = true // 是否跟随新消息滚动，向上翻阅时暂停
 const replyController = shallowRef<AbortController | null>(null) // 当前模型请求的取消控制器
+const operationBusy = computed(() => sendingMessage.value || creatingChat.value || loadingMessages.value || deletingChatId.value !== null || renamingChatId.value !== null) // 是否正在执行会话或消息操作
+const pageBusy = computed(() => operationBusy.value || restoringChat.value) // 页面是否忙碌，包含启动恢复阶段
+const inputDisabled = computed(() => sendingMessage.value || creatingChat.value || deletingChatId.value !== null || renamingChatId.value !== null) // 保留原有输入框禁用规则
+const sendDisabled = computed(() => !currentChat.value || !inputText.value.trim() || inputDisabled.value) // 保留原有发送按钮禁用规则
 const canRetryReply = computed(() => { // 根据页面上最后一条消息决定是否提供重试入口
   const latest = messages.value[messages.value.length - 1] // 当前显示的最后一条消息
   if (!latest) return false
@@ -33,7 +38,7 @@ const canRetryReply = computed(() => { // 根据页面上最后一条消息决�
 
 async function retryReply() { // 根据已有问题重试，不重复保存用户消息
   const chat = currentChat.value // 本次重试所属的会话
-  if (!chat || !canRetryReply.value || sendingMessage.value || creatingChat.value || loadingMessages.value || restoringChat.value || deletingChatId.value !== null || renamingChatId.value !== null) return
+  if (!chat || !canRetryReply.value || pageBusy.value) return
   sendingMessage.value = true
   errorMessage.value = ''
   try {
@@ -60,7 +65,7 @@ function scrollMessagesToBottom() { // 在允许跟随时将消息区域滚到�
 watch(() => [currentChat.value?.id, messages.value.length, messages.value[messages.value.length - 1]?.content, messages.value[messages.value.length - 1]?.status, messages.value[messages.value.length - 1]?.error], scrollMessagesToBottom, { flush: 'post' }) // 等页面更新后再调整滚动位置
 
 async function editChatTitle(chat: Chat) { // 输入新标题，保存后更新页面
-  if (renamingChatId.value !== null || deletingChatId.value !== null || sendingMessage.value || creatingChat.value || loadingMessages.value || restoringChat.value) return
+  if (pageBusy.value) return
   const input = window.prompt('请输入新的会话标题：', chat.title) // 默认显示原来的标题
   if (input === null) return
   const title = input.trim() // 去掉标题两端空白
@@ -84,7 +89,7 @@ async function editChatTitle(chat: Chat) { // 输入新标题，保存后更新�
   }
 }
 async function removeChat(chat: Chat) { // 确认后删除会话，并同步页面状态
-  if (renamingChatId.value !== null || deletingChatId.value !== null || sendingMessage.value || creatingChat.value || loadingMessages.value || restoringChat.value) return
+  if (pageBusy.value) return
   const confirmed = window.confirm(`确定删除“${chat.title}”及全部消息吗？此操作不可恢复。`) // 获取用户确认
   if (!confirmed) return
 
@@ -118,7 +123,7 @@ function rememberChat(chatId: string) {
   }
 }
 async function openChat(chat: Chat) {
-  if (renamingChatId.value !== null || loadingMessages.value || sendingMessage.value || creatingChat.value || deletingChatId.value !== null) return
+  if (operationBusy.value) return // 启动恢复会调用本方法，因此这里不拦截 restoringChat
   loadingMessages.value = true
   errorMessage.value = ''
   try {
@@ -174,7 +179,7 @@ onMounted(async () => {
   }
 })
 async function startNewChat() {
-  if (renamingChatId.value !== null || deletingChatId.value !== null || creatingChat.value || sendingMessage.value || loadingMessages.value || restoringChat.value) return
+  if (pageBusy.value) return
   creatingChat.value = true
   errorMessage.value = ''
   try {
@@ -223,7 +228,7 @@ async function generateAssistantReply(chatId: string): Promise<void> { // 根据
 async function sendMessage() { // 保存用户问题，再生成回答
   const text = inputText.value.trim() // 本次问题
   const chat = currentChat.value // 当前会话
-  if (!text || renamingChatId.value !== null || sendingMessage.value || creatingChat.value || loadingMessages.value || restoringChat.value || deletingChatId.value !== null) return
+  if (!text || pageBusy.value) return
   if (!chat) {
     errorMessage.value = '请先新建一个会话'
     return
@@ -248,49 +253,20 @@ async function sendMessage() { // 保存用户问题，再生成回答
   <main class="chat-page">
     <h1>我的 AI 助手</h1>
     <p v-if="restoringChat">正在恢复上次会话…</p>
-<button
-  type="button"
-  :disabled="creatingChat || sendingMessage || loadingMessages || restoringChat || deletingChatId !== null || renamingChatId !== null"
-  @click="startNewChat"
->
-  {{ creatingChat ? '创建中…' : '新建会话' }}
-</button>
-<section>
-  <h2>会话列表</h2>
-
-  <p v-if="loadingChats">正在读取会话…</p>
-
-  <p v-else-if="chats.length === 0">
-    暂无会话
-  </p>
-
-  <ul v-else>
-    <li v-for="chat in chats" :key="chat.id">
-      <button
-        type="button"
-        :disabled="loadingMessages || sendingMessage || creatingChat || deletingChatId !== null || renamingChatId !== null"
-        @click="openChat(chat)"
-      >
-        {{ currentChat?.id === chat.id ? '当前：' : '' }}
-        {{ chat.title }}
-      </button>
-      <button
-        type="button"
-        :disabled="deletingChatId !== null || sendingMessage || creatingChat || loadingMessages || restoringChat || renamingChatId !== null"
-        @click="removeChat(chat)"
-      >
-        {{ deletingChatId === chat.id ? '删除中…' : '删除' }}
-      </button>
-      <button
-        type="button"
-        :disabled="renamingChatId !== null || deletingChatId !== null || sendingMessage || creatingChat || loadingMessages || restoringChat"
-        @click="editChatTitle(chat)"
-      >
-        {{ renamingChatId === chat.id ? '保存中…' : '重命名' }}
-      </button>
-    </li>
-  </ul>
-</section>
+    <ChatSidebar
+      :chats="chats"
+      :current-chat-id="currentChat?.id ?? null"
+      :loading="loadingChats"
+      :creating="creatingChat"
+      :deleting-chat-id="deletingChatId"
+      :renaming-chat-id="renamingChatId"
+      :action-disabled="pageBusy"
+      :open-disabled="operationBusy"
+      @create="startNewChat"
+      @open="openChat"
+      @remove="removeChat"
+      @rename="editChatTitle"
+    />
 <p v-if="currentChat">
   当前会话：{{ currentChat.title }}
   <br />
@@ -309,15 +285,15 @@ async function sendMessage() { // 保存用户问题，再生成回答
     <button
       v-if="canRetryReply"
       type="button"
-      :disabled="!currentChat || sendingMessage || creatingChat || loadingMessages || restoringChat || deletingChatId !== null || renamingChatId !== null"
+      :disabled="!currentChat || pageBusy"
       @click="retryReply"
     >
       重试回答
     </button>
     <MessageInput
       v-model="inputText"
-      :input-disabled="sendingMessage || creatingChat || deletingChatId !== null || renamingChatId !== null"
-      :send-disabled="!currentChat || !inputText.trim() || sendingMessage || creatingChat || deletingChatId !== null || renamingChatId !== null"
+      :input-disabled="inputDisabled"
+      :send-disabled="sendDisabled"
       :sending="sendingMessage"
       @send="sendMessage"
     />

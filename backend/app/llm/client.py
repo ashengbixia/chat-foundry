@@ -2,6 +2,8 @@ import httpx
 from backend.app.core.config import settings
 import json
 from collections.abc import AsyncIterator
+from typing import Any  # 模型消息和事件可以包含不同类型的数据
+from contextlib import aclosing  # 外层停止读取时，及时关闭内部模型流
 
 async def generate_reply(message: str) -> str:
     """把用户的问题发送给模型，返回回答正文。"""
@@ -50,8 +52,8 @@ async def generate_reply(message: str) -> str:
 
         return content
 
-async def stream_reply(messages: list[dict[str,str]]) -> AsyncIterator[str]:
-    """接收消息列表，流式读取模型回答，每次产出一段正文。"""
+async def stream_model_events(messages: list[dict[str, Any]], tools: list[dict[str, Any]] | None = None) -> AsyncIterator[dict[str, Any]]:
+    """流式读取模型的正文和工具调用片段，不执行工具。"""
 
     api_key = settings.llm_api_key.get_secret_value()  # 流式请求同样只在后端读取真实密钥
     if not all((
@@ -73,6 +75,9 @@ async def stream_reply(messages: list[dict[str,str]]) -> AsyncIterator[str]:
         "messages": messages,
         "stream": True,
     }
+    if tools:
+        payload["tools"] = tools  # 本次请求允许模型使用的工具
+        payload["tool_choice"] = "auto"  # 允许模型选择调用工具或直接回答
 
     async with httpx.AsyncClient(
         timeout=settings.llm_timeout
@@ -108,7 +113,17 @@ async def stream_reply(messages: list[dict[str,str]]) -> AsyncIterator[str]:
                     continue
 
                 # delta 表示本次增量，不是完整回答。
-                content = choices[0].get("delta", {}).get("content")
-
+                delta = choices[0].get("delta") or {}  # 模型本次返回的增量内容
+                content = delta.get("content")  # 本次正文片段
                 if isinstance(content, str) and content:
-                    yield content
+                    yield {"type": "text_delta", "text": content}
+                tool_calls = delta.get("tool_calls")  # 参数可能分多次返回，交给上层拼接
+                if tool_calls:
+                    yield {"type": "tool_call_delta", "tool_calls": tool_calls}
+
+async def stream_reply(messages: list[dict[str, str]]) -> AsyncIterator[str]:
+    """兼容现有聊天流程，不传工具定义，仍然只产出正文。"""
+    async with aclosing(stream_model_events(messages)) as stream:
+        async for event in stream:
+            if event["type"] == "text_delta":
+                yield event["text"]

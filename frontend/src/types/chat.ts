@@ -1,3 +1,22 @@
 import type { ChatMessage } from '../api/chats'
 
-export type DisplayMessage = Pick<ChatMessage, 'id' | 'role' | 'content' | 'status' | 'error'> // 页面展示字段，也用于尚未取得数据库 ID 的助手占位消息
+export type DisplayMessage = Pick<ChatMessage, 'id' | 'role' | 'content' | 'status' | 'error' | 'output'> // 页面展示字段，包含已保存的工具记录
+
+export interface ToolCallRecord { // 助手 output 中的工具调用记录
+  type: 'function_call'
+  call_id: string
+  name: string
+  arguments: string
+}
+export interface ToolResultRecord { // 助手 output 中的工具结果记录
+  type: 'function_call_output'
+  call_id: string
+  output: string
+}
+export interface DisplayToolCall { // 将调用与结果配对后，交给组件展示
+  callId: string
+  name: string
+  arguments: string
+  result: string | null
+  failed: boolean
+}

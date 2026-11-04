@@ -26,7 +26,7 @@ function scrollMessagesToBottom() { // 在允许跟随时将消息区域滚到�
   if (!element || preservingScroll || !autoFollowMessages) return
   element.scrollTop = element.scrollHeight
 }
-watch(() => [currentChat.value?.id, messages.value.length, messages.value[messages.value.length - 1]?.content, messages.value[messages.value.length - 1]?.status, messages.value[messages.value.length - 1]?.error], scrollMessagesToBottom, { flush: 'post' }) // 等页面更新后再调整滚动位置
+watch(() => [currentChat.value?.id, messages.value.length, messages.value[messages.value.length - 1]?.content, messages.value[messages.value.length - 1]?.status, messages.value[messages.value.length - 1]?.error, messages.value[messages.value.length - 1]?.output?.length], scrollMessagesToBottom, { flush: 'post' }) // 正文和工具记录更新后，在允许跟随时滚动
 
 async function showOlderMessages() { // 加载旧消息后，用新增高度补偿滚动位置
   const element = messageListElement.value // 本次操作的滚动容器

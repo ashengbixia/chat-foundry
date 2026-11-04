@@ -190,6 +190,7 @@ export const useChatStore = defineStore('chat', () => { // 集中保存聊天状
       id: `pending-${crypto.randomUUID()}`,
       role: 'assistant',
       content: '',
+      output: [], // 接收实时工具记录；重新打开会话时读取数据库中的完整 output
       status: 'generating',
       error: null,
     })
@@ -197,7 +198,14 @@ export const useChatStore = defineStore('chat', () => { // 集中保存聊天状
     try {
       const messageId = await streamChatReply(chatId, (text) => { // 接收并追加本次回答的正文片段
         if (!controller.signal.aborted) draft.content += text
-      }, controller.signal)
+      }, controller.signal, (event) => { // 工具事件直接更新当前助手消息，无需重新打开会话
+        if (controller.signal.aborted) return
+        if (event.type === 'tool_call') {
+          draft.output.push({ type: 'function_call', call_id: event.callId, name: event.name, arguments: event.arguments })
+        } else {
+          draft.output.push({ type: 'function_call_output', call_id: event.callId, output: event.output })
+        }
+      })
       draft.id = messageId
       draft.status = 'completed'
     } catch (error) {

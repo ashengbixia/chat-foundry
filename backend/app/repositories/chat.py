@@ -217,9 +217,10 @@ async def rename_chat(session: AsyncSession, chat_id: str, title: str) -> Chat |
     await session.refresh(chat)
     return chat
 
-async def cancel_message(session: AsyncSession, message_id: str, content: str) -> bool:  # 保存部分正文，并取消仍在生成的助手消息
+async def cancel_message(session: AsyncSession, message_id: str, content: str, output: list | None = None) -> bool:  # 保存已生成内容，并取消仍在生成的助手消息
     now = int(time.time())  # 本次更新时间
-    output = [{"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": content}]}]  # 已生成的部分正文
+    if output is None:
+        output = [{"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": content}]}]  # 兼容只传正文的调用，传入空列表则保留空列表
     try:
         result = await session.execute(
             update(Message)

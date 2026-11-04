@@ -1,9 +1,14 @@
 import { createApiError } from './errors'
 
+export type ToolStreamEvent = // 后端收齐工具参数后才发送调用事件，结果用同一个 callId 关联
+  | { type: 'tool_call'; callId: string; name: string; arguments: string }
+  | { type: 'tool_result'; callId: string; output: string }
+
 export type ChatStreamEvent =
   | { type: 'text_delta'; text: string }
   | { type: 'done'; messageId: string }
   | { type: 'error'; message: string }
+  | ToolStreamEvent
 
 
 export function parseSseEvent(
@@ -33,6 +38,14 @@ export function parseSseEvent(
     if ('text' in data && typeof data.text === 'string') {
       return { type: 'text_delta', text: data.text }
     }
+  } else if (eventType === 'tool_call') {
+    if ('call_id' in data && typeof data.call_id === 'string' && data.call_id && 'name' in data && typeof data.name === 'string' && data.name && 'arguments' in data && typeof data.arguments === 'string') {
+      return { type: 'tool_call', callId: data.call_id, name: data.name, arguments: data.arguments }
+    }
+  } else if (eventType === 'tool_result') {
+    if ('call_id' in data && typeof data.call_id === 'string' && data.call_id && 'output' in data && typeof data.output === 'string') {
+      return { type: 'tool_result', callId: data.call_id, output: data.output }
+    }
   } else if (eventType === 'done') {
     if ('message_id' in data && typeof data.message_id === 'string') {
       return { type: 'done', messageId: data.message_id }
@@ -52,7 +65,8 @@ export function parseSseEvent(
 export async function streamChatReply(
     chatId: string,
     onText: (text: string) => void,
-    signal?: AbortSignal): Promise<string> { // 请求流式回答，可传入取消信号
+    signal?: AbortSignal,
+    onTool?: (event: ToolStreamEvent) => void): Promise<string> { // 保留原有正文和取消参数，增加可选工具事件回调
   const response = await fetch(
       `/api/chats/${encodeURIComponent(chatId)}/respond`,
       {
@@ -96,6 +110,8 @@ export async function streamChatReply(
 
         if (event?.type === 'text_delta') {
           onText(event.text)
+        } else if (event?.type === 'tool_call' || event?.type === 'tool_result') {
+          onTool?.(event) // 将工具事件交给仓库，不在请求层修改页面状态
         } else if (event?.type === 'error') {
           throw new Error(event.message)
         } else if (event?.type === 'done') {

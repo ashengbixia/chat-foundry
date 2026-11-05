@@ -8,6 +8,7 @@ from backend.app.schemas.chat import ChatCreate, ChatResponse, MessageResponse, 
 from backend.app.chat.service import stream_chat_history_events
 from backend.app.chat.response import ChatStreamingResponse  # 带生成器清理的聊天流式响应
 from backend.app.chat.guards import acquire_generation, release_generation  # 占用和释放会话的生成资格
+from backend.app.repositories.message_file import MessageFileError  # 附件校验失败与会话不存在分别处理
 
 
 #创建一个接口分组
@@ -59,8 +60,11 @@ async def create_message_endpoint(
             chat_id=chat_id,
             role="user",
             content=request.content,
+            file_ids=request.file_ids,
         )
 
+    except MessageFileError as error:
+        raise HTTPException(status_code=400, detail=str(error))
     except ValueError:
         raise HTTPException(
             status_code=404,

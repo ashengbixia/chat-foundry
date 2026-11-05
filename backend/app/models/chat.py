@@ -2,7 +2,8 @@ import time
 import uuid
 
 from sqlalchemy import ForeignKey, JSON, String, Text, UniqueConstraint
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.orm import Mapped, mapped_column, relationship
+from backend.app.models.message_file import MessageFile  # 消息与文件的关联记录
 
 from backend.app.core.database import Base
 
@@ -39,6 +40,7 @@ class Message(Base):
     """聊天消息表，一条记录代表一条用户或助手消息。"""
 
     __tablename__ = "messages"
+    attachments: Mapped[list[MessageFile]] = relationship(lazy="selectin", cascade="all, delete-orphan", order_by=MessageFile.position)  # 批量读取附件基本信息，不加载文件正文
     # 同一个会话内，消息序号不能重复。
     __table_args__ = (
         UniqueConstraint(

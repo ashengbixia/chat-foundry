@@ -1,4 +1,5 @@
 import { createApiError } from './errors'
+import type { MessageAttachment } from '../types/file'
 
 // 对应后端 ChatResponse 的返回结构。
 export interface Chat {
@@ -32,6 +33,7 @@ export interface ChatMessage {
   role: 'user' | 'assistant'
   content: string
   output: unknown[]
+  attachments: MessageAttachment[] // 与本条消息关联的文件
   status: 'generating' | 'completed' | 'cancelled' | 'failed'
   model: string | null
   usage: Record<string, unknown> | null
@@ -48,6 +50,7 @@ export interface MessagePage { // 后端返回的一批消息及下一批查询�
 export async function saveUserMessage(
   chatId: string,
   content: string,
+  fileIds: string[] = [], // 旧调用不传时仍然发送纯文本问题
 ): Promise<ChatMessage> {
   const response = await fetch(
     `/api/chats/${encodeURIComponent(chatId)}/messages`,
@@ -56,7 +59,7 @@ export async function saveUserMessage(
       headers: {
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify({ content }),
+      body: JSON.stringify({ content, file_ids: fileIds }),
     },
   )
 

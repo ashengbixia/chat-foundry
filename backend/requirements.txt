@@ -11,3 +11,4 @@ aiosqlite==0.22.1
 alembic==1.20.1
 httpx==0.28.1
 anyio==4.12.1
+python-multipart==0.0.32

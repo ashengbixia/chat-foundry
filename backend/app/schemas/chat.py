@@ -20,6 +20,13 @@ class ChatResponse(BaseModel):
     created_at: int
     updated_at: int
 
+class MessageAttachmentResponse(BaseModel):  # 消息附件只返回展示所需的基本信息
+    model_config = ConfigDict(from_attributes=True)
+    file_id: str  # 文件 ID
+    filename: str  # 发送时的文件名
+    size: int  # 文件大小
+    deleted: bool = False  # 原文件是否已删除，历史名称和大小仍保留
+
 class MessageResponse(BaseModel):
     """返回给客户端的消息信息。"""
 
@@ -31,6 +38,7 @@ class MessageResponse(BaseModel):
     role: str
     content: str
     output: list
+    attachments: list[MessageAttachmentResponse] = Field(default_factory=list)  # 旧消息没有附件时返回空列表
     status: str
     model: str | None
     usage: dict | None
@@ -47,6 +55,7 @@ class MessageCreate(BaseModel):
     """客户端提交的用户消息。"""
     model_config = ConfigDict(str_strip_whitespace=True)
     content: str = Field(min_length=1,max_length=10000,)
+    file_ids: list[str] = Field(default_factory=list, max_length=3)  # 每条用户消息最多3份附件
 
 class ChatRename(BaseModel):  # 修改会话标题的请求格式
     model_config = ConfigDict(str_strip_whitespace=True)  # 自动去掉两端空白

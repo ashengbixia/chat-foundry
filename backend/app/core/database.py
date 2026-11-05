@@ -40,6 +40,9 @@ async def init_db():
     # 导入模型，让 SQLAlchemy 知道需要创建哪些表。
     # 放在方法内部，避免与模型文件互相导入时产生循环导入问题。
     from backend.app.models.chat import Chat, Message
+    from backend.app.models.file import File  # 注册文件表，启动时创建尚不存在的表
+    from backend.app.models.message_file import MessageFile  # 注册消息附件关联表
+    from backend.app.models.file_chunk import FileChunk  # 注册文件切片表
 
     async with engine.begin() as connection:
         await connection.run_sync(Base.metadata.create_all)

@@ -1,4 +1,5 @@
 import logging
+import json  # 将工具自身的参数或文件状态错误反馈给模型
 from collections.abc import AsyncIterator,AsyncGenerator
 from contextlib import aclosing
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -8,7 +9,7 @@ from backend.app.repositories.chat import create_message, update_message,list_re
 from backend.app.chat.context import build_model_messages
 from backend.app.chat.events import format_sse
 from backend.app.llm.client import stream_reply, stream_model_events
-from backend.app.tools.registry import TOOL_DEFINITIONS, execute_tool  # 工具定义和执行入口
+from backend.app.tools.registry import execute_tool, get_available_tools  # 根据本次附件范围提供工具
 import asyncio  # 识别异步任务取消
 import anyio  # 为取消后的清理提供短暂保护
 from backend.app.core.database import SessionLocal  # 创建独立数据库会话
@@ -56,6 +57,13 @@ async def stream_chat_history_events(
         if not history:
             raise ValueError("没有可以发送给模型的消息")
 
+        allowed_file_ids = set()  # 只允许读取本次已完成用户历史中明确关联的附件
+        for message in history:
+            if message.role == "user" and message.status == "completed":
+                for attachment in getattr(message, "attachments", []):
+                    allowed_file_ids.add(attachment.file_id)
+        available_tools = get_available_tools(allowed_file_ids)
+
         # ② 将数据库对象转换成模型输入。
         messages = build_model_messages(history)
 
@@ -75,7 +83,7 @@ async def stream_chat_history_events(
             tool_calls = {}  # 按 index 分开拼接本次请求中的工具调用
             round_text_parts = []  # 本次模型请求产生的正文
             round_output = None  # 收到正文时创建记录，停止或失败时也能保存当前片段
-            tools = TOOL_DEFINITIONS if request_index < 4 else None  # 最后一次只要求生成回答
+            tools = available_tools if request_index < 4 else None  # 最后一次只要求生成回答
             async with aclosing(stream_model_events(messages, tools)) as stream:
                 async for event in stream:
                     if event["type"] == "text_delta":
@@ -116,7 +124,9 @@ async def stream_chat_history_events(
                 yield format_sse("tool_call", {"call_id": call["id"], "name": name, "arguments": arguments})
                 await asyncio.sleep(0)  # 已发送调用通知后，允许取消发生在实际执行之前
                 try:
-                    result = execute_tool(name, arguments)  # 执行注册表中的实际函数
+                    result = await execute_tool(name, arguments, session, allowed_file_ids)  # 文件工具可异步查询数据库
+                except ValueError as error:
+                    result = json.dumps({"error": str(error)}, ensure_ascii=False)  # 已删除文件等可预期错误，便于模型正确说明原因
                 except Exception:
                     logger.exception("工具执行失败：%s", name)
                     result = '{"error":"工具执行失败，请检查工具名称和参数，或告知用户无法完成。"}'

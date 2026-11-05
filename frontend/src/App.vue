@@ -3,14 +3,15 @@ import type { Chat } from './api/chats'
 import MessageList from './components/chat/MessageList.vue'
 import MessageInput from './components/chat/MessageInput.vue'
 import ChatSidebar from './components/chat/ChatSidebar.vue'
+import FilePanel from './components/files/FilePanel.vue'
 import { nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { storeToRefs } from 'pinia'
 import { useChatStore } from './stores/chat'
 import { clearLastChatId, getLastChatId, saveLastChatId } from './utils/chatStorage'
 
 const chatStore = useChatStore() // 获取当前应用共用的聊天状态仓库
-const { createNewChat, openChatSession, initializeChat, renameChatSession, deleteChatSession, sendMessage, retryReply, stopReply, loadOlderMessages } = chatStore // 获取仓库中的数据操作方法
-const { inputText, messages, currentChat, chats, errorMessage, sendingMessage, generatingReply, creatingChat, loadingChats, restoringChat, deletingChatId, renamingChatId, pageBusy, inputDisabled, sendDisabled, canRetryReply, hasOlderMessages, loadingOlderMessages } = storeToRefs(chatStore) // 保持响应式连接，不复制出另一份状态
+const { createNewChat, openChatSession, initializeChat, renameChatSession, deleteChatSession, sendMessage, retryReply, stopReply, loadOlderMessages, addAttachment, removeAttachment, markFileDeleted } = chatStore // 获取仓库中的数据操作方法
+const { inputText, selectedAttachments, messages, currentChat, chats, errorMessage, sendingMessage, generatingReply, creatingChat, loadingChats, restoringChat, deletingChatId, renamingChatId, pageBusy, inputDisabled, sendDisabled, canRetryReply, hasOlderMessages, loadingOlderMessages } = storeToRefs(chatStore) // 保持响应式连接，不复制出另一份状态
 const messageListElement = ref<HTMLElement | null>(null) // 消息区域的页面元素
 let preservingScroll = false // 加载旧消息期间暂停自动滚动，避免前插内容后跳到底部
 let autoFollowMessages = true // 是否跟随新消息滚动，向上翻阅时暂停
@@ -139,8 +140,11 @@ async function startNewChat() { // 新建成功后，恢复页面自动滚动
       :input-disabled="inputDisabled"
       :send-disabled="sendDisabled"
       :sending="sendingMessage"
+      :attachments="selectedAttachments"
+      @remove-attachment="removeAttachment"
       @send="sendMessage"
     />
+    <FilePanel :attach-disabled="!currentChat || pageBusy" :delete-disabled="pageBusy" @attach="addAttachment" @removed="markFileDeleted" />
   </main>
 </template>
 

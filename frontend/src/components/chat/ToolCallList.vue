@@ -11,7 +11,7 @@ const toolCalls = computed(() => getToolCalls(props.output)) // 消息变化时�
   <div v-if="toolCalls.length" class="tool-call-list">
     <details v-for="(call, index) in toolCalls" :key="`${call.callId}-${index}`" class="tool-call">
       <summary>
-        <span>{{ call.name === 'get_current_time' ? '查询当前时间' : call.name }}</span>
+        <span>{{ call.name === 'get_current_time' ? '查询当前时间' : call.name === 'read_uploaded_file' ? '读取附件正文' : call.name }}</span>
         <small>{{ getToolStatus(call, props.status ?? 'completed') }}</small>
       </summary>
       <p>工具：<code>{{ call.name }}</code></p>

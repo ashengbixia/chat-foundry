@@ -1,6 +1,6 @@
 import type { ChatMessage } from '../api/chats'
 
-export type DisplayMessage = Pick<ChatMessage, 'id' | 'role' | 'content' | 'status' | 'error' | 'output'> // 页面展示字段，包含已保存的工具记录
+export type DisplayMessage = Pick<ChatMessage, 'id' | 'role' | 'content' | 'status' | 'error' | 'output' | 'attachments'> // 页面展示字段，包含工具和附件记录
 
 export interface ToolCallRecord { // 助手 output 中的工具调用记录
   type: 'function_call'

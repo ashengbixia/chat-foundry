@@ -1,6 +1,8 @@
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import delete, func, select, update
 from backend.app.models.chat import Chat, Message
+from backend.app.models.message_file import MessageFile
+from backend.app.repositories.message_file import build_attachments, MessageFileError
 import time
 from typing import Literal
 
@@ -44,7 +46,8 @@ async def create_message(
     role: Literal["user", "assistant"],
     content: str,
     status: Literal["generating", "completed", "cancelled", "failed"] = "completed",
-    model: str | None = None,) -> Message:
+    model: str | None = None,
+    file_ids: list[str] | None = None,) -> Message:
     """保存一条消息，为其分配会话内序号。"""
 
     try:
@@ -58,6 +61,10 @@ async def create_message(
 
         if result.rowcount == 0:
             raise ValueError("会话不存在")
+
+        if file_ids and role != "user":
+            raise MessageFileError("当前只允许用户消息添加附件")
+        attachments = await build_attachments(session, file_ids or [])  # 校验失败时连同会话更新时间一起回滚
 
         # 查询这个会话当前最大的消息序号。
         result = await session.execute(
@@ -75,6 +82,7 @@ async def create_message(
             content=content,
             status=status,
             model=model,
+            attachments=attachments,  # 消息和附件关联在同一个事务中保存
         )
 
         session.add(message)
@@ -189,6 +197,8 @@ async def delete_chat(session: AsyncSession, chat_id: str) -> bool:  # 删除会
         if chat is None:
             return False
         # 先删除子记录，避免留下不属于任何会话的消息。
+        message_ids = select(Message.id).where(Message.chat_id == chat_id)  # 当前会话中的消息 ID
+        await session.execute(delete(MessageFile).where(MessageFile.message_id.in_(message_ids)))  # 只删除关联，保留原文件
         await session.execute(
             delete(Message).where(Message.chat_id == chat_id)
         )

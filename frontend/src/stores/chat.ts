@@ -4,6 +4,7 @@ import { createChat, deleteChat, getChat, listChats, listMessages, renameChat, s
 import { streamChatReply } from '../api/stream'
 import type { Chat } from '../api/chats'
 import type { DisplayMessage } from '../types/chat'
+import type { FileInfo, MessageAttachment } from '../types/file'
 
 export interface ChatInitializationResult { // 启动结果：只有 missing 才表示应清除浏览器中的失效 ID
   status: 'empty' | 'restored' | 'missing' | 'failed'
@@ -12,6 +13,7 @@ export interface ChatInitializationResult { // 启动结果：只有 missing 才
 
 export const useChatStore = defineStore('chat', () => { // 集中保存聊天状态和数据操作，不直接操作页面元素
   const inputText = ref('') // 当前输入内容
+  const selectedAttachments = ref<MessageAttachment[]>([]) // 本次问题待发送的附件，不自动沿用到下一条问题
   const messages = ref<DisplayMessage[]>([]) // 当前会话的页面消息
   const currentChat = ref<Chat | null>(null) // 当前打开的会话
   const chats = ref<Chat[]>([]) // 会话列表
@@ -62,6 +64,7 @@ export const useChatStore = defineStore('chat', () => { // 集中保存聊天状
       hasOlderMessages.value = false
       nextBeforeSequence.value = null
       inputText.value = ''
+      selectedAttachments.value = [] // 新建会话成功后清理附件草稿
       return chat
     } catch (error) {
       errorMessage.value = error instanceof Error ? error.message : '创建会话失败'
@@ -81,6 +84,7 @@ export const useChatStore = defineStore('chat', () => { // 集中保存聊天状
       hasOlderMessages.value = page.has_more
       nextBeforeSequence.value = page.next_before_sequence
       inputText.value = ''
+      selectedAttachments.value = [] // 成功切换会话后清理原会话的附件草稿
       return true
     } catch (error) {
       errorMessage.value = error instanceof Error ? error.message : '读取消息失败'
@@ -171,6 +175,7 @@ export const useChatStore = defineStore('chat', () => { // 集中保存聊天状
         hasOlderMessages.value = false
         nextBeforeSequence.value = null
         inputText.value = ''
+        selectedAttachments.value = [] // 删除当前会话时清理附件草稿
       }
       return true
     } catch (error) {
@@ -178,6 +183,40 @@ export const useChatStore = defineStore('chat', () => { // 集中保存聊天状
       return false
     } finally {
       deletingChatId.value = null
+    }
+  }
+  function addAttachment(file: FileInfo): boolean { // 添加已处理成功的文件，不读取正文
+    if (pageBusy.value) return false
+    if (!currentChat.value) {
+      errorMessage.value = '请先新建或打开一个会话'
+      return false
+    }
+    if (file.status !== 'completed') {
+      errorMessage.value = '只能添加处理完成的文件'
+      return false
+    }
+    if (selectedAttachments.value.some((item) => item.file_id === file.id)) {
+      errorMessage.value = '该文件已添加到本次问题'
+      return false
+    }
+    if (selectedAttachments.value.length >= 3) {
+      errorMessage.value = '每条消息最多添加3份附件'
+      return false
+    }
+    selectedAttachments.value.push({ file_id: file.id, filename: file.filename, size: file.size })
+    errorMessage.value = ''
+    return true
+  }
+  function removeAttachment(fileId: string, deleted: boolean = false) { // 后端已删除的文件需要清理草稿，即使此时已开始其他操作
+    if (pageBusy.value && !deleted) return
+    selectedAttachments.value = selectedAttachments.value.filter((item) => item.file_id !== fileId)
+  }
+  function markFileDeleted(fileId: string) { // 删除成功后立即更新已加载的历史消息，保留附件快照
+    removeAttachment(fileId, true)
+    for (const message of messages.value) {
+      for (const file of message.attachments ?? []) {
+        if (file.file_id === fileId) file.deleted = true
+      }
     }
   }
   function stopReply() { // 中止本次流程；保存问题尚未结束时，阻止后续模型请求启动
@@ -191,6 +230,7 @@ export const useChatStore = defineStore('chat', () => { // 集中保存聊天状
       role: 'assistant',
       content: '',
       output: [], // 接收实时工具记录；重新打开会话时读取数据库中的完整 output
+      attachments: [], // 当前只允许用户消息关联附件
       status: 'generating',
       error: null,
     })
@@ -233,10 +273,12 @@ export const useChatStore = defineStore('chat', () => { // 集中保存聊天状
     sendingMessage.value = true
     errorMessage.value = ''
     try {
-      const userMessage = await saveUserMessage(chat.id, text) // 正常发送才保存用户问题
-      if (controller.signal.aborted) return // 页面已退出时不继续启动模型请求，已保存的问题仍在数据库中
+      const fileIds = selectedAttachments.value.map((file) => file.file_id) // 只发送文件 ID，由后端校验并保存关联
+      const userMessage = await saveUserMessage(chat.id, text, fileIds)
       messages.value.push(userMessage)
       inputText.value = ''
+      selectedAttachments.value = [] // 保存成功即清空；生成失败通过重试复用已保存的问题
+      if (controller.signal.aborted) return // 更新已保存的问题，但不再启动模型请求，避免再次提交
       await generateAssistantReply(chat.id, controller)
     } catch (error) {
       if (!controller.signal.aborted) errorMessage.value = error instanceof Error ? error.message : '发送或生成失败'
@@ -261,5 +303,5 @@ export const useChatStore = defineStore('chat', () => { // 集中保存聊天状
       sendingMessage.value = false
     }
   }
-  return { inputText, messages, currentChat, chats, errorMessage, sendingMessage, generatingReply, creatingChat, loadingChats, loadingMessages, hasOlderMessages, nextBeforeSequence, loadingOlderMessages, restoringChat, deletingChatId, renamingChatId, operationBusy, pageBusy, inputDisabled, sendDisabled, canRetryReply, loadChats, createNewChat, openChatSession, initializeChat, loadOlderMessages, renameChatSession, deleteChatSession, sendMessage, retryReply, stopReply }
+  return { inputText, selectedAttachments, messages, currentChat, chats, errorMessage, sendingMessage, generatingReply, creatingChat, loadingChats, loadingMessages, hasOlderMessages, nextBeforeSequence, loadingOlderMessages, restoringChat, deletingChatId, renamingChatId, operationBusy, pageBusy, inputDisabled, sendDisabled, canRetryReply, loadChats, createNewChat, openChatSession, initializeChat, loadOlderMessages, renameChatSession, deleteChatSession, sendMessage, retryReply, stopReply, addAttachment, removeAttachment, markFileDeleted }
 })

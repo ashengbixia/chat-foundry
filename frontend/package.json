@@ -10,8 +10,9 @@
     "build-only": "vite build",
     "type-check": "vue-tsc --build",
     "test:api": "node --test tests/api.test.mjs",
-    "test:chat": "node --test tests/chat-initialization.test.mjs tests/message-pagination.test.mjs tests/message-scroll.test.mjs tests/tool-output.test.mjs tests/tool-stream.test.mjs",
-    "test": "node --test tests/api.test.mjs tests/chat-initialization.test.mjs tests/message-pagination.test.mjs tests/message-scroll.test.mjs tests/tool-output.test.mjs tests/tool-stream.test.mjs"
+    "test:files": "node --test tests/files.test.mjs",
+    "test:chat": "node --test tests/chat-initialization.test.mjs tests/message-pagination.test.mjs tests/message-scroll.test.mjs tests/tool-output.test.mjs tests/tool-stream.test.mjs tests/chat-attachments.test.mjs",
+    "test": "node --test tests/api.test.mjs tests/chat-initialization.test.mjs tests/message-pagination.test.mjs tests/message-scroll.test.mjs tests/tool-output.test.mjs tests/tool-stream.test.mjs tests/files.test.mjs tests/chat-attachments.test.mjs"
   },
   "dependencies": {
     "pinia": "^4.0.3",

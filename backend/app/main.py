@@ -24,8 +24,10 @@ async def lifespan(app: FastAPI):  # 管理应用启动和关闭
         await engine.dispose()  # 退出时释放数据库连接
 
 from backend.app.api.chats import router as chats_router
+from backend.app.api.files import router as files_router  # 注册文件上传和查询接口
 app = FastAPI(title=" AI 助手",lifespan=lifespan,)
 app.include_router(chats_router)#把接口分组注册到 FastAPI 应用上
+app.include_router(files_router)
 
 class ChatRequest(BaseModel):
     """聊天接口接收的数据。"""

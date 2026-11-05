@@ -6,7 +6,7 @@ from contextlib import aclosing
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 from backend.app.chat import service
-from backend.app.tools.registry import TOOL_DEFINITIONS
+from backend.app.tools.registry import get_available_tools
 
 def text(value: str) -> dict:  # 构造正文事件
     return {"type": "text_delta", "text": value}
@@ -51,7 +51,7 @@ class ToolChatTests(unittest.IsolatedAsyncioTestCase):
         requests, closed = self.model([[text("你好"), text("！")]])
         events = await self.run_chat()
         self.assertEqual(len(requests), 1)
-        self.assertEqual(requests[0][1], TOOL_DEFINITIONS)
+        self.assertEqual(requests[0][1], get_available_tools(set()))
         saved = self.update.call_args.kwargs
         self.assertEqual(saved["content"], "你好！")
         self.assertEqual(saved["status"], "completed")
@@ -86,6 +86,14 @@ class ToolChatTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([call["id"] for call in messages[-3]["tool_calls"]], ["call-a", "call-b"])
         self.assertEqual([message["tool_call_id"] for message in messages[-2:]], ["call-a", "call-b"])
 
+    async def test_only_completed_user_attachments_are_allowed(self):  # 允许范围由后端历史决定，不接受助手或失败消息扩张范围
+        self.read.return_value = [SimpleNamespace(role="user", content="问题", status="completed", attachments=[SimpleNamespace(file_id="f1", filename="资料.txt", size=1)]), SimpleNamespace(role="user", content="失败问题", status="failed", attachments=[SimpleNamespace(file_id="failed-file")]), SimpleNamespace(role="assistant", content="回答", status="completed", attachments=[SimpleNamespace(file_id="assistant-file")])]
+        requests, _ = self.model([[tool()], [text("回答")]])
+        with patch.object(service, "execute_tool", return_value="{}") as execute:
+            await self.run_chat()
+        self.assertEqual(execute.await_args.args[3], {"f1"})
+        self.assertIn("read_uploaded_file", [definition["function"]["name"] for definition in requests[0][1]])
+
     async def test_next_turn_restores_saved_tool_history(self):  # 使用上一轮实际保存的 output 构造下一轮输入
         self.model([[tool()], [text("当前是北京时间。")]])
         await self.run_chat()
@@ -108,6 +116,12 @@ class ToolChatTests(unittest.IsolatedAsyncioTestCase):
                 await self.run_chat()
                 self.assertIn("error", json.loads(requests[1][0][-1]["content"]))
                 self.assertEqual(self.update.call_args.kwargs["status"], "completed")
+
+    async def test_deleted_file_error_is_returned_to_model(self):
+        requests, _ = self.model([[tool(name="read_uploaded_file", arguments='{"file_id":"gone"}')], [text("原附件已删除，无法再次读取。")]])
+        with patch.object(service, "execute_tool", side_effect=ValueError("文件已删除或不存在，无法再次读取正文")):
+            await self.run_chat()
+        self.assertIn("已删除", json.loads(requests[1][0][-1]["content"])["error"])
 
     async def test_last_request_has_no_tools(self):
         requests, _ = self.model([[tool(call_id=f"call-{index}")] for index in range(4)] + [[text("最终回答")]])

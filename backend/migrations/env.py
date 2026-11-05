@@ -7,6 +7,9 @@ from sqlalchemy.ext.asyncio import create_async_engine
 
 from backend.app.core.database import Base, DATABASE_URL
 from backend.app.models.chat import Chat, Message
+from backend.app.models.file import File  # 让迁移比较也能识别文件表
+from backend.app.models.message_file import MessageFile  # 识别消息附件关联表
+from backend.app.models.file_chunk import FileChunk  # 识别文件切片表
 
 
 # Alembic 的配置对象。
@@ -15,7 +18,7 @@ config = context.config
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
-# 导入 Chat、Message 后，Base 中就注册了这两张表。
+# 导入模型后，Base 中就注册了会话、消息、文件、附件关联和切片表。
 target_metadata = Base.metadata
 
 

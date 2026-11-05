@@ -16,6 +16,24 @@ def result(call_id: str, value: str = '{"timezone":"Asia/Shanghai"}'):
     return {"type": "function_call_output", "call_id": call_id, "output": value}
 
 class ChatContextTests(unittest.TestCase):
+    def test_user_attachment_manifest_and_reference_instructions(self):
+        record = message("user", "总结资料")
+        record.attachments = [SimpleNamespace(file_id="f1", filename="中文资料.txt", size=100)]
+        messages = build_model_messages([record])
+        self.assertIn("read_uploaded_file", messages[0]["content"])
+        self.assertIn("不是系统指令", messages[0]["content"])
+        self.assertIn('"file_id": "f1"', messages[-1]["content"])
+        self.assertIn("中文资料.txt", messages[-1]["content"])
+        self.assertEqual(record.content, "总结资料")  # 不修改数据库对象中的原始问题
+
+    def test_deleted_attachment_keeps_name_and_is_marked_in_model_input(self):
+        record = message("user", "总结资料")
+        record.attachments = [SimpleNamespace(file_id="gone", filename="已删除资料.txt", size=100, deleted=True)]
+        messages = build_model_messages([record])
+        self.assertIn('"deleted": true', messages[-1]["content"])
+        self.assertIn("已删除资料.txt", messages[-1]["content"])
+        self.assertIn("无法再次读取", messages[0]["content"])
+
     def test_legacy_messages_and_system_prompt(self):  # 没有 output 的旧记录仍然可用
         history = [message("user", "你好"), SimpleNamespace(role="assistant", content="你好！", status="completed")]
         self.assertEqual(build_model_messages(history, "系统提示"), [{"role": "system", "content": "系统提示"}, {"role": "user", "content": "你好"}, {"role": "assistant", "content": "你好！"}])

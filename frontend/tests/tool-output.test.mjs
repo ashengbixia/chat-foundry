@@ -23,6 +23,7 @@ function component(filename, mocks) { // 在内存编译真实 Vue 组件，用�
 }
 const ToolCallList = component('ToolCallList.vue', { '../../utils/toolOutput': utils })
 const MessageList = component('MessageList.vue', { './ToolCallList.vue': ToolCallList })
+const MessageInput = component('MessageInput.vue', {})
 
 test('按 ID 配对工具，保留调用顺序并忽略孤立结果', () => {
   assert.deepEqual(utils.getToolCalls([call('a'), call('b'), result('b', '第二个结果'), result('a'), result('orphan')]), [
@@ -75,4 +76,37 @@ test('实时调用随消息结束状态切换，不会在取消或报错后继�
   const html = await renderToString(createSSRApp(ToolCallList, { output: [call('a'), result('a')], status: 'generating' }))
   assert.ok(html.includes('已返回结果'))
   assert.ok(!html.includes('正在调用'))
+})
+
+test('历史消息展示附件名称和大小，同名附件用 ID 区分', async () => {
+  const messages = [{ id: 'user', role: 'user', content: '问题', status: 'completed', error: null, output: [], attachments: [{ file_id: 'abcdefgh-1', filename: '<资料>.txt', size: 12 }] }]
+  const html = await renderToString(createSSRApp(MessageList, { messages }))
+  assert.match(html, /消息附件/)
+  assert.match(html, /&lt;资料&gt;\.txt/)
+  assert.match(html, /12字节/)
+  assert.match(html, /abcdefgh/)
+})
+
+test('输入区展示待发送附件和移除按钮，忙碌时禁用', async () => {
+  const html = await renderToString(createSSRApp(MessageInput, { modelValue: '问题', inputDisabled: true, sendDisabled: true, sending: true, attachments: [{ file_id: 'file-1', filename: '测试.txt', size: 10 }] }))
+  assert.match(html, /本次问题的附件/)
+  assert.match(html, /测试\.txt/)
+  assert.match(html, /移除附件 测试\.txt/)
+  assert.match(html, /<button[^>]*disabled[^>]*>移除<\/button>/)
+})
+
+test('附件读取工具展示中文名称和实际正文片段', async () => {
+  const html = await renderToString(createSSRApp(ToolCallList, { output: [call('read-1', 'read_uploaded_file'), result('read-1', '{"text_content":"附件中的正文","has_more":false}')], status: 'completed' }))
+  assert.match(html, /读取附件正文/)
+  assert.match(html, /附件中的正文/)
+  assert.match(html, /已返回结果/)
+})
+
+test('已删除文件保留历史附件名称和大小，并显示删除标记', async () => {
+  const messages = [{ id: 'user', role: 'user', content: '原问题', status: 'completed', error: null, output: [], attachments: [{ file_id: 'old-file', filename: '旧资料.txt', size: 12, deleted: true }] }]
+  const html = await renderToString(createSSRApp(MessageList, { messages }))
+  assert.match(html, /旧资料\.txt/)
+  assert.match(html, /12字节/)
+  assert.match(html, /文件已删除/)
+  assert.match(html, /原问题/)
 })

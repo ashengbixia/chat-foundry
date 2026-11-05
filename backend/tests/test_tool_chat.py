@@ -6,6 +6,7 @@ from contextlib import aclosing
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 from backend.app.chat import service
+from backend.app.llm.client import ModelStreamError
 from backend.app.tools.registry import get_available_tools
 
 def text(value: str) -> dict:  # 构造正文事件
@@ -21,7 +22,7 @@ class ToolChatTests(unittest.IsolatedAsyncioTestCase):
         self.create = AsyncMock(return_value=SimpleNamespace(id="assistant-1"))
         self.update = AsyncMock()
         self.logger = Mock()
-        for name, value in {"list_recent_messages": self.read, "create_message": self.create, "update_message": self.update, "logger": self.logger, "settings": SimpleNamespace(llm_model="test-model")}.items():
+        for name, value in {"list_recent_messages": self.read, "create_message": self.create, "update_message": self.update, "logger": self.logger, "settings": SimpleNamespace(llm_model="test-model", llm_context_window=32768, llm_max_output_tokens=4096, llm_context_margin=1024)}.items():
             mock = patch.object(service, name, value)
             mock.start()
             self.addCleanup(mock.stop)
@@ -170,6 +171,33 @@ class ToolChatTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(saved["output"][-1]["content"][0]["text"], "现在是")
         self.assertEqual(json.loads(saved["output"][2]["output"])["timezone"], "Asia/Shanghai")
         self.assertTrue(events[-1].startswith("event: error"))
+
+    async def test_truncated_answer_keeps_tool_records_and_public_error(self):
+        self.model([[tool()], [text("部分回答"), ModelStreamError("模型输出达到长度限制，本次回答不完整")]])
+        events = await self.run_chat()
+        saved = self.update.call_args.kwargs
+        self.assertEqual(saved["status"], "failed")
+        self.assertIn("长度限制", saved["error"])
+        self.assertEqual([item["type"] for item in saved["output"]], ["function_call", "function_call_output", "message"])
+        self.assertIn("长度限制", events[-1])
+
+    async def test_incomplete_tool_stream_is_not_executed(self):
+        self.model([[tool(), ModelStreamError("模型连接已结束，但没有收到完成标记")]])
+        with patch.object(service, "execute_tool") as execute:
+            events = await self.run_chat()
+        execute.assert_not_called()
+        self.assertEqual(self.update.call_args.kwargs["status"], "failed")
+        self.assertIn("完成标记", events[-1])
+
+    async def test_legacy_stream_shows_public_error_without_done(self):
+        async def stream(messages):
+            yield "部分正文"
+            raise ModelStreamError("模型连接已结束，但没有收到完成标记")
+        with patch.object(service, "stream_reply", stream):
+            events = [event async for event in service.stream_chat_events("问题")]
+        self.assertTrue(events[0].startswith("event: text_delta"))
+        self.assertIn("完成标记", events[-1])
+        self.assertFalse(any(event.startswith("event: done") for event in events))
 
     async def test_cancel_after_tool_keeps_tool_records_and_partial_text(self):
         self.model([[tool()], [text("现在"), asyncio.CancelledError()]])

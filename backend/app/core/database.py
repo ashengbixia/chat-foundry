@@ -34,15 +34,19 @@ async def get_db():
 
     async with SessionLocal() as session:
         yield session
-async def init_db():
-    """根据已注册的表模型，创建尚不存在的数据库表。"""
-
-    # 导入模型，让 SQLAlchemy 知道需要创建哪些表。
-    # 放在方法内部，避免与模型文件互相导入时产生循环导入问题。
+def register_models():  # 集中注册模型，供启动、迁移检查和测试共用
     from backend.app.models.chat import Chat, Message
     from backend.app.models.file import File  # 注册文件表，启动时创建尚不存在的表
     from backend.app.models.message_file import MessageFile  # 注册消息附件关联表
     from backend.app.models.file_chunk import FileChunk  # 注册文件切片表
 
-    async with engine.begin() as connection:
+
+async def create_tables(target_engine):  # 仅供隔离测试建表，正式启动必须检查数据库版本
+    register_models()
+    async with target_engine.begin() as connection:
         await connection.run_sync(Base.metadata.create_all)
+
+async def init_db():  # 在线程中执行同步初始化，避免 Alembic 与当前事件循环冲突
+    from anyio import to_thread
+    from backend.app.core.db_setup import prepare_database
+    await to_thread.run_sync(prepare_database)

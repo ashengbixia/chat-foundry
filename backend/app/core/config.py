@@ -18,6 +18,9 @@ class Settings(BaseSettings):  # 优先读取环境变量，本机开发时也�
     llm_model: str = ""
     # 单次模型请求的超时时间，单位：秒
     llm_timeout: float = Field(default=60.0, gt=0)
+    llm_context_window: int = Field(default=32768, gt=0)  # 应用采用的总预算，不代表模型官方上限
+    llm_max_output_tokens: int = Field(default=4096, gt=0)  # 输出上限，同时传给模型服务
+    llm_context_margin: int = Field(default=1024, ge=0)  # 为包装和估算误差预留空间
 
 
 # 创建配置对象，其他文件通过导入 settings 使用配置。

@@ -1,7 +1,9 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel,Field
 from backend.app.llm.client import generate_reply
+from backend.app.llm.client import ModelStreamError
+from backend.app.llm.budget import InputBudgetError
 from backend.app.chat.service import stream_chat_events
 from contextlib import asynccontextmanager
 import logging  # 记录启动恢复结果
@@ -14,7 +16,7 @@ logger = logging.getLogger(__name__)  # 当前模块日志
 @asynccontextmanager
 async def lifespan(app: FastAPI):  # 管理应用启动和关闭
     try:
-        await init_db()  # 创建尚不存在的数据库表
+        await init_db()  # 新库初始化，已有库检查版本和结构；需要升级时提示命令
         async with SessionLocal() as session:  # 启动恢复使用独立数据库会话
             recovered_count = await recover_interrupted_messages(session)  # 处理上次遗留的生成中消息
         if recovered_count > 0:
@@ -38,7 +40,10 @@ def health_check():
     return {"status": "ok"}
 @app.post('/api/chat')
 async def chat(request:ChatRequest):
-    reply=await generate_reply(request.message)
+    try:
+        reply=await generate_reply(request.message)
+    except (InputBudgetError, ModelStreamError) as error:
+        raise HTTPException(status_code=400, detail=str(error))
     return {"reply":reply}
 @app.post("/api/chat/stream")
 async def chat_stream(request: ChatRequest):

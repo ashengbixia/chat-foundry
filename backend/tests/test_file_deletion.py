@@ -25,8 +25,7 @@ class FileDeletionTests(unittest.IsolatedAsyncioTestCase):
         def enable_fk(connection, record):
             connection.execute("PRAGMA foreign_keys=ON")
         self.sessions = async_sessionmaker(self.engine, expire_on_commit=False)
-        with patch.object(database, "engine", self.engine):
-            await database.init_db()
+        await database.create_tables(self.engine)
         self.directory = tempfile.TemporaryDirectory()
         self.root = Path(self.directory.name) / "uploads"
         self.path_patch = patch.object(service, "UPLOAD_DIR", self.root)

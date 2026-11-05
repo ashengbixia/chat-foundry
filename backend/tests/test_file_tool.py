@@ -117,7 +117,7 @@ class FileToolTests(unittest.IsolatedAsyncioTestCase):  # 全部使用内存数�
                 yield {"type": "tool_call_delta", "tool_calls": [{"index": 0, "id": f"read-{turn}", "function": {"name": "read_uploaded_file", "arguments": json.dumps(params)}}]}
             else:
                 yield {"type": "text_delta", "text": "基于读取结果的回答"}
-        with patch.object(service, "stream_model_events", stream), patch.object(service, "settings", SimpleNamespace(llm_model="test")), patch.object(service, "logger"):
+        with patch.object(service, "stream_model_events", stream), patch.object(service, "settings", SimpleNamespace(llm_model="test", llm_context_window=32768, llm_max_output_tokens=4096, llm_context_margin=1024)), patch.object(service, "logger"):
             async with self.sessions() as session:
                 events = [event async for event in service.stream_chat_history_events(session, "chat")]
         async with self.sessions() as session:

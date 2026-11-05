@@ -15,8 +15,9 @@ from backend.app.models.file_chunk import FileChunk  # 识别文件切片表
 # Alembic 的配置对象。
 config = context.config
 
-if config.config_file_name is not None:
-    fileConfig(config.config_file_name)
+database_url = config.attributes.get("database_url", DATABASE_URL)  # 允许升级协调器指定临时库
+if config.config_file_name is not None and config.attributes.get("configure_logger", True):
+    fileConfig(config.config_file_name, disable_existing_loggers=False)
 
 # 导入模型后，Base 中就注册了会话、消息、文件、附件关联和切片表。
 target_metadata = Base.metadata
@@ -26,7 +27,7 @@ def run_migrations_offline():
     """只生成迁移 SQL，不实际连接数据库。"""
 
     context.configure(
-        url=DATABASE_URL,
+        url=database_url,
         target_metadata=target_metadata,
         literal_binds=True,
         dialect_opts={"paramstyle": "named"},
@@ -55,7 +56,7 @@ async def run_async_migrations():
     """创建迁移专用的异步数据库引擎。"""
 
     engine = create_async_engine(
-        DATABASE_URL,
+        database_url,
         poolclass=pool.NullPool,
     )
 

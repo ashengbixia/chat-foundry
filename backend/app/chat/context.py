@@ -1,6 +1,18 @@
 from backend.app.models.chat import Message
 from typing import Any  # 模型消息还可能包含工具调用列表和空正文
 import json  # 只将附件基本信息加入模型输入，正文由工具按需读取
+from backend.app.llm.budget import InputBudgetError, estimate_input_tokens, get_input_budget
+
+def trim_model_messages(messages: list[dict[str, Any]], tools: list[dict[str, Any]] | None, context_window: int, output_tokens: int, margin: int) -> list[dict[str, Any]]:  # 只移除完整旧轮次，保留本轮问题和工具结果
+    budget = get_input_budget(context_window, output_tokens, margin)
+    result = list(messages)  # 不修改调用方列表或数据库历史
+    while estimate_input_tokens(result, tools) > budget:
+        user_positions = [index for index, message in enumerate(result) if message.get("role") == "user"]
+        if len(user_positions) < 2:
+            raise InputBudgetError("当前问题、工具定义或本轮工具结果超过输入预算，请缩短问题或减少读取内容")
+        boundary = user_positions[1]  # 下一轮用户问题开始处，整组移除之前的旧消息
+        result = [message for index, message in enumerate(result) if message.get("role") == "system" or index >= boundary]
+    return result
 
 
 def restore_assistant_messages(message: Message) -> list[dict[str, Any]]:  # 将一条助手记录展开为模型消息，不重新执行工具

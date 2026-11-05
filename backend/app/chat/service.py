@@ -6,9 +6,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.core.config import settings
 from backend.app.repositories.chat import create_message, update_message,list_recent_messages
-from backend.app.chat.context import build_model_messages
+from backend.app.chat.context import build_model_messages, trim_model_messages
+from backend.app.llm.budget import InputBudgetError
 from backend.app.chat.events import format_sse
-from backend.app.llm.client import stream_reply, stream_model_events
+from backend.app.llm.client import ModelStreamError, stream_reply, stream_model_events
 from backend.app.tools.registry import execute_tool, get_available_tools  # 根据本次附件范围提供工具
 import asyncio  # 识别异步任务取消
 import anyio  # 为取消后的清理提供短暂保护
@@ -27,13 +28,14 @@ async def stream_chat_events(message: str) -> AsyncIterator[str]:
             async for text in stream:
                 yield format_sse("text_delta", {"text": text})
 
-    except Exception:
+    except Exception as error:
         # 详细异常记录在后端，不直接暴露给客户端。
         logger.exception("流式聊天失败")
+        error_message = str(error) if isinstance(error, (ModelStreamError, InputBudgetError)) else "模型请求失败，请查看后端日志"  # 只公开明确允许展示的说明
 
         yield format_sse(
             "error",
-            {"message": "模型请求失败，请查看后端日志"},
+            {"message": error_message},
         )
 
     else:
@@ -84,6 +86,10 @@ async def stream_chat_history_events(
             round_text_parts = []  # 本次模型请求产生的正文
             round_output = None  # 收到正文时创建记录，停止或失败时也能保存当前片段
             tools = available_tools if request_index < 4 else None  # 最后一次只要求生成回答
+            trimmed = trim_model_messages(messages, tools, settings.llm_context_window, settings.llm_max_output_tokens, settings.llm_context_margin)  # 每一轮都检查，工具结果也计入
+            if len(trimmed) < len(messages):
+                logger.info("本次模型输入裁剪了 %s 条旧消息，数据库历史保持不变", len(messages) - len(trimmed))
+            messages = trimmed
             async with aclosing(stream_model_events(messages, tools)) as stream:
                 async for event in stream:
                     if event["type"] == "text_delta":
@@ -154,8 +160,9 @@ async def stream_chat_history_events(
             if cleanup_scope.cancel_called:
                 logger.warning("保存取消状态超时，消息 ID：%s", assistant_message_id)
         raise  # 继续传播取消，不能当成正常完成
-    except Exception:
+    except Exception as error:
         logger.exception("历史会话生成回答失败")
+        error_message = str(error) if isinstance(error, (ModelStreamError, InputBudgetError)) else "生成或保存回答失败，请查看后端日志"
 
         # 已创建助手消息时，尝试保存部分正文及失败状态。
         if assistant_message_id is not None:
@@ -165,7 +172,7 @@ async def stream_chat_history_events(
                     message_id=assistant_message_id,
                     content="".join(text_parts),
                     status="failed",
-                    error="生成或保存回答失败，请查看后端日志",
+                    error=error_message,
                     output=output,  # 保留失败前已有的正文和工具记录
                 )
             except Exception:
@@ -173,7 +180,7 @@ async def stream_chat_history_events(
 
         yield format_sse(
             "error",
-            {"message": "生成或保存回答失败，请查看后端日志"},
+            {"message": error_message},
         )
 
     else:

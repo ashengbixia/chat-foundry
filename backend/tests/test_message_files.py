@@ -19,8 +19,7 @@ class MessageFileTests(unittest.IsolatedAsyncioTestCase):  # 不连接真实数�
         def enable_foreign_keys(connection, record):  # 开启外键，确认删除顺序确实正确
             connection.execute("PRAGMA foreign_keys=ON")
         self.sessions = async_sessionmaker(self.engine, expire_on_commit=False)
-        with patch.object(database, "engine", self.engine):
-            await database.init_db()  # 同时验证启动时能创建关联表
+        await database.create_tables(self.engine)  # 只创建隔离测试库
         async with self.sessions() as session:
             session.add_all([Chat(id="chat", title="附件测试", updated_at=1), Chat(id="other", title="其他会话", updated_at=1)])
             session.add_all([File(id=f"f{index}", filename=f"资料{index}.txt", storage_path=f"f{index}.txt", size=index, text_content="不应自动发给模型的正文", status=status) for index, status in [(1, "completed"), (2, "completed"), (3, "processing"), (4, "failed"), (5, "completed"), (6, "completed")]])

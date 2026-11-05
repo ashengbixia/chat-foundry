@@ -49,8 +49,7 @@ class FileChunkTests(unittest.IsolatedAsyncioTestCase):  # 只操作临时文件
     async def asyncSetUp(self):
         self.engine = create_async_engine("sqlite+aiosqlite:///:memory:")
         self.sessions = async_sessionmaker(self.engine, expire_on_commit=False)
-        with patch.object(database, "engine", self.engine):
-            await database.init_db()
+        await database.create_tables(self.engine)
         self.directory = tempfile.TemporaryDirectory()
         self.upload_dir = Path(self.directory.name) / "uploads"
         self.path_patch = patch.object(service, "UPLOAD_DIR", self.upload_dir)

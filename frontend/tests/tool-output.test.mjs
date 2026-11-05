@@ -18,11 +18,11 @@ function component(filename, mocks) { // 在内存编译真实 Vue 组件，用�
   const code = ts.transpileModule(script.content, { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, esModuleInterop: true } }).outputText
   const module = { exports: {} }
   const require = createRequire(import.meta.url)
-  new Function('require', 'module', 'exports', code)((name) => mocks[name] ?? require(name), module, module.exports)
+  new Function('require', 'module', 'exports', code)((name) => mocks[name] ?? (name === '../AppIcon.vue' ? component('../AppIcon.vue', {}) : require(name)), module, module.exports)
   return module.exports.default
 }
 const ToolCallList = component('ToolCallList.vue', { '../../utils/toolOutput': utils })
-const MessageList = component('MessageList.vue', { './ToolCallList.vue': ToolCallList })
+const MessageList = component('MessageList.vue', { './ToolCallList.vue': ToolCallList, '../../utils/markdown': createTypeScriptLoader()('src/utils/markdown.ts') })
 const MessageInput = component('MessageInput.vue', {})
 
 test('按 ID 配对工具，保留调用顺序并忽略孤立结果', () => {
@@ -83,7 +83,7 @@ test('历史消息展示附件名称和大小，同名附件用 ID 区分', asyn
   const html = await renderToString(createSSRApp(MessageList, { messages }))
   assert.match(html, /消息附件/)
   assert.match(html, /&lt;资料&gt;\.txt/)
-  assert.match(html, /12字节/)
+  assert.match(html, /12\s*字节/)
   assert.match(html, /abcdefgh/)
 })
 
@@ -92,7 +92,7 @@ test('输入区展示待发送附件和移除按钮，忙碌时禁用', async ()
   assert.match(html, /本次问题的附件/)
   assert.match(html, /测试\.txt/)
   assert.match(html, /移除附件 测试\.txt/)
-  assert.match(html, /<button[^>]*disabled[^>]*>移除<\/button>/)
+  assert.match(html, /<button[^>]*disabled[^>]*aria-label="移除附件 测试\.txt"/)
 })
 
 test('附件读取工具展示中文名称和实际正文片段', async () => {
@@ -106,7 +106,7 @@ test('已删除文件保留历史附件名称和大小，并显示删除标记',
   const messages = [{ id: 'user', role: 'user', content: '原问题', status: 'completed', error: null, output: [], attachments: [{ file_id: 'old-file', filename: '旧资料.txt', size: 12, deleted: true }] }]
   const html = await renderToString(createSSRApp(MessageList, { messages }))
   assert.match(html, /旧资料\.txt/)
-  assert.match(html, /12字节/)
+  assert.match(html, /12\s*字节/)
   assert.match(html, /文件已删除/)
   assert.match(html, /原问题/)
 })

@@ -1,0 +1,14 @@
+:root { font-family: Inter, 'Segoe UI', 'Microsoft YaHei', system-ui, sans-serif; color: #24262b; background: #fff; font-synthesis: none; -webkit-font-smoothing: antialiased; --muted: #858991; --border: #eaebee; --surface: #f6f7f9; --accent: #267d69; --accent-soft: #eaf4ef; }
+* { box-sizing: border-box; }
+body { margin: 0; }
+button, input, textarea { font: inherit; }
+button { cursor: pointer; color: inherit; }
+button:disabled { cursor: not-allowed; opacity: .45; }
+button, a, input, textarea, summary { -webkit-tap-highlight-color: transparent; }
+button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visible, summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+button { transition: background-color .15s, color .15s, border-color .15s; }
+::selection { background: #d9eee5; }
+* { scrollbar-width: thin; scrollbar-color: #d9dce1 transparent; }
+.icon-button { display: inline-flex; align-items: center; justify-content: center; width: 34px; height: 34px; padding: 0; flex-shrink: 0; border: 0; border-radius: 9px; background: transparent; color: #757b85; }
+.icon-button:hover:not(:disabled) { background: #eceef1; color: #25282e; }
+@media (prefers-reduced-motion: reduce) { *, *::before, *::after { transition: none !important; animation: none !important; } }

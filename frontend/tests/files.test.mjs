@@ -344,7 +344,7 @@ test('页面渲染上传状态和预览正文；HTML 正文只作为文字展示
   state.previewOpen.value = true
   const render = evaluate(template.code).render
   const html = await renderToString(createSSRApp({ ...component, setup: () => state, render }))
-  assert.match(html, /文件资料/)
+  assert.match(html, /把资料带进对话/)
   assert.match(html, /处理完成/)
   assert.match(html, /&lt;script&gt;/)
   assert.ok(!html.includes('<script>'))

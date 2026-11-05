@@ -12,7 +12,7 @@ export function createTypeScriptLoader(mocks = {}) { // 内存加载 TypeScript�
   function loadTypeScript(relativePath) { // 加载项目中的 TypeScript 模块
     const filename = resolve(projectRoot, relativePath) // 当前模块的绝对路径
     if (modules.has(filename)) return modules.get(filename).exports
-    const code = ts.transpileModule(readFileSync(filename, 'utf8'), { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }).outputText // 编译为内存中可执行的代码
+    const code = ts.transpileModule(readFileSync(filename, 'utf8'), { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, esModuleInterop: true } }).outputText // 编译为内存中可执行的代码
     const module = { exports: {} } // 当前模块导出对象
     modules.set(filename, module)
     const requireModule = (name) => { // 优先使用模拟接口，再解析正常导入

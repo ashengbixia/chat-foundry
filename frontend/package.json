@@ -11,15 +11,17 @@
     "type-check": "vue-tsc --build",
     "test:api": "node --test tests/api.test.mjs",
     "test:files": "node --test tests/files.test.mjs",
-    "test:chat": "node --test tests/chat-initialization.test.mjs tests/message-pagination.test.mjs tests/message-scroll.test.mjs tests/tool-output.test.mjs tests/tool-stream.test.mjs tests/chat-attachments.test.mjs",
-    "test": "node --test tests/api.test.mjs tests/chat-initialization.test.mjs tests/message-pagination.test.mjs tests/message-scroll.test.mjs tests/tool-output.test.mjs tests/tool-stream.test.mjs tests/files.test.mjs tests/chat-attachments.test.mjs"
+    "test:chat": "node --test tests/chat-initialization.test.mjs tests/message-pagination.test.mjs tests/message-scroll.test.mjs tests/tool-output.test.mjs tests/tool-stream.test.mjs tests/chat-attachments.test.mjs tests/composer.test.mjs tests/markdown.test.mjs",
+    "test": "node --test tests/api.test.mjs tests/chat-initialization.test.mjs tests/message-pagination.test.mjs tests/message-scroll.test.mjs tests/tool-output.test.mjs tests/tool-stream.test.mjs tests/files.test.mjs tests/chat-attachments.test.mjs tests/composer.test.mjs tests/markdown.test.mjs"
   },
   "dependencies": {
+    "markdown-it": "^14.3.3",
     "pinia": "^4.0.3",
     "vue": "^3.5.42"
   },
   "devDependencies": {
     "@tsconfig/node24": "^24.0.5",
+    "@types/markdown-it": "^14.2.0",
     "@types/node": "^24.13.4",
     "@vitejs/plugin-vue": "^6.0.8",
     "@vue/tsconfig": "^0.9.1",

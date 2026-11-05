@@ -28,10 +28,11 @@ const toolCalls = computed(() => getToolCalls(props.output)) // 消息变化时�
 </template>
 
 <style scoped>
-.tool-call-list { margin: 8px 0; white-space: normal; }
-.tool-call { padding: 10px 12px; margin-bottom: 8px; border: 1px solid #ccc; border-radius: 6px; }
-summary { cursor: pointer; }
-summary small { margin-left: 12px; color: #666; }
-p { margin: 8px 0; }
-pre { margin: 0; padding: 8px; background: #f4f4f4; color: #222; white-space: pre-wrap; overflow-wrap: anywhere; }
+.tool-call-list { margin: 0 0 14px; white-space: normal; }
+.tool-call { padding: 10px 13px; margin-bottom: 7px; border: 1px solid #e7ebe8; border-radius: 10px; background: #fcfdfc; }
+summary { cursor: pointer; color: #607367; font-size: 12px; line-height: 1.8; }
+summary::marker { color: #94a69a; font-size: 10px; }
+summary small { margin-left: 12px; color: #98a49c; font-size: 10px; }
+p { margin: 12px 0 7px; color: #7d8781; font-size: 11px; }
+pre { margin: 0; padding: 12px; border-radius: 7px; background: #f1f4f2; color: #4b5c51; font-family: Consolas, monospace; font-size: 11px; line-height: 1.8; white-space: pre-wrap; overflow-wrap: anywhere; }
 </style>

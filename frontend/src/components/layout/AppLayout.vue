@@ -2,14 +2,36 @@
 import { ref, watch } from 'vue'
 import AppIcon from '../AppIcon.vue'
 
-const props = defineProps<{ filesOpen: boolean; currentChatId?: string | null }>() // 文件面板状态，以及窄屏自动收起侧栏的依据
-const emit = defineEmits<{ closeFiles: []; openSettings: [] }>() // 布局只发出事件，设置数据由专门面板管理
+const props = defineProps<{ filesOpen: boolean; currentChatId?: string | null; dropDisabled?: boolean }>() // 文件拖放与聊天共用忙碌状态
+const emit = defineEmits<{ closeFiles: []; openSettings: []; openKnowledge: []; droppedFiles: [files: File[]]; attachSaved: [fileId: string] }>()
 const sidebarOpen = ref(false) // 窄屏下是否展开侧栏
+const dragDepth = ref(0)
+function isFileDrag(event: DragEvent) { return Array.from(event.dataTransfer?.types ?? []).some((type) => type === 'Files' || type === 'application/x-chatfoundry-file') }
+function dragEnter(event: DragEvent) {
+  if (!isFileDrag(event)) return
+  event.preventDefault()
+  dragDepth.value++
+}
+function dragOver(event: DragEvent) {
+  if (!isFileDrag(event)) return
+  event.preventDefault()
+  if (event.dataTransfer) event.dataTransfer.dropEffect = props.dropDisabled ? 'none' : 'copy'
+}
+function dragLeave() { dragDepth.value = Math.max(0, dragDepth.value - 1) }
+function drop(event: DragEvent) { // 拦截文件导航，历史资料只传ID，本地文件交给统一上传入口
+  dragDepth.value = 0
+  if (!isFileDrag(event)) return
+  event.preventDefault()
+  if (props.dropDisabled || !event.dataTransfer) return
+  const fileId = event.dataTransfer.getData('application/x-chatfoundry-file')
+  if (fileId) emit('attachSaved', fileId)
+  else if (event.dataTransfer.files.length) emit('droppedFiles', Array.from(event.dataTransfer.files))
+}
 watch(() => props.currentChatId, () => { sidebarOpen.value = false }) // 成功新建或切换会话后收起窄屏导航
 </script>
 
 <template>
-  <div class="app-layout" @keydown.esc="sidebarOpen = false">
+  <div class="app-layout" @keydown.esc="sidebarOpen = false; emit('closeFiles')" @dragend="dragDepth = 0">
     <button v-if="sidebarOpen" class="sidebar-mask" type="button" aria-label="关闭侧栏" @click="sidebarOpen = false"></button>
     <aside id="chat-sidebar" class="sidebar" :class="{ 'is-open': sidebarOpen }" aria-label="会话导航">
       <div class="brand">
@@ -18,6 +40,7 @@ watch(() => props.currentChatId, () => { sidebarOpen.value = false }) // 成功�
         <button class="icon-button mobile-button" type="button" aria-label="关闭侧栏" @click="sidebarOpen = false"><AppIcon name="close" /></button>
       </div>
       <div class="sidebar-content">
+        <button class="knowledge-nav" type="button" @click="sidebarOpen = false; emit('openKnowledge')"><AppIcon name="folder" :size="17" /><span>知识库<small>整理资料，持续问答</small></span><AppIcon name="chevron" :size="13" /></button>
         <slot name="sidebar"></slot>
       </div>
       <footer class="sidebar-footer">
@@ -37,7 +60,8 @@ watch(() => props.currentChatId, () => { sidebarOpen.value = false }) // 成功�
         <slot name="header"></slot>
       </header>
       <div class="workspace-body">
-        <section class="chat-content" aria-label="聊天">
+        <section class="chat-content" aria-label="聊天" @dragenter="dragEnter" @dragover="dragOver" @dragleave="dragLeave" @drop="drop" @dragend="dragDepth = 0">
+          <div v-if="dragDepth" class="drop-overlay" role="status"><strong>{{ dropDisabled ? '请等待当前操作完成' : '松开，把资料带进对话' }}</strong><span>已有资料直接引用 · 本地 TXT 自动上传 · 最多 3 份</span></div>
           <div class="message-region">
             <slot name="messages"></slot>
           </div>
@@ -45,6 +69,7 @@ watch(() => props.currentChatId, () => { sidebarOpen.value = false }) // 成功�
             <slot name="composer"></slot>
           </footer>
         </section>
+        <button v-if="filesOpen" class="files-mask" type="button" aria-label="关闭资料空间" @click="emit('closeFiles')"></button>
         <aside v-show="filesOpen" id="file-manager" class="files-region" aria-label="文件管理">
           <div class="files-heading">
             <div><AppIcon name="folder" :size="17" /><strong>资料空间</strong></div>
@@ -68,6 +93,7 @@ watch(() => props.currentChatId, () => { sidebarOpen.value = false }) // 成功�
 .brand small { display: block; font-size: 9px; font-weight: 400; letter-spacing: .04em; color: #989eaa; margin-top: 4px; }
 .brand .mobile-button { margin-left: auto; }
 .sidebar-content { flex: 1; min-height: 0; overflow-y: auto; padding: 0 13px; }
+.knowledge-nav { display: flex; align-items: center; gap: 10px; width: 100%; margin-bottom: 16px; padding: 12px; border: 1px solid #e4e9e6; border-radius: 10px; background: #fff; text-align: left; color: #617768; font-size: 13px; }.knowledge-nav span { flex: 1; }.knowledge-nav small { display: block; margin-top: 4px; font-size: 10px; color: #91a096; }.knowledge-nav:hover { background: #f0f6f2; }
 .sidebar-footer { padding: 12px 16px 18px; border-top: 1px solid #e9ebee; }
 .settings-button { display: flex; align-items: center; gap: 9px; width: 100%; padding: 8px 7px; text-align: left; border: 0; border-radius: 8px; background: transparent; font-size: 12px; opacity: .65; }
 .settings-button span { margin-left: auto; font-size: 9px; color: #a0a5ad; }
@@ -79,7 +105,10 @@ watch(() => props.currentChatId, () => { sidebarOpen.value = false }) // 成功�
 .workspace { flex: 1; min-width: 0; display: flex; flex-direction: column; }
 .chat-header { min-height: 68px; flex-shrink: 0; display: flex; align-items: center; gap: 12px; padding: 12px 30px; border-bottom: 1px solid #f1f2f4; }
 .workspace-body { flex: 1; min-height: 0; display: flex; }
-.chat-content { flex: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column; }
+.chat-content { position: relative; flex: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column; }
+.drop-overlay { pointer-events: none; position: absolute; inset: 12px; z-index: 18; display: flex; flex-direction: column; justify-content: center; align-items: center; gap: 12px; padding: 24px; border: 2px dashed #79a98f; border-radius: 20px; background: #f1f9f5f5; color: #365c45; text-align: center; }
+.drop-overlay strong { font-size: 20px; }.drop-overlay span { font-size: 12px; color: #718a7b; }
+.files-mask { display: none; }
 .message-region { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 .composer-region { flex-shrink: 0; padding: 12px 36px 16px; }
 .files-region { width: 334px; max-width: 40%; min-width: 0; flex-shrink: 0; display: flex; flex-direction: column; border-left: 1px solid var(--border); background: #fcfcfd; }
@@ -97,7 +126,7 @@ watch(() => props.currentChatId, () => { sidebarOpen.value = false }) // 成功�
   .composer-region { padding: 12px 16px; }
 }
 @media (max-width: 600px) {
-  .workspace-body { flex-direction: column; }
-  .files-region { width: 100%; max-width: none; height: 45%; box-sizing: border-box; border-left: 0; border-top: 1px solid #eee; }
+  .files-mask { display: block; position: fixed; inset: 0; z-index: 35; border: 0; background: #15291e66; }
+  .files-region { position: fixed; inset: 0 0 0 auto; z-index: 36; width: min(380px, 92vw); max-width: none; box-sizing: border-box; box-shadow: -12px 0 40px #15291e20; }
 }
 </style>

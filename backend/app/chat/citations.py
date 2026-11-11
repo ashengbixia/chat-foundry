@@ -1,7 +1,7 @@
 import json
 
 def add_citation_ids(name: str, result: str, sources: dict, allowed_file_ids: set[str]) -> str:  # 只给本轮实际返回、且在允许范围内的附件正文编号
-    if name not in ("search_uploaded_files", "read_uploaded_file"):
+    if name not in ("search_uploaded_files", "read_uploaded_file", "read_history_sources", "summarize_uploaded_files"):
         return result
     try:
         data = json.loads(result)
@@ -9,15 +9,15 @@ def add_citation_ids(name: str, result: str, sources: dict, allowed_file_ids: se
         return result
     if not isinstance(data, dict) or "error" in data:
         return result
-    items = data.get("chunks", []) if name == "search_uploaded_files" else [data]
+    items = [data] if name == "read_uploaded_file" else data.get("chunks", [])
     if not isinstance(items, list):
         return result
     changed = False
     for item in items:
-        if not isinstance(item, dict) or not isinstance(item.get("file_id"), str) or item["file_id"] not in allowed_file_ids:
+        if not isinstance(item, dict) or not isinstance(item.get("file_id"), str) or (name != "read_history_sources" and item["file_id"] not in allowed_file_ids):
             continue
-        content = item.get("content" if name == "search_uploaded_files" else "text_content")
-        start = item.get("start_offset" if name == "search_uploaded_files" else "offset")
+        content = item.get("text_content" if name == "read_uploaded_file" else "content")
+        start = item.get("offset" if name == "read_uploaded_file" else "start_offset")
         if not isinstance(content, str) or not content.strip() or type(start) is not int or start < 0 or not isinstance(item.get("filename"), str):
             continue
         identity = (item["file_id"], start, content)

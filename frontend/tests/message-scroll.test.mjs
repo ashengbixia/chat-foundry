@@ -12,7 +12,7 @@ const source = tree.statements.filter((node) => ts.isFunctionDeclaration(node) &
 const code = ts.transpileModule(source, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText
 function fixture(load, tick = async () => {}) { // 用可控容器模拟浏览器高度变化，不发送网络请求
   const element = { scrollHeight: 1000, scrollTop: 120, clientHeight: 300 }
-  const refs = { messageListElement: { value: element }, currentChat: { value: { id: 'chat' } }, pageBusy: { value: false }, hasOlderMessages: { value: true } }
+  const refs = { messageListElement: { value: element }, currentChat: { value: { id: 'chat' } }, pageBusy: { value: false }, hasOlderMessages: { value: true }, showLatest: { value: false } }
   const build = new Function(...Object.keys(refs), 'loadOlderMessages', 'nextTick', `let preservingScroll = false; let autoFollowMessages = true; ${code}; return { showOlderMessages, scrollMessagesToBottom, updateScrollFollow, get preserving() { return preservingScroll }, get following() { return autoFollowMessages } }`)
   const actions = build(...Object.values(refs), () => load(element, refs), () => tick(element, refs))
   return { element, refs, actions }

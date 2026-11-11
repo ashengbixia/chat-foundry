@@ -1,5 +1,6 @@
 import { createApiError } from './errors'
 import type { MessageAttachment } from '../types/file'
+import type { KnowledgeReference } from './knowledge'
 
 // 对应后端 ChatResponse 的返回结构。
 export interface Chat {
@@ -7,16 +8,18 @@ export interface Chat {
   title: string
   created_at: number
   updated_at: number
+  knowledge_bases?: KnowledgeReference[]
+  files?: MessageAttachment[]
 }
 
-export async function createChat(title: string = '新会话',): Promise<Chat>
+export async function createChat(title: string = '新会话', knowledgeBaseIds: string[] = []): Promise<Chat>
 {
   const response = await fetch('/api/chats', {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
     },
-    body: JSON.stringify({ title }),
+    body: JSON.stringify({ title, ...(knowledgeBaseIds.length ? { knowledge_base_ids: knowledgeBaseIds } : {}) }),
   })
 
   if (!response.ok) {
@@ -133,6 +136,11 @@ export async function deleteChat(chatId: string): Promise<void> { // 删除指�
   if (!response.ok) {
     throw await createApiError(response, '删除会话失败')
   }
+}
+
+export async function removeChatFile(chatId: string, fileId: string): Promise<void> { // 只停止当前会话后续使用，不删除文件和历史快照
+  const response = await fetch(`/api/chats/${encodeURIComponent(chatId)}/files/${encodeURIComponent(fileId)}`, { method: 'DELETE' })
+  if (!response.ok) throw await createApiError(response, '移出会话资料失败')
 }
 
 export async function renameChat(chatId: string, title: string): Promise<Chat> { // 修改会话标题并返回更新后的会话

@@ -1,7 +1,7 @@
 import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
-from backend.app.chat.context import build_model_messages
+from backend.app.chat.context import build_model_messages, normalize_history_references
 
 def message(role: str, content: str = "", output=None, status: str = "completed"):  # 构造不连接数据库的历史记录
     return SimpleNamespace(role=role, content=content, output=output, status=status)
@@ -16,6 +16,11 @@ def result(call_id: str, value: str = '{"timezone":"Asia/Shanghai"}'):
     return {"type": "function_call_output", "call_id": call_id, "output": value}
 
 class ChatContextTests(unittest.TestCase):
+    def test_old_citation_numbers_are_not_replayed_as_output_examples(self):
+        value = normalize_history_references('绿萝[4]，规则〔引用3〕，旧标记〔原回答引用2〕。代码`[1]`。')
+        self.assertEqual(value, '绿萝（来源见原回答），规则（来源见原回答），旧标记（来源见原回答）。代码`[1]`。')
+        self.assertEqual(normalize_history_references(value), value)
+
     def test_user_attachment_manifest_and_reference_instructions(self):
         record = message("user", "总结资料")
         record.attachments = [SimpleNamespace(file_id="f1", filename="中文资料.txt", size=100)]

@@ -7,6 +7,7 @@ from sqlalchemy import event, select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from backend.app.chat import service
 from backend.app.core.database import Base
+from backend.app.core.database import register_models
 from backend.app.models.chat import Chat, Message
 from backend.app.models.file import File
 from backend.app.repositories.chat import create_message
@@ -15,6 +16,7 @@ from backend.app.tools.registry import execute_tool, get_available_tools
 
 class FileToolTests(unittest.IsolatedAsyncioTestCase):  # 全部使用内存数据库与模拟模型
     async def asyncSetUp(self):
+        register_models()
         self.engine = create_async_engine("sqlite+aiosqlite:///:memory:")
         self.sessions = async_sessionmaker(self.engine, expire_on_commit=False)
         async with self.engine.begin() as connection:
@@ -117,7 +119,7 @@ class FileToolTests(unittest.IsolatedAsyncioTestCase):  # 全部使用内存数�
                 yield {"type": "tool_call_delta", "tool_calls": [{"index": 0, "id": f"read-{turn}", "function": {"name": "read_uploaded_file", "arguments": json.dumps(params)}}]}
             else:
                 yield {"type": "text_delta", "text": "基于读取结果的回答"}
-        with patch.object(service, "stream_model_events", stream), patch.object(service, "settings", SimpleNamespace(llm_model="test", llm_context_window=32768, llm_max_output_tokens=4096, llm_context_margin=1024)), patch.object(service, "logger"):
+        with patch.object(service, "prepare_auto_reference", AsyncMock(return_value=[])), patch.object(service, "stream_model_events", stream), patch.object(service, "settings", SimpleNamespace(llm_model="test", llm_context_window=32768, llm_max_output_tokens=4096, llm_context_margin=1024)), patch.object(service, "logger"):
             async with self.sessions() as session:
                 events = [event async for event in service.stream_chat_history_events(session, "chat")]
         async with self.sessions() as session:

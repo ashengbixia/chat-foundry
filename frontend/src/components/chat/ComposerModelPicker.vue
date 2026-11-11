@@ -12,6 +12,8 @@ const saving = ref(false)
 const error = ref('')
 const models = ref<string[]>([])
 const catalogLoaded = ref(false) // 区分未获取、获取失败和服务返回空列表
+const catalogNotice = ref('')
+const capabilities = ref<Record<string, string[]>>({})
 const search = ref('')
 const filteredModels = computed(() => models.value.filter((model) => model.toLowerCase().includes(search.value.trim().toLowerCase()))) // 只搜索真实返回的模型
 const unavailableSelection = computed(() => catalogLoaded.value && !!props.currentModel && !models.value.includes(props.currentModel)) // 旧配置单独提示，不能混入可选模型列表
@@ -31,6 +33,8 @@ async function load() { // 只获取当前服务的模型列表，不消耗聊�
   error.value = ''
   models.value = []
   catalogLoaded.value = false
+  catalogNotice.value = ''
+  capabilities.value = {}
   try {
     const response = await getModelSettings(request.signal)
     if (request.signal.aborted) return
@@ -39,6 +43,8 @@ async function load() { // 只获取当前服务的模型列表，不消耗聊�
     const available = await discoverModels({ ...fields, api_key: null }, request.signal)
     if (!request.signal.aborted) {
       models.value = [...new Set(available.models)]
+      catalogNotice.value = available.notice ?? ''
+      capabilities.value = available.capabilities ?? {}
       catalogLoaded.value = true
     }
   } catch (cause) { if (!request.signal.aborted) error.value = cause instanceof Error ? cause.message : '获取模型失败' }
@@ -79,8 +85,9 @@ function settings() { close(); emit('openSettings') }
       <p v-if="busy" role="status">正在获取模型…</p>
       <p v-if="error" class="model-error" role="alert">{{ error }}</p>
       <p v-if="unavailableSelection" class="model-warning" role="status">已保存的 {{ currentModel }} 不在服务返回的模型列表中，请重新选择，或到设置中核对手动配置。</p>
+      <p v-if="catalogNotice" role="status">{{ catalogNotice }}</p>
       <input v-if="models.length" v-model="search" class="model-search" type="search" placeholder="搜索模型" aria-label="搜索可用模型" />
-      <div class="model-options"><button v-for="model in filteredModels" :key="model" type="button" role="menuitemradio" :aria-checked="currentModel === model" :disabled="busy || saving" @click="choose(model)"><span>{{ model }}</span><span v-if="currentModel === model" aria-hidden="true">✓</span></button></div>
+      <div class="model-options"><button v-for="model in filteredModels" :key="model" type="button" role="menuitemradio" :aria-checked="currentModel === model" :disabled="busy || saving" @click="choose(model)"><span>{{ model }}<small v-if="capabilities[model]?.includes('tools') || capabilities[model]?.includes('thinking')" class="capability">{{ capabilities[model]?.includes('tools') ? '工具' : '' }}{{ capabilities[model]?.includes('thinking') ? ' · 思考' : '' }}</small></span><span v-if="currentModel === model" aria-hidden="true">✓</span></button></div>
       <p v-if="catalogLoaded && !models.length">服务没有返回可选模型，可到设置中手动填写。</p>
       <p v-else-if="models.length && !filteredModels.length">没有匹配的模型。</p>
       <button type="button" class="model-settings" :disabled="saving" @click="settings">配置模型服务 / 手动填写模型</button>
@@ -93,4 +100,5 @@ function settings() { close(); emit('openSettings') }
 @media (max-width: 600px) { .model-trigger { max-width: 160px; } }
 .model-search { width: 100%; margin: 5px 0; padding: 8px 10px; border: 1px solid #e1e9e3; border-radius: 7px; background: #f8faf8; color: #536a5c; font-size: 12px; }
 .model-popup .model-warning { color: #967244; }
+.capability { display: block; margin-top: 4px; color: #98a69c; font-size: 10px; }
 </style>

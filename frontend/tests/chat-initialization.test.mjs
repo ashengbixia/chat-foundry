@@ -155,7 +155,7 @@ test('空白页第一次发送自动创建会话，保留正文与附件', async
   const method = tree.statements.find((node) => ts.isFunctionDeclaration(node) && node.name?.text === 'sendChatMessage')
   const code = ts.transpileModule(method.getText(tree), { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText
   const input = { value: '已经写好的问题' }, current = { value: null }, attachments = { value: [{ file_id: 'f1' }] }, sent = []
-  const send = new Function('inputText', 'currentChat', 'selectedAttachments', 'createNewChat', 'sendMessage', 'saveLastChatId', `const interactionBusy = {value:false}, accountId = 'u1', pageActive = true; let autoFollowMessages = false; ${code}; return sendChatMessage`)(input, current, attachments, async () => { current.value = { id: 'new' }; input.value = ''; attachments.value = []; return current.value }, async () => sent.push([current.value.id, input.value, attachments.value]), () => {})
+  const send = new Function('inputText', 'currentChat', 'selectedAttachments', 'createNewChat', 'sendMessage', 'saveLastChatId', `const pendingKnowledge = {value:[{id:'kb1',name:'资料库'}]}, interactionBusy = {value:false}, accountId = 'u1', pageActive = true; let autoFollowMessages = false; ${code}; return sendChatMessage`)(input, current, attachments, async (ids) => { assert.deepEqual(ids, ['kb1']); current.value = { id: 'new' }; input.value = ''; attachments.value = []; return current.value }, async () => sent.push([current.value.id, input.value, attachments.value]), () => {})
   await send()
   assert.deepEqual(sent, [['new', '已经写好的问题', [{ file_id: 'f1' }]]])
 })

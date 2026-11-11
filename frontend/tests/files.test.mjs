@@ -263,6 +263,27 @@ test('文件查询编码 ID，读取失败展示后端说明', async (context) =
   await assert.rejects(api.getFileContent('a/b'), /文件尚未处理成功/)
   assert.deepEqual(urls, ['/api/files/a%2Fb', '/api/files/a%2Fb/content'])
 })
+
+test('拖放历史资料只传ID并从当前列表确认，已选和超限不可重复添加', () => {
+  const props = { selectedIds: [], attachmentSlots: 3 }
+  const { state, emitted, calls } = fixture({}, props)
+  state.files.value = [record]
+  const transfer = { setData(type, id) { this.type = type; this.id = id }, effectAllowed: '' }
+  state.startDrag({ dataTransfer: transfer }, record)
+  assert.equal(transfer.type, 'application/x-chatfoundry-file')
+  assert.equal(transfer.id, record.id)
+  state.attachById(transfer.id)
+  assert.equal(emitted[0][0], 'attach')
+  props.selectedIds = [record.id]
+  assert.equal(state.canAttach(record), false)
+  state.attachById(record.id)
+  props.selectedIds = []
+  props.attachmentSlots = 0
+  state.attachById(record.id)
+  state.attachById('unknown-id')
+  assert.equal(emitted.filter(([name]) => name === 'attach').length, 1)
+  assert.equal(calls.length, 0)
+})
 test('无效文件不发请求，取消异常原样传播', async (context) => {
   let count = 0
   const error = new DOMException('Aborted', 'AbortError')

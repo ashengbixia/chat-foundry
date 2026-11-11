@@ -9,7 +9,7 @@ const attachment = { file_id: 'f1', filename: '资料f1.txt', size: 10 }
 const saved = { id: 'user', role: 'user', content: '问题', output: [], attachments: [attachment], status: 'completed', error: null }
 function fixture(overrides = {}, stream) { // 使用真实仓库，替换网络和模型调用
   const calls = []
-  const api = { createChat: async () => ({ ...chat, id: 'new' }), deleteChat: async () => {}, listMessages: async () => ({ items: [saved], has_more: false, next_before_sequence: null }), saveUserMessage: async () => saved, ...overrides }
+  const api = { createChat: async () => ({ ...chat, id: 'new' }), deleteChat: async () => {}, removeChatFile: async () => {}, listMessages: async () => ({ items: [saved], has_more: false, next_before_sequence: null }), saveUserMessage: async () => saved, ...overrides }
   const tracked = Object.fromEntries(Object.entries(api).map(([name, action]) => [name, (...args) => { calls.push([name, ...args]); return action(...args) }]))
   let streamCalls = 0
   const streamChatReply = (...args) => { streamCalls++; return stream ? stream(...args) : Promise.resolve('reply') }
@@ -17,7 +17,7 @@ function fixture(overrides = {}, stream) { // 使用真实仓库，替换网络�
   setActivePinia(createPinia())
   const store = load('src/stores/chat.ts').useChatStore()
   store.restoringChat = false
-  store.currentChat = chat
+  store.currentChat = { ...chat }
   store.inputText = '问题'
   return { store, calls, get streamCalls() { return streamCalls } }
 }
@@ -55,6 +55,7 @@ test('保存成功清空附件草稿，返回的附件进入历史消息', async
   assert.deepEqual(store.messages[0].attachments, [attachment])
   assert.deepEqual(store.messages[1].attachments, [])
   assert.deepEqual(store.selectedAttachments, [])
+  assert.deepEqual(store.currentChat.files, [attachment])
   assert.equal(store.inputText, '')
 })
 test('保存失败保留问题和附件；不会启动模型', async () => {
@@ -66,6 +67,22 @@ test('保存失败保留问题和附件；不会启动模型', async () => {
   assert.equal(state.store.messages.length, 0)
   assert.equal(state.streamCalls, 0)
   assert.equal(state.store.errorMessage, '文件已失效')
+})
+
+test('移出会话只改变持续资料，保留历史消息和原附件快照，失败可重试', async () => {
+  let fail = true
+  const { store, calls } = fixture({ removeChatFile: async () => { if (fail) throw new Error('暂不可移出') } })
+  store.currentChat.files = [{ ...attachment }]
+  store.messages = [saved]
+  assert.equal(store.addAttachment(file('f1')), false)
+  await store.removeConversationFile('f1')
+  assert.equal(store.currentChat.files.length, 1)
+  fail = false
+  await store.removeConversationFile('f1')
+  assert.deepEqual(store.currentChat.files, [])
+  assert.deepEqual(store.messages[0].attachments, [attachment])
+  assert.equal(store.addAttachment(file('f1')), true)
+  assert.equal(calls.filter(([name]) => name === 'deleteFile').length, 0)
 })
 test('生成失败后重试复用已保存附件，不重复保存用户消息', async () => {
   let failed = true

@@ -1,9 +1,10 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-import { formatToolValue, getRetrievalPreview, getToolCalls, getToolStatus } from '../../utils/toolOutput'
+import { formatToolValue, getRetrievalPreview, getToolCalls, getToolStatus, getSummaryCoverage } from '../../utils/toolOutput'
 import type { DisplayMessage } from '../../types/chat'
 
 const props = defineProps<{ output: unknown[]; status?: DisplayMessage['status'] }>() // 接收消息状态，区分实时调用和已结束的历史记录
+const labels: Record<string, string> = { get_current_time: '查询当前时间', read_uploaded_file: '读取附件正文', search_uploaded_files: '检索附件内容', list_available_files: '查看会话资料清单', read_history_sources: '查阅历史原文快照', summarize_uploaded_files: '分段读取并归纳资料' }
 const toolCalls = computed(() => getToolCalls(props.output).map((call) => ({ ...call, retrieval: call.name === 'search_uploaded_files' ? getRetrievalPreview(call.result) : null }))) // 消息变化时配对结果并解析来源卡片
 </script>
 
@@ -11,9 +12,10 @@ const toolCalls = computed(() => getToolCalls(props.output).map((call) => ({ ...
   <div v-if="toolCalls.length" class="tool-call-list">
     <details v-for="(call, index) in toolCalls" :key="`${call.callId}-${index}`" class="tool-call">
       <summary>
-        <span>{{ call.name === 'get_current_time' ? '查询当前时间' : call.name === 'read_uploaded_file' ? '读取附件正文' : call.name === 'search_uploaded_files' ? '检索附件内容' : call.name }}</span>
+        <span>{{ labels[call.name] ?? call.name }}</span>
         <small>{{ getToolStatus(call, props.status ?? 'completed') }}</small>
         <small v-if="call.retrieval">{{ call.retrieval.status === 'unavailable' ? '索引不可用' : `${call.retrieval.chunks.length} 个片段` }}</small>
+        <small v-if="call.name === 'summarize_uploaded_files'">{{ getSummaryCoverage(call.result) }}</small>
       </summary>
       <div v-if="call.retrieval" class="retrieval-result">
         <p v-if="!call.retrieval.chunks.length">{{ call.retrieval.status === 'unavailable' ? '当前附件没有可用索引，可以建立索引或读取原文。' : '本次没有找到可用的候选片段。' }}</p>

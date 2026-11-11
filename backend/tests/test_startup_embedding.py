@@ -27,6 +27,9 @@ class StartupEmbeddingTests(unittest.IsolatedAsyncioTestCase):  # 验证真实�
         cleanup = patch.object(main, "prune_empty_collections", Mock(return_value=0))  # 启动测试不访问真实向量库
         self.prune = cleanup.start()
         self.addCleanup(cleanup.stop)
+        worker = patch.object(main, 'cleanup_worker', AsyncMock())  # 本组只验证模型启动，清理任务另用真实临时数据库验证
+        worker.start()
+        self.addCleanup(worker.stop)
 
     async def health(self):
         async with AsyncClient(transport=ASGITransport(app=main.app), base_url="http://startup-test") as client:
@@ -97,16 +100,21 @@ class StartupEmbeddingTests(unittest.IsolatedAsyncioTestCase):  # 验证真实�
                 raise RuntimeError("测试没有及时释放模型加载")
             return self.model
         self.loader.side_effect = load_model
-        lifespan = main.lifespan(main.app)
-        entering = asyncio.create_task(lifespan.__aenter__())
+        ready, stop = asyncio.Event(), asyncio.Event()
+        async def serving():
+            async with main.lifespan(main.app):
+                ready.set()
+                await stop.wait()
+        entering = asyncio.create_task(serving())
         try:
             self.assertTrue(await asyncio.wait_for(asyncio.to_thread(entered.wait, 3), 4))
             self.assertFalse(entering.done())
             self.assertNotEqual(worker_threads[0], event_thread)
         finally:
             release.set()
+            await asyncio.wait_for(ready.wait(), 5)
+            stop.set()
             await entering
-            await lifespan.__aexit__(None, None, None)
         self.dispose.assert_awaited_once()
 
     async def test_shutdown_cancellation_still_propagates_and_disposes_engine(self):

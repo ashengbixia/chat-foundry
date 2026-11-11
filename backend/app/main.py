@@ -16,6 +16,7 @@ from backend.app.rag.indexing import recover_interrupted_indexes
 from backend.app.rag.embedding import prepare_embedding_model
 from backend.app.rag.vector_store import prune_empty_collections
 from backend.app.auth import PrivateResponseHeaders, get_current_user
+from backend.app.files.cleanup import cleanup_worker
 import anyio
 
 logger = logging.getLogger(__name__)  # 当前模块日志
@@ -36,7 +37,12 @@ async def lifespan(app: FastAPI):  # 管理应用启动和关闭
         except Exception:
             logger.exception("回收空向量索引失败，后端继续启动")
         await prepare_embedding_model()  # 启动时在线程中尝试下载并加载本地模型，失败会记录日志并继续启动
-        yield  # 启动准备完成，开始接收请求
+        async with anyio.create_task_group() as tasks:
+            tasks.start_soon(cleanup_worker, SessionLocal)
+            try:
+                yield  # 清理任务在启动时扫描，并在运行期间持续重试
+            finally:
+                tasks.cancel_scope.cancel()
     finally:
         await engine.dispose()  # 退出时释放数据库连接
 
@@ -50,6 +56,8 @@ app.include_router(chats_router)#把接口分组注册到 FastAPI 应用上
 app.include_router(files_router)
 app.include_router(auth_router)
 app.include_router(model_settings_router)
+from backend.app.api.knowledge import router as knowledge_router
+app.include_router(knowledge_router)
 
 app.add_middleware(PrivateResponseHeaders)  # 防止浏览器缓存私人数据，不改变聊天流的取消逻辑
 

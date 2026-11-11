@@ -44,6 +44,15 @@ export function getToolStatus(call: DisplayToolCall, status: DisplayMessage['sta
   return '未记录结果'
 }
 
+export function getSummaryCoverage(result: string | null): string {
+  if (!result) return ''
+  try {
+    const data = JSON.parse(result)
+    if (!Number.isSafeInteger(data.total_files) || !Number.isSafeInteger(data.complete_files)) return ''
+    return `完整覆盖 ${data.complete_files}/${data.total_files} 份${data.complete === true ? '' : ' · 其余未完整读取'}`
+  } catch { return '' }
+}
+
 export interface RetrievalPreview { // 将检索结果整理为可展示的来源卡片，原始JSON仍保留
   status: 'ok' | 'unavailable' | 'no_matches'
   chunks: { fileId: string; filename: string; chunkId: string; chunkIndex: number; content: string; startOffset: number; endOffset: number; truncated: boolean }[]

@@ -4,15 +4,19 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from backend.app.models.file import File
 from backend.app.rag.retrieval import retrieve_file_chunks
 
-async def search_uploaded_files(query: str, session: AsyncSession, allowed_file_ids: set[str], file_id: str | None = None, limit: int = 5) -> dict[str, Any]:  # 模型只能缩小后端给定的附件范围
-    if file_id is not None:
+async def search_uploaded_files(query: str, session: AsyncSession, allowed_file_ids: set[str], file_id: str | None = None, limit: int = 5, file_ids: list[str] | None = None) -> dict[str, Any]:  # 模型只能缩小后端给定的附件范围
+    if file_ids is not None:
+        if file_id is not None or not isinstance(file_ids, list) or not 1 <= len(file_ids) <= 200 or any(not isinstance(item, str) or item not in allowed_file_ids for item in file_ids):
+            raise ValueError('文件子集必须属于本次允许检索的范围，且不能同时指定file_id')
+        target_ids = set(file_ids)
+    elif file_id is not None:
         if not isinstance(file_id, str) or file_id not in allowed_file_ids:
             raise ValueError("该文件不属于本次对话允许检索的附件")
         target_ids = {file_id}
     else:
         target_ids = set(allowed_file_ids)
     if not target_ids:
-        raise ValueError("当前没有允许检索的附件")
+        raise ValueError("当前会话没有可检索资料，可能未选择、已移除或原文件已删除；已有历史快照可通过read_history_sources查阅，不必重复上传")
     return await retrieve_file_chunks(session, query, target_ids, limit)
 
 async def read_uploaded_file(file_id: str, session: AsyncSession, allowed_file_ids: set[str], offset: int = 0, max_chars: int = 6000) -> dict[str, Any]:  # 只读取本次模型上下文允许使用的附件

@@ -12,6 +12,7 @@ from backend.app.schemas.file import FileChunkBuildResponse, FileChunkPageRespon
 from backend.app.rag.indexing import IndexBusyError, index_file, reserve_file_index
 from backend.app.auth import check_file_access, get_current_user
 from backend.app.models.user import User
+from backend.app.rag.vector_store import get_index_key
 
 logger = logging.getLogger(__name__)  # 记录后端异常，不向客户端暴露磁盘路径
 router = APIRouter(prefix="/api/files", tags=["文件管理"], dependencies=[Depends(check_file_access)])  # 所有文件路径共用账号与归属检查
@@ -24,7 +25,16 @@ async def list_files_endpoint(session: AsyncSession = Depends(get_db), user: Use
 async def upload_file_endpoint(background_tasks: BackgroundTasks, file: UploadFile, session: AsyncSession = Depends(get_db), user: User = Depends(get_current_user)):  # 上传响应后再执行索引
     try:
         record = await process_text_file(session, file, user.id)
-        record, task_id = await reserve_file_index(session, record.id)
+        reused = record.reused
+        if record.index_busy or (record.index_status == 'ready' and record.index_key == get_index_key() and record.index_current):
+            return record
+        try:
+            record, task_id = await reserve_file_index(session, record.id)
+        except IndexBusyError:  # 同时上传同一内容时，另一个请求已经预约索引；仍返回复用结果
+            await session.refresh(record)
+            record._upload_reused = reused
+            return record
+        record._upload_reused = reused
         background_tasks.add_task(index_file, record.id, task_id)
         return record
     except HTTPException:
@@ -76,13 +86,12 @@ async def list_file_chunks_endpoint(file_id: str, offset: int = Query(default=0,
     items, total = await list_file_chunks(session, file_id, offset, limit)
     return {"items": items, "total": total, "offset": offset, "limit": limit}
 
-@router.post("/{file_id}/chunks", response_model=FileChunkBuildResponse)
+@router.post("/{file_id}/chunks", response_model=FileChunkBuildResponse, status_code=202)
 async def rebuild_file_chunks_endpoint(file_id: str, background_tasks: BackgroundTasks, session: AsyncSession = Depends(get_db)):  # 替换切片与预约新索引在同一个SQL事务中完成
     try:
         record, task_id = await reserve_file_index(session, file_id, rebuild_chunks=True)
-        _, count = await list_file_chunks(session, file_id, 0, 1)
         background_tasks.add_task(index_file, record.id, task_id)
-        return {"file_id": file_id, "chunk_count": count}
+        return {"file_id": file_id, "chunk_count": None, "status": "queued"}
     except FileNotFoundError:
         raise HTTPException(status_code=404, detail="文件不存在") from None
     except IndexBusyError as error:

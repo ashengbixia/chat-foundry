@@ -1,8 +1,18 @@
-from backend.app.files.splitter import TextChunk, split_text
+from backend.app.files.splitter import CHUNK_OVERLAP, CHUNK_SIZE, TextChunk, split_text
+import hashlib
 
 CHUNKING_VERSION = "token-window-v2"  # 策略变化后旧索引需要重建，避免继续使用被静默截断的向量
 TARGET_TOKENS = 384  # 默认给512 Token模型留出特殊符号和边界余量
 OVERLAP_TOKENS = 48
+
+
+def chunk_policy_key(model_name: str) -> str:
+    value = f'{CHUNKING_VERSION}\n{model_name}\n{TARGET_TOKENS}\n{OVERLAP_TOKENS}\n{CHUNK_SIZE}\n{CHUNK_OVERLAP}'
+    return hashlib.sha256(value.encode('utf-8')).hexdigest()
+
+
+def chunk_content_key(text: str, model_name: str) -> str:
+    return hashlib.sha256((chunk_policy_key(model_name) + '\n' + text).encode('utf-8')).hexdigest()
 
 def split_with_tokenizer(text: str, tokenizer, max_seq_length: int) -> list[TextChunk]:  # 保留原文字符位置，不通过解码Token重写正文
     special = tokenizer.num_special_tokens_to_add(pair=False)

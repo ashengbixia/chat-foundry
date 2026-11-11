@@ -19,12 +19,16 @@ def tool(index: int = 0, name: str = "get_current_time", arguments: str = "{}", 
 
 class ToolChatTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):  # 只模拟仓库与模型，不读写真实数据库或请求真实模型
+        for name, value in {"resolve_chat_files": AsyncMock(return_value=set()), "describe_resources": AsyncMock(return_value=[]), "prepare_auto_reference": AsyncMock(return_value=[])}.items():
+            mock = patch.object(service, name, value)
+            mock.start()
+            self.addCleanup(mock.stop)
         history = [SimpleNamespace(role="user", content="现在几点？", status="completed")]
         self.read = AsyncMock(return_value=history)
         self.create = AsyncMock(return_value=SimpleNamespace(id="assistant-1"))
         self.update = AsyncMock()
         self.logger = Mock()
-        for name, value in {"list_recent_messages": self.read, "create_message": self.create, "update_message": self.update, "logger": self.logger, "settings": SimpleNamespace(llm_model="test-model", llm_context_window=32768, llm_max_output_tokens=4096, llm_context_margin=1024)}.items():
+        for name, value in {"resolve_knowledge_scope": AsyncMock(return_value=([], set())), "list_recent_messages": self.read, "create_message": self.create, "update_message": self.update, "logger": self.logger, "settings": SimpleNamespace(llm_model="test-model", llm_context_window=32768, llm_max_output_tokens=4096, llm_context_margin=1024)}.items():
             mock = patch.object(service, name, value)
             mock.start()
             self.addCleanup(mock.stop)
@@ -63,6 +67,7 @@ class ToolChatTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(closed, [0])
 
     async def test_repeated_search_results_only_compact_model_input(self):
+        service.resolve_chat_files.return_value = {"f1"}
         self.read.return_value = [SimpleNamespace(role="user", content="FT-204是什么", status="completed", attachments=[SimpleNamespace(file_id="f1", filename="资料.txt", size=1)])]
         chunk = {"file_id": "f1", "filename": "资料.txt", "chunk_id": "c1", "start_offset": 0, "end_offset": 1000, "content": "资料" * 500}
         original = json.dumps({"status": "ok", "chunks": [chunk]}, ensure_ascii=False)
@@ -110,7 +115,8 @@ class ToolChatTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([call["id"] for call in messages[-3]["tool_calls"]], ["call-a", "call-b"])
         self.assertEqual([message["tool_call_id"] for message in messages[-2:]], ["call-a", "call-b"])
 
-    async def test_only_completed_user_attachments_are_allowed(self):  # 允许范围由后端历史决定，不接受助手或失败消息扩张范围
+    async def test_only_persisted_chat_files_are_allowed(self):  # 读取范围由持久关联决定，助手或失败消息不能扩大范围
+        service.resolve_chat_files.return_value = {"f1"}
         self.read.return_value = [SimpleNamespace(role="user", content="问题", status="completed", attachments=[SimpleNamespace(file_id="f1", filename="资料.txt", size=1)]), SimpleNamespace(role="user", content="失败问题", status="failed", attachments=[SimpleNamespace(file_id="failed-file")]), SimpleNamespace(role="assistant", content="回答", status="completed", attachments=[SimpleNamespace(file_id="assistant-file")])]
         requests, _ = self.model([[tool()], [text("回答")]])
         with patch.object(service, "execute_tool", return_value="{}") as execute:

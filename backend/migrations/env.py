@@ -12,6 +12,9 @@ from backend.app.models.message_file import MessageFile  # 识别消息附件关
 from backend.app.models.file_chunk import FileChunk  # 识别文件切片表
 from backend.app.models.user import User, UserSession
 from backend.app.models.model_setting import UserModelSetting
+from backend.app.models.knowledge import KnowledgeBase, KnowledgeBaseFile, ChatKnowledgeBase
+from backend.app.models.chat_file import ChatFile
+from backend.app.models.file_cleanup import FileCleanup
 
 
 # Alembic 的配置对象。

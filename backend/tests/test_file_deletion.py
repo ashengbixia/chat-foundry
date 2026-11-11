@@ -19,6 +19,8 @@ from backend.app.models.file import File
 from backend.tests.index_fixture import mock_file_vectors
 from backend.app.models.file_chunk import FileChunk
 from backend.app.repositories.chat import create_message
+from backend.app.models.file_cleanup import FileCleanup
+from backend.app.files import cleanup as cleanup_service
 
 class FileDeletionTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):  # 仅操作测试数据库和临时目录
@@ -131,6 +133,23 @@ class FileDeletionTests(unittest.IsolatedAsyncioTestCase):
         self.path.unlink()
         self.assertEqual((await self.client.delete(f"/api/files/{self.file_id}")).status_code, 204)
         self.assertEqual(await self.count_chunks(), 0)
+
+    async def test_vector_failure_keeps_durable_job_until_retry_succeeds(self):
+        with patch.object(service, 'delete_all_file_vectors', Mock(side_effect=OSError('locked'))), patch('backend.app.files.cleanup.logger', Mock()):
+            self.assertEqual((await self.client.delete(f'/api/files/{self.file_id}')).status_code, 204)
+        async with self.sessions() as session:
+            self.assertIsNone(await session.get(File, self.file_id))
+            job = await session.get(FileCleanup, self.file_id)
+            self.assertEqual(job.attempts, 1)
+            self.assertGreater(job.next_retry_at, 0)
+            job.next_retry_at = 0
+            await session.commit()
+        vectors = Mock()
+        with patch.object(cleanup_service, 'delete_all_file_vectors', vectors):
+            await cleanup_service.retry_file_cleanups(self.sessions, self.root)
+        vectors.assert_called_once_with(self.file_id)
+        async with self.sessions() as session:
+            self.assertIsNone(await session.get(FileCleanup, self.file_id))
 
     async def test_failed_record_can_be_removed(self):
         async with self.sessions() as session:

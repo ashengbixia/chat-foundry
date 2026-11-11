@@ -1,12 +1,13 @@
 import logging
 import json  # 将工具自身的参数或文件状态错误反馈给模型
+import uuid
 from collections.abc import AsyncIterator,AsyncGenerator
 from contextlib import aclosing
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.core.config import settings
 from backend.app.repositories.chat import create_message, update_message,list_recent_messages
-from backend.app.chat.context import build_model_messages, get_context_file_ids, trim_model_messages
+from backend.app.chat.context import build_model_messages, trim_model_messages
 from backend.app.chat.tool_context import project_tool_results
 from backend.app.chat.citations import add_citation_ids
 from backend.app.llm.budget import InputBudgetError
@@ -18,6 +19,10 @@ import asyncio  # 识别异步任务取消
 import anyio  # 为取消后的清理提供短暂保护
 from backend.app.core.database import SessionLocal  # 创建独立数据库会话
 from backend.app.repositories.chat import cancel_message  # 保存取消状态
+from backend.app.repositories.knowledge import resolve_knowledge_scope
+from backend.app.repositories.resources import resolve_chat_files, describe_resources
+from backend.app.chat.history_sources import collect_history_sources, history_source_catalog
+from backend.app.chat.reference_context import prepare_auto_reference, execute_reference_tool
 
 logger = logging.getLogger(__name__)
 
@@ -67,10 +72,27 @@ async def stream_chat_history_events(
             raise ValueError("没有可以发送给模型的消息")
 
         # ② 将数据库对象转换成模型输入。
-        attachment_scopes = {}  # 在内存中关联每条模型消息与真实附件，随上下文裁剪缩小权限
-        messages = build_model_messages(history, attachment_scopes=attachment_scopes)
-        allowed_file_ids = get_context_file_ids(messages, attachment_scopes)
-        available_tools = get_available_tools(allowed_file_ids)
+        knowledge_context, knowledge_file_ids = await resolve_knowledge_scope(session, chat_id)
+        knowledge_context = [{key: item[key] for key in ('id', 'name', 'file_count')} for item in knowledge_context]
+        allowed_file_ids = await resolve_chat_files(session, chat_id) | knowledge_file_ids
+        initial_file_ids = set(allowed_file_ids)
+        history_sources = collect_history_sources(history)
+        files = await describe_resources(session, allowed_file_ids)
+        resource_context = {"total_files": len(files), "files": files[:10], "total_history_sources": len(history_sources), "history_sources": history_source_catalog(history_sources)[:8]} if files or history_sources else None
+        if resource_context:
+            while len(json.dumps(resource_context, ensure_ascii=False).encode('utf-8')) > 5000:
+                key = "files" if resource_context["files"] else "history_sources"
+                if not resource_context[key]:
+                    break
+                resource_context[key].pop()
+        messages = build_model_messages(history, knowledge_context=knowledge_context, resource_context=resource_context, normalize_references=True)
+        async def current_scope():
+            nonlocal initial_file_ids
+            _, current_knowledge_ids = await resolve_knowledge_scope(session, chat_id)
+            initial_file_ids &= await resolve_chat_files(session, chat_id) | current_knowledge_ids
+            return set(initial_file_ids)  # 生成期间只撤销访问，新加入的资料下轮生效
+        available_tools = get_available_tools(allowed_file_ids, bool(history_sources), resource_tools=True)
+        summary_result = None
 
         # ② 创建一条正在生成的助手消息。
         assistant_message = await create_message(
@@ -83,21 +105,47 @@ async def stream_chat_history_events(
         )
         assistant_message_id=assistant_message.id
 
+        question = next((item.content for item in reversed(history) if item.role == 'user'), '')
+        automatic = await prepare_auto_reference(session, question, allowed_file_ids, messages, available_tools, connection, current_scope, history_sources=history_sources, history=history)
+        for name, arguments, data in automatic:
+            call_id = f"auto-{uuid.uuid4().hex}"
+            arguments = json.dumps(arguments, ensure_ascii=False)
+            output.append({"type": "function_call", "call_id": call_id, "name": name, "arguments": arguments, "automatic": True})
+            yield format_sse("tool_call", {"call_id": call_id, "name": name, "arguments": arguments})
+            allowed_file_ids = await current_scope()
+            try:
+                if data is None:
+                    if name == 'summarize_uploaded_files':
+                        data = await execute_reference_tool(name, arguments, session, allowed_file_ids, history_sources, connection, current_scope)
+                    else:
+                        data = json.loads(await execute_tool(name, arguments, session, allowed_file_ids))
+                elif name != 'read_history_sources' and data.get('file_id') not in allowed_file_ids:
+                    raise ValueError('资料已移除或删除，停止读取；历史来源仍可单独查阅')
+                result = add_citation_ids(name, json.dumps(data, ensure_ascii=False), citation_sources, allowed_file_ids)
+            except ValueError as error:
+                result = json.dumps({"error": str(error)}, ensure_ascii=False)
+            if name == 'summarize_uploaded_files':
+                summary_result = result
+            messages.extend([{"role": "assistant", "content": None, "tool_calls": [{"id": call_id, "type": "function", "function": {"name": name, "arguments": arguments}}]}, {"role": "tool", "tool_call_id": call_id, "content": result}])
+            raw_tool_results[call_id] = result
+            output.append({"type": "function_call_output", "call_id": call_id, "output": result})
+            yield format_sse("tool_result", {"call_id": call_id, "output": result})
+
         # ③ 读取正文或工具调用；执行工具后带着结果再次请求模型。
         for request_index in range(5):  # 最多请求模型 5 次，最后一次不再提供工具
+            allowed_file_ids = await current_scope()
             tool_calls = {}  # 按 index 分开拼接本次请求中的工具调用
             round_text_parts = []  # 本次模型请求产生的正文
             round_output = None  # 收到正文时创建记录，停止或失败时也能保存当前片段
             tools = available_tools if request_index < 4 else None  # 最后一次只要求生成回答
             def resolve_tools(context):  # 每裁掉一轮历史，同时重算附件工具及其输入开销
-                return get_available_tools(get_context_file_ids(context, attachment_scopes)) if request_index < 4 else None
+                return get_available_tools(allowed_file_ids, bool(history_sources), resource_tools=True) if request_index < 4 else None
             messages = project_tool_results(messages, raw_tool_results, resolve_tools(messages), settings.llm_context_window, settings.llm_max_output_tokens, settings.llm_context_margin)
             trimmed = trim_model_messages(messages, tools, settings.llm_context_window, settings.llm_max_output_tokens, settings.llm_context_margin, resolve_tools=resolve_tools)  # 工具结果也计入预算
             if len(trimmed) < len(messages):
                 logger.info("本次模型输入裁剪了 %s 条旧消息，数据库历史保持不变", len(messages) - len(trimmed))
             messages = trimmed
-            allowed_file_ids = get_context_file_ids(messages, attachment_scopes)  # 已裁掉的旧问题不能继续授权附件访问
-            available_tools = get_available_tools(allowed_file_ids)
+            available_tools = get_available_tools(allowed_file_ids, bool(history_sources), resource_tools=True)
             tools = available_tools if request_index < 4 else None
             events = stream_model_events(messages, tools, connection) if connection is not None else stream_model_events(messages, tools)
             async with aclosing(events) as stream:
@@ -140,13 +188,22 @@ async def stream_chat_history_events(
                 yield format_sse("tool_call", {"call_id": call["id"], "name": name, "arguments": arguments})
                 await asyncio.sleep(0)  # 已发送调用通知后，允许取消发生在实际执行之前
                 try:
-                    result = await execute_tool(name, arguments, session, allowed_file_ids)  # 文件工具可异步查询数据库
+                    allowed_file_ids = await current_scope()
+                    if name == 'summarize_uploaded_files' and summary_result is not None:
+                        result = summary_result  # 本轮归纳最多执行一次，重复请求复用结果，不重复消耗模型调用
+                    elif name in ('list_available_files', 'read_history_sources', 'summarize_uploaded_files'):
+                        data = await execute_reference_tool(name, arguments, session, allowed_file_ids, history_sources, connection, current_scope)
+                        result = json.dumps(data, ensure_ascii=False)
+                    else:
+                        result = await execute_tool(name, arguments, session, allowed_file_ids)
                 except ValueError as error:
                     result = json.dumps({"error": str(error)}, ensure_ascii=False)  # 已删除文件等可预期错误，便于模型正确说明原因
                 except Exception:
                     logger.exception("工具执行失败：%s", name)
                     result = '{"error":"工具执行失败，请检查工具名称和参数，或告知用户无法完成。"}'
                 result = add_citation_ids(name, result, citation_sources, allowed_file_ids)  # 编号随原文快照一起保存并发送给前端
+                if name == 'summarize_uploaded_files' and summary_result is None:
+                    summary_result = result
                 messages.append({"role": "tool", "tool_call_id": call["id"], "content": result})
                 raw_tool_results[call["id"]] = result
                 output.append({"type": "function_call_output", "call_id": call["id"], "output": result})

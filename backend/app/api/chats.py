@@ -13,6 +13,9 @@ from backend.app.auth import check_chat_access, get_current_user
 from backend.app.models.user import User
 from backend.app.api.model_settings import get_user_model_connection
 from backend.app.llm.connection import ModelConnection
+from backend.app.models.chat_file import ChatFile
+from backend.app.models.chat import Chat
+from sqlalchemy import update
 
 
 #创建一个接口分组
@@ -23,7 +26,10 @@ router = APIRouter(prefix="/api/chats",tags=["会话管理"], dependencies=[Depe
 async def create_chat_endpoint(request: ChatCreate,session: AsyncSession = Depends(get_db), user: User = Depends(get_current_user)):
     """创建会话并返回会话信息。"""
 
-    chat = await create_chat(session=session,title=request.title, user_id=user.id)
+    try:
+        chat = await create_chat(session=session,title=request.title, user_id=user.id, knowledge_base_ids=request.knowledge_base_ids)
+    except MessageFileError as error:
+        raise HTTPException(400, str(error))
     return chat
 @router.get("", response_model=list[ChatResponse])
 async def list_chats_endpoint(
@@ -49,6 +55,23 @@ async def list_messages_endpoint(chat_id: str, before_sequence: int | None = Que
         raise HTTPException(status_code=404, detail="会话不存在")
     items, has_more, next_before_sequence = await list_messages_page(session, chat_id, before_sequence, limit)  # 本批消息、是否还有旧消息、下批边界
     return {"items": items, "has_more": has_more, "next_before_sequence": next_before_sequence}
+
+
+@router.delete("/{chat_id}/files/{file_id}", status_code=204)
+async def remove_chat_file(chat_id: str, file_id: str, session: AsyncSession = Depends(get_db)):
+    if not acquire_generation(chat_id):
+        raise HTTPException(409, "会话正在回答，请结束后再移除资料")
+    try:
+        result = await session.execute(update(Chat).where(Chat.id == chat_id).values(updated_at=Chat.updated_at))
+        if not result.rowcount:
+            raise HTTPException(404, "会话不存在")
+        await session.execute(update(ChatFile).where(ChatFile.chat_id == chat_id, ChatFile.file_id == file_id).values(active=False))
+        await session.commit()
+        return Response(status_code=204)
+    finally:
+        release_generation(chat_id)
+
+
 @router.post("/{chat_id}/messages",
     response_model=MessageResponse,
     status_code=201)

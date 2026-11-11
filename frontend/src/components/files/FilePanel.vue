@@ -3,12 +3,26 @@ import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { deleteFile, getFile, getFileContent, listFiles, rebuildFileIndex, uploadFile, validateTextFile } from '../../api/files'
 import type { FileInfo } from '../../types/file'
 
-const props = defineProps<{ attachDisabled?: boolean; deleteDisabled?: boolean; attachmentSlots?: number }>() // 输入框上传与管理面板共用同一套文件操作
+const props = defineProps<{ attachDisabled?: boolean; deleteDisabled?: boolean; attachmentSlots?: number; selectedIds?: string[] }>() // 输入框上传与管理面板共用同一套文件操作
 const emit = defineEmits<{ attach: [file: FileInfo]; removed: [fileId: string]; attachmentUpload: [active: boolean]; attachmentError: [message: string] }>()
 const attachPicker = ref<HTMLInputElement | null>(null) // 输入框“＋”直接打开的本地文件选择器
 const selectedFile = ref<File | null>(null) // 当前选择的本地文件
 const uploadedFile = ref<FileInfo | null>(null) // 当前查看的后端文件，可以是新上传或历史文件
 const files = ref<FileInfo[]>([]) // 已保存的文件列表，不包含正文
+const search = ref('')
+const filteredFiles = computed(() => files.value.filter((file) => file.filename.toLowerCase().includes(search.value.trim().toLowerCase())))
+function canAttach(file: FileInfo) { return !busy.value && !props.attachDisabled && file.status === 'completed' && !props.selectedIds?.includes(file.id) && (props.attachmentSlots ?? 3) > 0 }
+function startDrag(event: DragEvent, file: FileInfo) { // 只传文件ID，接收时从当前账号的文件列表重新确认
+  if (!canAttach(file) || !event.dataTransfer) { event.preventDefault(); return }
+  event.dataTransfer.setData('application/x-chatfoundry-file', file.id)
+  event.dataTransfer.effectAllowed = 'copy'
+}
+function attachById(fileId: string) {
+  const file = files.value.find((item) => item.id === fileId)
+  if (!file) { attachmentError('该文件已不在资料列表中，请刷新后重试'); return }
+  if (!canAttach(file)) { attachmentError(props.selectedIds?.includes(file.id) ? '这份资料已在待发送附件或会话资料中，无需重复添加' : '文件暂不可添加，请检查处理状态和附件数量'); return }
+  emit('attach', file)
+}
 const loadingFiles = ref(false) // 是否正在读取列表
 const deletingFileId = ref<string | null>(null) // 正在删除的文件，用于禁用操作和显示进度
 const uploading = ref(false) // 是否正在上传并等待后端处理
@@ -41,6 +55,9 @@ async function uploadAttachments(event: Event) { // 选择后立即上传，成�
   const input = event.target as HTMLInputElement
   const selected = Array.from(input.files ?? [])
   input.value = ''
+  await uploadSelectedFiles(selected)
+}
+async function uploadSelectedFiles(selected: File[]) { // 文件选择、拖放和粘贴共用校验与上传逻辑
   if (!selected.length || busy.value || props.attachDisabled) return
   if (selected.length > (props.attachmentSlots ?? 3)) { attachmentError(`本次还可添加${props.attachmentSlots ?? 3}份附件，请减少选择数量`); return }
   for (const file of selected) { const error = validateTextFile(file); if (error) { attachmentError(`${file.name}：${error}`); return } }
@@ -65,7 +82,7 @@ async function uploadAttachments(event: Event) { // 选择后立即上传，成�
     emit('attachmentUpload', false)
   }
 }
-defineExpose({ pickAttachments })
+defineExpose({ pickAttachments, uploadSelectedFiles, attachById, refreshFiles: loadFiles })
 onMounted(async () => { mounted = true; await loadFiles() }) // 页面打开后恢复文件列表，默认查看最近一份
 onUnmounted(() => { // 离开页面时同时停止计时器、后台查询及当前操作
   mounted = false
@@ -146,8 +163,7 @@ function displayFile(file: FileInfo | null) { // 切换文件时清理旧预览�
 }
 function attachFile() { // 只有处理完成的文件才能加入本次问题
   const file = uploadedFile.value
-  if (!file || file.status !== 'completed' || busy.value || props.attachDisabled) return
-  emit('attach', file)
+  if (file && canAttach(file)) emit('attach', file)
 }
 function selectSavedFile(fileId: string) { // 点击文件名选中，同名文件用完整ID区分
   if (busy.value) return
@@ -300,14 +316,19 @@ async function togglePreview() { // 按需读取正文，再次展开同一文�
       <span class="list-heading">已保存的资料 <small>{{ files.length }}</small></span>
       <button class="refresh-files" type="button" :disabled="busy" @click="loadFiles">{{ loadingFiles ? '加载中…' : '刷新列表' }}</button>
     </div>
+    <input v-if="files.length" v-model="search" class="file-search" type="search" placeholder="搜索已上传资料…" aria-label="搜索已上传资料" />
+    <p v-if="files.length" class="hint">拖到聊天区即可添加，也可以点击文件旁的 ＋。</p>
     <ul v-if="files.length" class="saved-files" aria-label="历史文件">
-      <li v-for="file in files" :key="file.id" :class="{ current: uploadedFile?.id === file.id }">
+      <li v-for="file in filteredFiles" :key="file.id" :class="{ current: uploadedFile?.id === file.id }" :draggable="canAttach(file)" @dragstart="startDrag($event, file)">
         <button type="button" class="file-name" :disabled="busy" :aria-pressed="uploadedFile?.id === file.id" :title="`${file.filename} · ${file.id}`" @click="selectSavedFile(file.id)"><span class="file-type">TXT</span><span>{{ file.filename }}<small>{{ formatSize(file.size) }} · {{ file.status === 'completed' ? indexStatusText(file) : file.status === 'failed' ? '处理失败' : '处理中' }}</small></span></button>
+        <button type="button" class="add-file" :disabled="!canAttach(file)" :aria-label="props.selectedIds?.includes(file.id) ? `已添加 ${file.filename}` : `添加 ${file.filename} 到问题`" :title="props.selectedIds?.includes(file.id) ? '已添加到本次问题' : '添加到本次问题'" @click="attachById(file.id)">{{ props.selectedIds?.includes(file.id) ? '✓' : '+' }}</button>
         <button type="button" class="delete-file" :disabled="busy || props.deleteDisabled || file.status === 'processing' || file.index_busy || file.index_status === 'indexing'" :aria-label="`删除文件 ${file.filename}`" :title="file.index_busy || file.index_status === 'indexing' ? '索引任务完成后可删除' : `删除 ${file.filename}`" @click="removeFile(file)">{{ deletingFileId === file.id ? '…' : '×' }}</button>
       </li>
     </ul>
+    <p v-if="files.length && !filteredFiles.length" class="hint">没有找到匹配的资料，试试其他关键词。</p>
     <div v-else-if="!loadingFiles" class="empty-files">这里还没有资料<small>上传第一份文件，建立你的对话资料库。</small></div>
     <p v-if="errorMessage" role="alert">{{ errorMessage }}</p>
+    <p v-if="uploadedFile?.reused" role="status">同内容资料已存在，已复用“{{ uploadedFile.filename }}”及其索引。</p>
     <p v-if="pollingError" class="hint" role="status">{{ pollingError }}</p>
     <div v-if="uploadedFile" class="file-result">
       <p><strong>{{ uploadedFile.filename }}</strong> · {{ formatSize(uploadedFile.size) }} · <span role="status">{{ statusText }}</span></p>
@@ -317,7 +338,7 @@ async function togglePreview() { // 按需读取正文，再次展开同一文�
       <p v-if="uploadedFile.index_error" role="alert">{{ uploadedFile.index_error }}</p>
       <p v-if="uploadedFile.index_busy || uploadedFile.index_status === 'indexing'" class="hint">索引在后台执行，状态每2秒自动更新。首次使用可能需要下载模型。</p>
       <div class="file-actions">
-        <button type="button" :disabled="busy || props.attachDisabled || uploadedFile.status !== 'completed'" @click="attachFile">添加到本次问题</button>
+        <button type="button" :disabled="!canAttach(uploadedFile)" @click="attachFile">{{ props.selectedIds?.includes(uploadedFile.id) ? '已添加到问题' : '添加到本次问题' }}</button>
         <button type="button" :disabled="busy" @click="refreshFile">{{ refreshing ? '正在刷新…' : '刷新状态' }}</button>
         <button type="button" :disabled="busy || uploadedFile.status !== 'completed'" @click="togglePreview">{{ loadingContent ? '正在读取正文…' : previewOpen ? '收起正文' : '查看正文' }}</button>
         <button type="button" :disabled="busy || props.deleteDisabled || uploadedFile.status !== 'completed' || uploadedFile.index_busy || uploadedFile.index_status === 'indexing'" @click="rebuildIndex">{{ rebuildingIndex ? '正在提交…' : uploadedFile.index_status === 'ready' ? '重建索引' : '建立 / 重试索引' }}</button>
@@ -329,6 +350,9 @@ async function togglePreview() { // 按需读取正文，再次展开同一文�
 
 <style scoped>
 .file-panel { padding-top: 12px; }
+.file-search { width: 100%; margin-top: 12px; padding: 9px 11px; border: 1px solid #dce5df; border-radius: 8px; background: #fff; font-size: 12px; }
+.saved-files li[draggable='true'], .saved-files li[draggable='true'] .file-name { cursor: grab; }
+.add-file { border: 0; background: transparent; padding: 7px; font-size: 17px; }
 h2 { margin: 0 0 8px; font-size: 12px; font-weight: 500; color: #5f6b63; }
 p { margin: 10px 0; overflow-wrap: anywhere; font-size: 11px; line-height: 1.8; }
 .hint { color: #969ea5; font-size: 11px; }
@@ -366,4 +390,7 @@ button:hover:not(:disabled) { background: #f0f5f1; }
 .file-actions { margin-top: 10px; }
 .file-preview { max-height: 320px; overflow-y: auto; margin: 12px 0 0; padding: 12px; white-space: pre-wrap; overflow-wrap: anywhere; background: #f2f5f2; color: #637168; border-radius: 8px; font-size: 11px; line-height: 1.8; }
 [role='alert'] { color: #b56c6c; }
+.file-name { font-size: 12px; }.file-name small { font-size: 11px; color: #7c8b81; }
+.hint { font-size: 12px; color: #7f8c84; }h2 { font-size: 14px; }button { font-size: 12px; }
+.add-file { font-size: 17px; }.delete-file { font-size: 16px; }
 </style>

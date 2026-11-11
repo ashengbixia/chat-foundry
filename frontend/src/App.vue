@@ -1,5 +1,10 @@
 <script setup lang="ts">
 import type { Chat } from './api/chats'
+import type { FileInfo } from './types/file'
+import KnowledgePanel from './components/knowledge/KnowledgePanel.vue'
+import { listKnowledge, setChatKnowledge } from './api/knowledge'
+import type { KnowledgeBase, KnowledgeReference } from './api/knowledge'
+import { getChat } from './api/chats'
 import MessageList from './components/chat/MessageList.vue'
 import MessageInput from './components/chat/MessageInput.vue'
 import ChatSidebar from './components/chat/ChatSidebar.vue'
@@ -22,25 +27,81 @@ const currentModelName = ref('') // 设置面板加载或保存成功后更新�
 const filePanel = ref<InstanceType<typeof FilePanel> | null>(null) // 直接复用文件面板的校验、上传和索引流程
 const uploadingAttachments = ref(false)
 const switchingModel = ref(false)
-const { createNewChat, openChatSession, initializeChat, renameChatSession, deleteChatSession, sendMessage, retryReply, stopReply, loadOlderMessages, addAttachment, removeAttachment, markFileDeleted } = chatStore // 获取仓库中的数据操作方法
+const knowledgePanel = ref<InstanceType<typeof KnowledgePanel> | null>(null)
+const pendingKnowledge = ref<KnowledgeReference[]>([]) // 空白页先选库，首次发送时随新会话一起保存
+const switchingKnowledge = ref(false)
+const selectedKnowledge = computed(() => currentChat.value?.knowledge_bases ?? pendingKnowledge.value)
+const messageInput = ref<InstanceType<typeof MessageInput> | null>(null)
+const toast = ref('')
+const showLatest = ref(false)
+let toastTimer: ReturnType<typeof setTimeout> | null = null
+function notify(message: string) {
+  toast.value = message
+  if (toastTimer) clearTimeout(toastTimer)
+  toastTimer = setTimeout(() => { toast.value = '' }, 3200)
+}
+async function focusComposer() { await nextTick(); messageInput.value?.focus() }
+function settingsSaved() { notify('模型配置已保存，下次回答生效'); void focusComposer() }
+function attachFile(file: FileInfo) { // 已有资料直接引用，不重复上传或建立索引
+  if (addAttachment(file)) notify(file.reused ? `同内容资料已存在，已复用：${file.filename}` : `已添加：${file.filename}`)
+}
+function closeFiles() { filesOpen.value = false; void focusComposer() }
+function jumpToLatest() {
+  autoFollowMessages = true
+  scrollMessagesToBottom()
+  showLatest.value = false
+}
+const { createNewChat, openChatSession, initializeChat, renameChatSession, deleteChatSession, sendMessage, retryReply, stopReply, loadOlderMessages, addAttachment, removeAttachment, markFileDeleted, removeConversationFile } = chatStore
 const { inputText, selectedAttachments, messages, currentChat, chats, errorMessage, sendingMessage, generatingReply, creatingChat, loadingChats, restoringChat, deletingChatId, renamingChatId, pageBusy, inputDisabled, sendDisabled, canRetryReply, hasOlderMessages, loadingOlderMessages } = storeToRefs(chatStore) // 保持响应式连接，不复制出另一份状态
 const messageListElement = ref<HTMLElement | null>(null) // 消息区域的页面元素
 const filesOpen = ref(false) // 是否显示文件管理区域，隐藏时保留上传与预览状态
-const interactionBusy = computed(() => pageBusy.value || uploadingAttachments.value || switchingModel.value) // 文件上传或模型切换未完成时暂缓发送与切换会话
+const interactionBusy = computed(() => pageBusy.value || uploadingAttachments.value || switchingModel.value || switchingKnowledge.value)
+async function applyKnowledge(items: KnowledgeBase[] | KnowledgeReference[]) {
+  if (interactionBusy.value) throw new Error('请等待当前操作完成后再调整知识库')
+  if (!currentChat.value) { pendingKnowledge.value = items; notify('已选择知识库，发送第一条消息时保存'); return }
+  const chatId = currentChat.value.id
+  switchingKnowledge.value = true
+  try {
+    const selected = await setChatKnowledge(chatId, items.map(item => item.id))
+    if (!pageActive || currentChat.value?.id !== chatId) return
+    currentChat.value.knowledge_bases = selected
+    chats.value = chats.value.map(chat => chat.id === chatId ? { ...chat, knowledge_bases: selected } : chat)
+    notify(selected.length ? '知识库已应用到当前会话' : '已移除当前会话的知识库')
+  } finally { switchingKnowledge.value = false }
+}
+async function removeKnowledge(id: string) {
+  try { await applyKnowledge(selectedKnowledge.value.filter(item => item.id !== id)) }
+  catch (cause) { errorMessage.value = cause instanceof Error ? cause.message : '移除知识库失败' }
+}
+async function refreshKnowledge() { // 管理面板改名、删库后，同步当前会话标签；迟到响应不能覆盖别的会话
+  void filePanel.value?.refreshFiles()
+  const chatId = currentChat.value?.id
+  try {
+    if (!chatId) {
+      const catalog = await listKnowledge()
+      if (pageActive && !currentChat.value) pendingKnowledge.value = pendingKnowledge.value.flatMap(item => { const found = catalog.find(base => base.id === item.id); return found ? [found] : [] })
+      return
+    }
+    const chat = await getChat(chatId)
+    if (pageActive && chat && currentChat.value?.id === chatId) { currentChat.value.knowledge_bases = chat.knowledge_bases ?? []; currentChat.value.files = chat.files ?? [] }
+  } catch (cause) { if (pageActive) errorMessage.value = cause instanceof Error ? cause.message : '刷新知识库选择失败' }
+}
 let pageActive = true
 let preservingScroll = false // 加载旧消息期间暂停自动滚动，避免前插内容后跳到底部
 let autoFollowMessages = true // 是否跟随新消息滚动，向上翻阅时暂停
 watch(generatingReply, (active) => { if (active) autoFollowMessages = true }, { flush: 'sync' }) // 开始生成时立即恢复跟随，赶在消息展示和滚动监听之前
-onUnmounted(() => { pageActive = false; stopReply() }) // 退出账号时中止流程，不让迟到的新建会话继续发送
+onUnmounted(() => { pageActive = false; stopReply(); if (toastTimer) clearTimeout(toastTimer) }) // 退出账号时中止流程并清理通知
 function updateScrollFollow() { // 根据距离底部的位置判断是否继续自动滚动
   const element = messageListElement.value // 当前消息滚动容器
   if (!element || preservingScroll) return
   autoFollowMessages = element.scrollHeight - element.scrollTop - element.clientHeight <= 64
+  showLatest.value = !autoFollowMessages
 }
 function scrollMessagesToBottom() { // 在允许跟随时将消息区域滚到底部
   const element = messageListElement.value // 当前消息滚动容器
   if (!element || preservingScroll || !autoFollowMessages) return
   element.scrollTop = element.scrollHeight
+  showLatest.value = false
 }
 watch(() => [currentChat.value?.id, messages.value.length, messages.value[messages.value.length - 1]?.content, messages.value[messages.value.length - 1]?.status, messages.value[messages.value.length - 1]?.error, messages.value[messages.value.length - 1]?.output?.length], scrollMessagesToBottom, { flush: 'post' }) // 正文和工具记录更新后，在允许跟随时滚动
 
@@ -78,13 +139,22 @@ async function removeChat(chat: Chat) { // 确认删除，成功后处理浏览�
   if (deleted && wasCurrent) clearLastChatId(accountId)
 }
 async function openChat(chat: Chat) { // 打开成功后，处理浏览器记录和页面滚动
-  if (pageBusy.value) return // 启动恢复由 store 内部打开会话，页面手动操作需要等恢复完成
-  const opened = await openChatSession(chat) // 请求和状态更新交给 store
-  if (!opened) return
-  autoFollowMessages = true
-  saveLastChatId(chat.id, accountId)
-  await nextTick() // 等消息显示到页面后，再根据新高度滚动
-  scrollMessagesToBottom()
+  if (interactionBusy.value) return
+  switchingKnowledge.value = true
+  try {
+    const fresh = await getChat(chat.id) // 删库、改名及其他标签页修改后，不能恢复列表里过期的知识库标签
+    if (!pageActive) return
+    if (!fresh) throw new Error('会话已不存在，请刷新会话列表')
+    const opened = await openChatSession(fresh)
+    if (!opened) return
+    pendingKnowledge.value = []
+    autoFollowMessages = true
+    saveLastChatId(chat.id, accountId)
+    await nextTick()
+    scrollMessagesToBottom()
+    void focusComposer()
+  } catch (cause) { errorMessage.value = cause instanceof Error ? cause.message : '打开会话失败' }
+  finally { switchingKnowledge.value = false }
 }
 onMounted(async () => { // 启动时读取浏览器记录，由 store 恢复数据，页面只负责记录和滚动
   const result = await initializeChat(getLastChatId(accountId)) // 初始化结果区分会话不存在和请求失败
@@ -101,16 +171,19 @@ async function startNewChat() { // 新建成功后，恢复页面自动滚动
   if (chat === null) return
   saveLastChatId(chat.id, accountId) // 新建会话也记录为上次会话，刷新后可以恢复
   autoFollowMessages = true
+  void focusComposer()
+  pendingKnowledge.value = []
 }
 async function sendChatMessage() { // 第一次发送时自动新建会话，保留已经写好的正文和附件
   if (interactionBusy.value || !inputText.value.trim()) return
   if (!currentChat.value) {
     const text = inputText.value
     const attachments = [...selectedAttachments.value]
-    const chat = await createNewChat()
+    const chat = await createNewChat(pendingKnowledge.value.map(item => item.id))
     if (!chat || !pageActive) return
     inputText.value = text
     selectedAttachments.value = attachments
+    pendingKnowledge.value = []
     saveLastChatId(chat.id, accountId)
     autoFollowMessages = true
   }
@@ -119,8 +192,10 @@ async function sendChatMessage() { // 第一次发送时自动新建会话，保
 </script>
 
 <template>
-  <SettingsPanel ref="settingsPanel" @model-changed="currentModelName = $event" />
-  <AppLayout :files-open="filesOpen" :current-chat-id="currentChat?.id" @close-files="filesOpen = false" @open-settings="settingsPanel?.open()">
+  <SettingsPanel ref="settingsPanel" @model-changed="currentModelName = $event" @saved="settingsSaved" />
+  <KnowledgePanel ref="knowledgePanel" :selected="selectedKnowledge" :selection-disabled="interactionBusy" :apply-selection="applyKnowledge" @changed="refreshKnowledge" />
+  <div v-if="toast" class="toast" role="status">{{ toast }}</div>
+  <AppLayout :files-open="filesOpen" :current-chat-id="currentChat?.id" :drop-disabled="interactionBusy" @close-files="closeFiles" @open-settings="settingsPanel?.open()" @open-knowledge="knowledgePanel?.open()" @dropped-files="filePanel?.uploadSelectedFiles($event)" @attach-saved="filePanel?.attachById($event)">
     <template #account><AccountMenu /></template>
     <template #sidebar>
       <ChatSidebar
@@ -162,32 +237,45 @@ async function sendChatMessage() { // 第一次发送时自动新建会话，保
     </template>
     <template #composer>
       <div class="composer-content">
+        <div v-if="showLatest" class="latest-actions"><button type="button" @click="jumpToLatest">↓ 回到最新消息</button></div>
         <div class="reply-actions">
           <button v-if="canRetryReply" class="retry-button" type="button" :disabled="!currentChat || interactionBusy" @click="retryReply"><AppIcon name="refresh" :size="13" />重试回答</button>
         </div>
         <MessageInput
+          ref="messageInput"
           v-model="inputText"
           :input-disabled="inputDisabled"
-          :send-disabled="sendDisabled || uploadingAttachments || switchingModel"
+          :send-disabled="sendDisabled || uploadingAttachments || switchingModel || switchingKnowledge"
           :sending="sendingMessage"
           :attachments="selectedAttachments"
           :uploading-attachments="uploadingAttachments"
+          :knowledge-bases="selectedKnowledge"
+          :knowledge-disabled="interactionBusy"
+          :conversation-files="currentChat?.files ?? []"
+          @remove-conversation-file="removeConversationFile"
+          @open-knowledge="knowledgePanel?.open(true)"
+          @remove-knowledge="removeKnowledge"
           @remove-attachment="removeAttachment"
           @send="sendChatMessage"
           @stop="stopReply"
           @open-files="filesOpen = true"
           @pick-files="filePanel?.pickAttachments()"
-        ><template #model-picker><ComposerModelPicker :current-model="currentModelName" :disabled="pageBusy || uploadingAttachments" @changed="currentModelName = $event" @busy="switchingModel = $event" @open-settings="settingsPanel?.open()" /></template></MessageInput>
+          @paste-files="filePanel?.uploadSelectedFiles($event)"
+        ><template #model-picker><ComposerModelPicker :current-model="currentModelName" :disabled="pageBusy || uploadingAttachments || switchingKnowledge" @changed="currentModelName = $event" @busy="switchingModel = $event" @open-settings="settingsPanel?.open()" /></template></MessageInput>
         <small class="input-hint"><span>ChatFoundry · 让思考发生</span><span>AI 回答仅供参考，请核实重要信息</span></small>
       </div>
     </template>
     <template #files>
-      <FilePanel ref="filePanel" :attach-disabled="pageBusy || switchingModel" :delete-disabled="interactionBusy" :attachment-slots="3 - selectedAttachments.length" @attach="addAttachment" @removed="markFileDeleted" @attachment-upload="uploadingAttachments = $event" @attachment-error="errorMessage = $event" />
+      <FilePanel ref="filePanel" :attach-disabled="pageBusy || switchingModel || switchingKnowledge" :delete-disabled="interactionBusy" :attachment-slots="3 - selectedAttachments.length" :selected-ids="[...selectedAttachments, ...(currentChat?.files ?? []).filter(file => !file.deleted)].map(file => file.file_id)" @attach="attachFile" @removed="markFileDeleted" @attachment-upload="uploadingAttachments = $event" @attachment-error="errorMessage = $event" />
     </template>
   </AppLayout>
 </template>
 
 <style scoped>
+.toast { position: fixed; top: 20px; left: 50%; transform: translateX(-50%); max-width: calc(100vw - 32px); z-index: 50; padding: 12px 18px; border: 1px solid #d6e5dc; border-radius: 12px; background: #f2f8f4; color: #365c45; box-shadow: 0 8px 28px #233d2f16; font-size: 13px; overflow-wrap: anywhere; }
+.composer-content { position: relative; }
+.latest-actions { position: absolute; bottom: calc(100% + 12px); left: 50%; transform: translateX(-50%); }
+.latest-actions button { white-space: nowrap; padding: 8px 14px; border: 1px solid #dce5df; border-radius: 20px; background: #fff; color: #58715f; box-shadow: 0 4px 16px #233d2f14; font-size: 12px; }
 .chat-title { flex: 1; min-width: 0; }
 .workspace-label { display: flex; align-items: center; gap: 7px; color: #a0a5ad; font-size: 10px; }
 .workspace-label > span { color: #d2d6dc; }

@@ -1,6 +1,6 @@
 import time  # 生成时间戳
 import uuid  # 生成文件唯一 ID
-from sqlalchemy import ForeignKey, String, Text  # 数据库字段类型
+from sqlalchemy import ForeignKey, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column  # 声明模型字段
 from backend.app.core.database import Base  # 项目共用的模型基类
 
@@ -8,6 +8,10 @@ class File(Base):
     """保存上传文件的基本信息和文字提取结果。"""
 
     __tablename__ = "files"  # 对应数据库中的 files 表
+    __table_args__ = (UniqueConstraint("user_id", "content_hash", name="uq_files_user_content_hash"),)
+    content_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)  # 同账号完整正文去重；旧重复记录保留ID且不强行合并
+    chunk_key: Mapped[str | None] = mapped_column(String(64), nullable=True)  # 当前SQL切片使用的策略签名
+    indexed_content_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
     user_id: Mapped[str | None] = mapped_column(ForeignKey("users.id"), index=True, nullable=True)  # 文件、正文、切片和向量统一继承文件所有者
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))  # 文件唯一 ID
@@ -28,3 +32,11 @@ class File(Base):
     @property
     def index_busy(self) -> bool:  # 排队与计算阶段都禁止删除和重新切片
         return self.index_task_id is not None or self.index_status == "indexing"
+
+    @property
+    def reused(self) -> bool:
+        return bool(getattr(self, "_upload_reused", False))
+
+    @property
+    def index_current(self) -> bool:
+        return not self.content_hash or self.content_hash == self.indexed_content_hash

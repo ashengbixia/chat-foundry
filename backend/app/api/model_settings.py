@@ -17,6 +17,7 @@ from backend.app.models.user import User
 
 router = APIRouter(prefix="/api/settings/model-service", tags=["模型服务设置"])
 PRESETS = [{"id": "deepseek", "name": "DeepSeek", "base_url": "https://api.deepseek.com/v1", "model": ""}, {"id": "openai", "name": "OpenAI", "base_url": "https://api.openai.com/v1", "model": ""}, {"id": "qwen", "name": "通义千问", "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1", "model": ""}, {"id": "custom", "name": "自定义 · OpenAI兼容", "base_url": "", "model": ""}]
+PRESETS.insert(3, {"id": "ollama", "name": "Ollama · 本地模型", "base_url": "http://127.0.0.1:11434/v1", "model": ""})
 
 def normalize_url(value: str) -> str:  # 只接收API基础地址，禁止把密码或Key混入URL
     value = value.strip().rstrip("/")
@@ -33,7 +34,7 @@ def normalize_url(value: str) -> str:  # 只接收API基础地址，禁止把密
 
 class ModelServiceInput(BaseModel):
     model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
-    provider: Literal["server", "deepseek", "openai", "qwen", "custom"]
+    provider: Literal["server", "deepseek", "openai", "qwen", "ollama", "custom"]
     base_url: str = Field(min_length=1, max_length=1000)
     model: str = Field(default="", max_length=200)
     timeout: float = Field(default=60, ge=5, le=600)
@@ -168,10 +169,12 @@ async def request_provider(connection: ModelConnection, models: bool) -> dict:  
         headers["Authorization"] = f"Bearer {key}"
     payload = None if models else {"model": connection.model, "messages": [{"role": "user", "content": "Reply only OK, without explanation. /no_think"}], "max_tokens": 512, "stream": False}  # 给思考型模型预留空间，支持/no_think的模型可直接短答
     try:
-        async with httpx.AsyncClient(timeout=min(connection.timeout, 20), follow_redirects=False) as client:
+        async with httpx.AsyncClient(timeout=min(connection.timeout, 20 if models else 120), follow_redirects=False) as client:
             async with client.stream("GET" if models else "POST", connection.base_url + ("/models" if models else "/chat/completions"), headers=headers, json=payload) as response:
                 if response.status_code >= 300:
-                    raise HTTPException(400, f"模型服务返回HTTP {response.status_code}，请检查地址、Key、模型名称或服务额度")
+                    messages = {401: "API Key未通过认证，请重新填写有效Key；需要认证的服务不能选择无需Key", 403: "模型服务拒绝访问，请检查账号权限或模型授权", 404: "此服务未提供模型列表接口，可手动填写模型ID" if models else "没有找到聊天接口或所选模型，请检查基础地址与模型ID", 429: "模型服务请求过于频繁或额度不足，请检查配额后稍后重试"}
+                    detail = messages.get(response.status_code, "模型服务暂时不可用，请稍后重试" if response.status_code >= 500 else "模型服务拒绝了请求，请检查地址和生成参数")
+                    raise HTTPException(400, f"{detail}（HTTP {response.status_code}）")
                 body = bytearray()
                 async for part in response.aiter_bytes():
                     body.extend(part)
@@ -188,6 +191,40 @@ async def request_provider(connection: ModelConnection, models: bool) -> dict:  
     except (ValueError, UnicodeError):
         raise HTTPException(400, "模型服务没有返回有效的JSON响应") from None
 
+async def get_ollama_capabilities(connection: ModelConnection, models: list[str]) -> dict[str, list[str]]:  # 只查元数据，不加载模型或发起推理
+    if not connection.base_url.endswith("/v1"):
+        return {}
+    url = connection.base_url[:-3] + "/api/show"  # 保留反向代理的路径前缀
+    headers = {"Accept": "application/json"}
+    key = connection.api_key.get_secret_value()
+    if key:
+        headers["Authorization"] = f"Bearer {key}"
+    capabilities = {}
+    semaphore = anyio.Semaphore(4)
+    async with httpx.AsyncClient(timeout=min(connection.timeout, 3), follow_redirects=False) as client:
+        async def inspect(model):
+            async with semaphore:
+                try:
+                    async with client.stream("POST", url, headers=headers, json={"model": model}) as response:
+                        if response.status_code != 200:
+                            return
+                        body = bytearray()
+                        async for part in response.aiter_bytes():
+                            body.extend(part)
+                            if len(body) > 1024 * 1024:
+                                return
+                    result = json.loads(body)
+                    values = result.get("capabilities") if isinstance(result, dict) else None
+                    if isinstance(values, list) and values and all(isinstance(value, str) for value in values):
+                        capabilities[model] = values[:16]
+                except (httpx.RequestError, ValueError, UnicodeError):
+                    pass  # 查询失败时保留未知类型模型，不能按名称猜测并误删
+        with anyio.move_on_after(3):  # 模型很多或旧版Ollama不支持时，能力检查不能拖住模型列表
+            async with anyio.create_task_group() as group:
+                for model in models[:100]:
+                    group.start_soon(inspect, model)
+    return capabilities
+
 @router.post("/models")
 async def discover_models(data: ModelServiceInput, user: User = Depends(get_current_user), session: AsyncSession = Depends(get_db)):
     connection = resolve_connection(data, await session.get(UserModelSetting, user.id))
@@ -195,7 +232,16 @@ async def discover_models(data: ModelServiceInput, user: User = Depends(get_curr
     if not isinstance(result.get("data"), list):
         raise HTTPException(400, "此服务未返回兼容的模型列表，请手动填写模型名称")
     models = sorted({item["id"] for item in result["data"] if isinstance(item, dict) and isinstance(item.get("id"), str) and 0 < len(item["id"]) <= 200})[:500]
-    return {"models": models}
+    capabilities = {item["id"]: item["capabilities"] for item in result["data"] if isinstance(item, dict) and item.get("id") in models and isinstance(item.get("capabilities"), list) and item["capabilities"] and all(isinstance(value, str) for value in item["capabilities"])}
+    ollama = data.provider == "ollama" or any(isinstance(item, dict) and item.get("owned_by") == "library" for item in result["data"])
+    if ollama:
+        capabilities.update(await get_ollama_capabilities(connection, models))
+    excluded = [{"id": model, "reason": "向量模型，不能用于聊天"} for model in models if "embedding" in capabilities.get(model, []) and "completion" not in capabilities[model]]
+    excluded_ids = {item["id"] for item in excluded}
+    notice = f"已隐藏{len(excluded)}个向量模型。" if excluded else ""
+    if ollama and any(model not in capabilities for model in models):
+        notice += "部分模型的用途暂未确认，已保留在列表中。"
+    return {"models": [model for model in models if model not in excluded_ids], "capabilities": capabilities, "excluded_models": excluded, "notice": notice}
 
 @router.post("/test")
 async def test_model_service(data: ModelServiceInput, user: User = Depends(get_current_user), session: AsyncSession = Depends(get_db)):

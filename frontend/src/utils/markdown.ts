@@ -14,7 +14,10 @@ parser.renderer.rules.text = (tokens, index, _options, env) => { // 仅正文文
     if (tokens[offset]?.type === 'link_close') linkDepth--
   }
   if (linkDepth > 0 || !env?.citationIds) return content
-  return content.replace(/\[(\d+)\]/g, (label, value) => env.citationIds.has(Number(value)) ? `<button type="button" class="citation-link" data-citation-id="${Number(value)}" aria-label="查看来源 ${Number(value)}">${label}</button>` : label)
+  return content.replace(/\[(?:引用\s*)?(\d+)\]|〔(?:引用\s*)?(\d+)〕|【引用\s*(\d+)】/g, (label, square, chinese, wide) => {
+    const id = Number(square ?? chinese ?? wide)
+    return env.citationIds.has(id) ? `<button type="button" class="citation-link" data-citation-id="${id}" aria-label="查看来源 ${id}">[${id}]</button>` : label
+  })
 }
 
 export function renderMarkdown(content: string, citationIds: number[] = []): string { // 只有经过受限解析的结果才交给 v-html

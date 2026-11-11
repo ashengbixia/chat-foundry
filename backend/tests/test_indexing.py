@@ -189,9 +189,9 @@ class FileIndexingTests(unittest.IsolatedAsyncioTestCase):  # 临时SQL库加模
     async def test_rechunk_replaces_old_vectors_and_upload_schedules_index(self):
         await self.client.post("/api/files/a/index")
         before = await self.chunk_ids()
-        self.assertEqual((await self.client.post("/api/files/a/chunks")).status_code, 200)
+        self.assertEqual((await self.client.post("/api/files/a/chunks")).status_code, 202)
         after = await self.chunk_ids()
-        self.assertTrue(before.isdisjoint(after))
+        self.assertEqual(before, after)
         self.assertEqual(set(self.vectors), after)
         response = await self.client.post("/api/files", files={"file": ("新文件.txt", "上传自动索引".encode(), "text/plain")})
         self.assertEqual(response.status_code, 201)

@@ -1,23 +1,25 @@
 import logging
+import hashlib
 import uuid
 from pathlib import Path, PurePosixPath
 import anyio  # 异步读写磁盘文件，取消时保护清理过程
 from fastapi import HTTPException, UploadFile
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select, update, delete
 from backend.app.core.database import DATA_DIR
 from backend.app.models.file import File
 from backend.app.repositories.file import create_file, delete_file_rows, prepare_file_deletion, update_file
 from backend.app.rag.vector_store import delete_all_file_vectors
+from backend.app.models.file_cleanup import FileCleanup
+from backend.app.files.cleanup import process_cleanup_job
 
 logger = logging.getLogger(__name__)  # 只在后端记录详细异常
 UPLOAD_DIR = DATA_DIR / "uploads"  # 所有原文件统一保存的位置
 MAX_FILE_SIZE = 5 * 1024 * 1024  # 每个文件最多 5MB
 READ_CHUNK_SIZE = 64 * 1024  # 每次读取 64KB，累计检查大小
 
-async def delete_uploaded_file(session: AsyncSession, file_id: str) -> bool:  # 删除文件与切片；数据库提交失败时恢复原文件
-    path = None  # 已核对位于上传目录内的原文件路径
-    staged = None  # 提交前暂存原文件，以便事务失败时恢复
-    with anyio.CancelScope(shield=True):  # 已开始的删除与恢复不被客户端断连打断
+async def delete_uploaded_file(session: AsyncSession, file_id: str) -> bool:  # SQL删除和清理待办同一事务提交；提交前不动原文件
+    with anyio.CancelScope(shield=True):
         try:
             record = await prepare_file_deletion(session, file_id)
             if record is None:
@@ -29,32 +31,44 @@ async def delete_uploaded_file(session: AsyncSession, file_id: str) -> bool:  # 
                 raise ValueError("文件保存路径不合法")
             if await anyio.Path(path).exists() and not await anyio.Path(path).is_file():
                 raise ValueError("文件保存位置不是普通文件")
-            temporary = root / f".{uuid.uuid4().hex}.deleting"  # 只在上传目录内暂存，不使用客户端名称
-            try:
-                await anyio.Path(path).rename(temporary)
-                staged = temporary
-            except FileNotFoundError:
-                pass  # 原文件已经缺失时，仍允许清理数据库中的残留记录
+            session.add(FileCleanup(file_id=file_id, storage_path=record.storage_path))
             await delete_file_rows(session, file_id)
             await session.commit()
         except BaseException:
             await session.rollback()
-            if staged is not None:
-                try:
-                    await anyio.Path(staged).rename(path)
-                except OSError:
-                    logger.exception("恢复删除失败的原文件失败，文件ID：%s", file_id)
             raise
-        if staged is not None:
-            try:
-                await anyio.Path(staged).unlink(missing_ok=True)
-            except OSError:
-                logger.exception("清理删除暂存文件失败，文件ID：%s", file_id)
         try:
-            await anyio.to_thread.run_sync(delete_all_file_vectors, file_id)  # SQL提交成功后清理，避免删除回滚时破坏原索引
+            await process_cleanup_job(session, file_id, UPLOAD_DIR, delete_all_file_vectors)
         except Exception:
-            logger.exception("文件已删除，但清理残留向量失败，文件ID：%s", file_id)  # 后续检索必须核对SQL文件存在和索引状态
+            logger.exception("即时清理未完成，待办将在后台重试，文件ID：%s", file_id)
         return True
+
+
+async def finalize_upload(session, file_id, text, size):  # SQLite写锁内确认同账号内容，避免并发上传各自创建一套索引
+    digest = hashlib.sha256(text.encode('utf-8')).hexdigest()
+    try:
+        await session.execute(update(File).where(File.id == file_id).values(updated_at=File.updated_at))
+        current = await session.get(File, file_id, populate_existing=True)
+        existing = (await session.execute(select(File).where(File.user_id == current.user_id, File.content_hash == digest, File.status == 'completed', File.id != file_id))).scalar_one_or_none()
+        if existing is not None:
+            session.add(FileCleanup(file_id=file_id, storage_path=current.storage_path))
+            await session.execute(delete(File).where(File.id == file_id))  # 此时尚无切片、附件和知识库关联
+            await session.commit()
+            existing._upload_reused = True
+            try:
+                await process_cleanup_job(session, file_id, UPLOAD_DIR, delete_all_file_vectors)
+            except Exception:
+                logger.exception("重复上传的临时文件清理将由后台重试：%s", file_id)
+            await session.refresh(existing)  # 清理失败会回滚事务，返回前重新加载被过期的字段
+            return existing
+        current.content_hash = digest
+        await update_file(session, file_id, size, text_content=text, commit=False)
+        await session.commit()
+        await session.refresh(current)
+        return current
+    except BaseException:
+        await session.rollback()
+        raise
 
 async def process_text_file(session: AsyncSession, upload: UploadFile, user_id: str | None = None) -> File:  # 校验 TXT、保存原文件、提取正文并入库
     filename = PurePosixPath((upload.filename or "").replace("\\", "/")).name  # 去掉客户端路径，仅保留展示名称
@@ -90,7 +104,7 @@ async def process_text_file(session: AsyncSession, upload: UploadFile, user_id: 
             raise HTTPException(status_code=400, detail="文件不是有效的 UTF-8 文本，请转换编码后上传") from None
         if "\x00" in text or not text.strip():
             raise HTTPException(status_code=400, detail="文件必须包含有效文字，不能是二进制或空白内容")
-        return await update_file(session, file_id, size, text_content=text)
+        return await finalize_upload(session, file_id, text, size)
     except BaseException as error:  # 普通失败和请求取消都要清理本次未完成文件
         detail = error.detail if isinstance(error, HTTPException) else "文件处理失败或上传中断，请重新上传"
         with anyio.move_on_after(5, shield=True):

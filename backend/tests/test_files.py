@@ -74,6 +74,35 @@ class FileUploadTests(unittest.IsolatedAsyncioTestCase):  # 测试仅使用临�
         self.assertNotEqual(first["id"], second["id"])
         self.assertEqual({path.read_bytes() for path in self.upload_dir.iterdir()}, {b"first", b"second"})
 
+    async def test_same_content_reuses_original_id_name_and_index(self):
+        first = (await self.upload('同一份资料'.encode(), '原名.txt')).json()
+        with patch('backend.app.api.files.index_file', AsyncMock()) as index:
+            second = (await self.upload(b'\xef\xbb\xbf' + '同一份资料'.encode(), '改名.txt')).json()
+        self.assertEqual(second['id'], first['id'])
+        self.assertEqual(second['filename'], '原名.txt')
+        self.assertTrue(second['reused'])
+        index.assert_not_awaited()
+        self.assertEqual(len(await self.records()), 1)
+        self.assertEqual(len(list(self.upload_dir.iterdir())), 1)
+
+    async def test_concurrent_dedup_stays_within_owner(self):
+        # 使用磁盘SQLite，让两个独立事务竞争真实写锁。
+        engine = create_async_engine(f'sqlite+aiosqlite:///{Path(self.directory.name) / "concurrent.db"}')
+        sessions = async_sessionmaker(engine, expire_on_commit=False)
+        async with engine.begin() as connection:
+            await connection.run_sync(Base.metadata.create_all)
+        async def upload(owner):
+            async with sessions() as session:
+                record = await service.process_text_file(session, UploadFile(filename='并发.txt', file=io.BytesIO(b'concurrent content')), owner)
+                return record.id
+        try:
+            first, second = await asyncio.gather(upload('one'), upload('one'))
+            other = await upload('two')
+            self.assertEqual(first, second)
+            self.assertNotEqual(first, other)
+        finally:
+            await engine.dispose()
+
     async def test_extension_and_filename_validation(self):
         for filename in ["test.pdf", "test.txt.exe", "a" * 252 + ".txt"]:
             self.assertEqual((await self.upload(filename=filename)).status_code, 400)
@@ -159,7 +188,7 @@ class FileUploadTests(unittest.IsolatedAsyncioTestCase):  # 测试仅使用临�
             self.assertEqual(len(records), 105)
             self.assertEqual([record["id"] for record in records[:2]], ["tie-b", "tie-a"])
             self.assertEqual([record["id"] for record in records[2:]], [f"file-{index:03d}" for index in reversed(range(103))])
-            self.assertTrue(all(set(record) == {"id", "filename", "content_type", "size", "status", "error", "created_at", "updated_at", "index_status", "index_error", "index_key", "index_busy"} for record in records))
+            self.assertTrue(all(set(record) == {"id", "filename", "content_type", "size", "status", "error", "created_at", "updated_at", "index_status", "index_error", "index_key", "index_busy", "reused", "index_current"} for record in records))
         finally:
             event.remove(self.engine.sync_engine, "before_cursor_execute", capture)
         self.assertTrue(statements)

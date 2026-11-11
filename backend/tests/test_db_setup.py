@@ -49,7 +49,16 @@ class DatabaseSetupTests(unittest.TestCase):  # 全部使用临时磁盘库，�
         result = db_setup.prepare_database(self.path, upgrade=True)
         self.assertEqual(result["status"], "upgraded")
         self.assertEqual(self.query("SELECT text_content, status, index_status, index_task_id FROM files"), [("已有正文", "completed", "pending", None)])
-        self.assertEqual(result["revision"], "f1c6e9a4b832")
+        self.assertEqual(result["revision"], "c4f9b2d7e165")
+
+    def test_upgrade_populates_chat_files_from_old_message_attachments(self):
+        db_setup.prepare_database(self.path)
+        command.downgrade(db_setup.make_config(self.path), "a2d7f0b5c943")
+        self.execute("INSERT INTO chats (id, title, created_at, updated_at) VALUES ('c','旧会话',1,1); INSERT INTO files (id,filename,storage_path,size,text_content,status,index_status,created_at,updated_at) VALUES ('f','旧资料.txt','f.txt',6,'旧正文','completed','pending',1,1); INSERT INTO messages (id,chat_id,sequence,role,content,output,status,created_at,updated_at) VALUES ('m','c',1,'user','问题','[]','completed',1,1); INSERT INTO message_files (message_id,file_id,linked_file_id,filename,size,position) VALUES ('m','f','f','旧资料.txt',6,0),('m','deleted',NULL,'已删除.txt',3,1);")
+        result = db_setup.prepare_database(self.path, upgrade=True)
+        self.assertEqual(result['status'], 'upgraded')
+        self.assertEqual(self.query("SELECT file_id,linked_file_id,filename,active FROM chat_files ORDER BY file_id"), [('deleted', None, '已删除.txt', 1), ('f', 'f', '旧资料.txt', 1)])
+        self.assertEqual(self.query("SELECT text_content FROM files"), [('旧正文',)])
 
     def test_current_database_does_not_change_data_or_create_backup(self):
         db_setup.prepare_database(self.path)
@@ -58,6 +67,17 @@ class DatabaseSetupTests(unittest.TestCase):  # 全部使用临时磁盘库，�
         self.assertEqual(db_setup.prepare_database(self.path, upgrade=True)["status"], "ready")
         self.assertEqual(before, self.path.read_bytes())
         self.assertEqual(list(self.path.parent.glob("*before-upgrade*")), [])
+
+    def test_fingerprint_migration_preserves_legacy_duplicates(self):
+        db_setup.prepare_database(self.path)
+        command.downgrade(db_setup.make_config(self.path), 'b3e8a1c6d054')
+        self.execute("INSERT INTO files (id,filename,storage_path,size,text_content,status,index_status,created_at,updated_at) VALUES ('first','原名.txt','first.txt',6,'相同正文','completed','ready',1,1),('second','改名.txt','second.txt',6,'相同正文','completed','ready',2,2)")
+        db_setup.prepare_database(self.path, upgrade=True)
+        rows = self.query('SELECT id,content_hash,indexed_content_hash FROM files ORDER BY created_at')
+        self.assertEqual([row[0] for row in rows], ['first', 'second'])
+        self.assertEqual(len(rows[0][1]), 64)
+        self.assertEqual(rows[0][1], rows[0][2])
+        self.assertIsNone(rows[1][1])
 
     def test_old_database_startup_refuses_and_prints_upgrade_command(self):
         self.make_old_database()

@@ -28,13 +28,27 @@ test('服务预设只填写地址，明确选择模型后保存并保留已保�
   assert.equal(state.selectedModel.value, '')
   state.selectedModel.value = 'deepseek-reasoner'
   state.apiKey.value = 'personal-test-key'
+  let closed = 0
+  state.dialog.value = { open: true, close() { this.open = false; closed++ } }
   await state.save()
+  assert.equal(closed, 1)
+  assert.ok(events.some(([name]) => name === 'saved'))
   assert.equal(sent[0].api_key, 'personal-test-key')
   assert.equal(state.apiKey.value, '')
   assert.equal(state.hasSavedKey.value, true)
   await state.test()
   assert.equal(sent[1].api_key, null)
-  assert.deepEqual(events.at(-1), ['modelChanged', 'deepseek-reasoner'])
+  assert.ok(events.some(([name, model]) => name === 'modelChanged' && model === 'deepseek-reasoner'))
+  assert.equal(state.isDirty.value, false)
+  state.draft.timeout = 10
+  assert.equal(state.isDirty.value, true)
+  assert.equal(state.notice.value, '')
+  state.presets.value.push({ id: 'ollama', name: 'Ollama', base_url: 'http://127.0.0.1:11434/v1', model: '' })
+  state.draft.provider = 'ollama'
+  state.selectProvider()
+  assert.equal(state.draft.key_source, 'none')
+  assert.equal(state.draft.timeout, 120)
+  assert.equal(state.draft.model, '')
   unmounted[0]()
 })
 

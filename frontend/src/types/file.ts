@@ -1,5 +1,7 @@
 export interface FileInfo { // 对应后端 FileResponse，仅包含基本信息
   id: string // 文件唯一 ID
+  reused?: boolean // 同账号同内容上传复用已有资料
+  index_current?: boolean // 当前正文与成功索引的内容一致
   filename: string // 原始文件名
   content_type: string | null // 请求声明的文件类型
   size: number // 实际大小，单位字节

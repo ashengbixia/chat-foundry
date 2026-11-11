@@ -36,7 +36,7 @@ class RetrievalTests(unittest.IsolatedAsyncioTestCase):  # 临时SQL库与模拟
     async def asyncTearDown(self):
         await self.engine.dispose()
 
-    async def test_exact_identifier_wins_without_embedding_and_respects_scope(self):
+    async def test_exact_identifier_wins_in_fusion_and_respects_scope(self):
         async with self.sessions() as session:
             await session.execute(update(FileChunk).where(FileChunk.id == "c1").values(content="FT-204：泵出口流量，单位为立方米/小时。", end_offset=28))
             await session.execute(update(FileChunk).where(FileChunk.id == "c2").values(content="FT-2040不是这个位号"))
@@ -45,9 +45,9 @@ class RetrievalTests(unittest.IsolatedAsyncioTestCase):  # 临时SQL库与模拟
         result = await self.retrieve(query="ft-204什么含义")
         self.assertEqual([chunk["chunk_id"] for chunk in result["chunks"]], ["c1"])
         self.assertEqual(result["chunks"][0]["match_type"], "exact")
-        self.assertIsNone(result["chunks"][0]["distance"])
-        self.embed.assert_not_awaited()
-        self.search.assert_not_called()
+        self.assertEqual(result["chunks"][0]["distance"], 0.3)
+        self.embed.assert_awaited_once()
+        self.search.assert_called_once()
 
     async def retrieve(self, ids=None, query="差旅标准", limit=5):
         async with self.sessions() as session:
@@ -61,7 +61,18 @@ class RetrievalTests(unittest.IsolatedAsyncioTestCase):  # 临时SQL库与模拟
         self.assertEqual(result["chunks"][0]["filename"], "现行差旅规定.txt")
         self.assertEqual(result["chunks"][0]["start_offset"], 100)
         self.assertNotIn("旧正文", str(result))
-        self.search.assert_called_once_with([1.0, 0.0], ["f1"], 10)
+        self.search.assert_called_once_with([1.0, 0.0], ["f1"], 20)
+
+    async def test_keyword_fallback_and_distance_threshold(self):
+        self.embed.side_effect = RuntimeError('offline')
+        result = await self.retrieve(query='住宿')
+        self.assertEqual([item['chunk_id'] for item in result['chunks']], ['c1'])
+        self.assertEqual(result['chunks'][0]['match_type'], 'keyword')
+        self.assertIn('关键词候选', result['notice'])
+        self.embed.side_effect = None
+        self.search.return_value = {'ids': [['c1', 'c2']], 'distances': [[0.99, 0.1]]}
+        result = await self.retrieve()
+        self.assertEqual([item['chunk_id'] for item in result['chunks']], ['c2'])
 
     async def test_unauthorized_file_rejected_before_sql_and_embedding(self):
         session = AsyncMock()
@@ -112,7 +123,7 @@ class RetrievalTests(unittest.IsolatedAsyncioTestCase):  # 临时SQL库与模拟
         result = await self.retrieve(ids={"f1", "f2", "deleted"})
         self.assertEqual(result["status"], "ok")
         self.assertEqual({item["reason"] for item in result["unavailable_files"]}, {"index_failed", "missing"})
-        self.search.assert_called_once_with([1.0, 0.0], ["f1"], 10)
+        self.search.assert_called_once_with([1.0, 0.0], ["f1"], 20)
 
     async def test_orphan_foreign_duplicate_and_invalid_distances_are_ignored(self):
         self.search.return_value = {"ids": [["old-chunk", "secret-chunk", "c1", "c1", "c2", 1]], "distances": [[0.0, 0.0, 0.2, 0.3, float("nan"), 0.2]]}
@@ -174,7 +185,7 @@ class RetrievalTests(unittest.IsolatedAsyncioTestCase):  # 临时SQL库与模拟
         async with self.sessions() as session:
             result = json.loads(await execute_tool("search_uploaded_files", '{"query":"住宿","file_id":"f1","limit":1}', session, {"f1", "f2"}))
         self.assertEqual(len(result["chunks"]), 1)
-        self.search.assert_called_once_with([1.0, 0.0], ["f1"], 2)
+        self.search.assert_called_once_with([1.0, 0.0], ["f1"], 4)
 
 class RetrievalIntegrationTests(unittest.TestCase):
     def test_real_chroma_sql_tool_stream_and_saved_history(self):  # 子进程关闭Chroma句柄，真实存储加模拟模型完成整条线路
@@ -229,9 +240,10 @@ async def main():
     async with sessions() as session:
         saved = (await session.execute(select(Message).where(Message.role=="assistant"))).scalar_one()
         assert saved.status == "completed"
-        assert [item["type"] for item in saved.output] == ["function_call","function_call_output","message"]
+        assert any(item.get("type") == "function_call" and item.get("name") == "search_uploaded_files" for item in saved.output)
         restored = build_model_messages([saved])
-        assert json.loads(next(item for item in restored if item["role"] == "tool")["content"])["chunks"][0]["content"] == "住宿上限437元"
+        restored_results = [json.loads(item["content"]) for item in restored if item["role"] == "tool"]
+        assert any(data.get("chunks") and data["chunks"][0]["content"] == "住宿上限437元" for data in restored_results)
     await engine.dispose()
 asyncio.run(main())
 print("真实存储检索闭环通过")

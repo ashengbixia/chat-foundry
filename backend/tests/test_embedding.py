@@ -63,6 +63,12 @@ class EmbeddingTests(unittest.IsolatedAsyncioTestCase):  # 模拟模型，不下
             await embedding.embed_texts(["文" * 511])
         self.model.encode.assert_not_called()
 
+    async def test_long_query_fits_token_window_and_preserves_prefix(self):
+        await embedding.embed_query('长问题' * 400)
+        encoded = self.model.encode.call_args.args[0][0]
+        self.assertTrue(encoded.startswith(self.settings.embedding_query_prefix))
+        self.assertEqual(len(encoded) + 2, self.model.max_seq_length)
+
     async def test_concurrent_calls_load_model_only_once(self):
         await asyncio.gather(*(embedding.embed_texts([f"片段{i}"]) for i in range(6)))
         self.assertEqual(self.loader.call_count, 1)

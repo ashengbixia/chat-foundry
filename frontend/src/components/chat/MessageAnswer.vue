@@ -97,11 +97,12 @@ function closeSource() { // 关闭弹窗时停止请求，快照仍保存在消�
     <div v-html="html" @click="handleCitationClick"></div>
     <details v-if="sources.length" class="answer-sources">
       <summary>本轮资料来源 · {{ sources.length }}</summary>
-      <button v-for="source in sources" :key="source.id" type="button" @click="openSource(source)">[{{ source.id }}] {{ source.filename }}</button>
+      <button v-for="source in sources" :key="source.id" type="button" @click="openSource(source)">[{{ source.id }}] {{ source.filename }}{{ source.historical ? ' · 历史快照' : '' }}</button>
     </details>
     <dialog v-if="selected" ref="dialog" class="source-dialog" aria-label="引用来源" @cancel.prevent="closeSource" @close="closeSource" @pointerdown="backdrop.pointerdown" @click="backdrop.click">
       <header><div><small>来源 [{{ selected.id }}]</small><h3>{{ selected.filename }}</h3></div><button type="button" aria-label="关闭引用来源" @click="closeSource">×</button></header>
       <p class="source-position">原文字符 {{ selected.startOffset }}～{{ selected.endOffset }} · 回答生成时的快照</p>
+      <p v-if="selected.historical" class="source-notice">这是此前工具返回的原文快照，本轮未重新读取。{{ selected.originCreatedAt ? `原回答时间：${new Date(selected.originCreatedAt * 1000).toLocaleString()}` : '' }}</p>
       <p v-if="checking" class="source-notice" role="status">正在检查原文件状态…</p>
       <p v-if="notice" class="source-notice" role="status">{{ notice }}</p>
       <pre class="source-snapshot">{{ selected.content }}</pre>

@@ -10,7 +10,7 @@ def project_tool_results(messages, raw_results, tools, context_window, output_to
         for call in message.get("tool_calls", []):
             names[call["id"]] = call.get("function", {}).get("name")
         call_id = message.get("tool_call_id")
-        if message.get("role") != "tool" or call_id not in raw_results or names.get(call_id) not in ("search_uploaded_files", "read_uploaded_file"):
+        if message.get("role") != "tool" or call_id not in raw_results or names.get(call_id) not in ("search_uploaded_files", "read_uploaded_file", "read_history_sources", "summarize_uploaded_files"):
             projected.append(message)
             continue
         try:
@@ -21,7 +21,7 @@ def project_tool_results(messages, raw_results, tools, context_window, output_to
         if not isinstance(data, dict):
             projected.append(message)
             continue
-        if names[call_id] == "search_uploaded_files" and isinstance(data.get("chunks"), list):
+        if names[call_id] in ("search_uploaded_files", "read_history_sources", "summarize_uploaded_files") and isinstance(data.get("chunks"), list):
             unique, duplicates = [], []
             for chunk in data["chunks"]:
                 if not isinstance(chunk, dict) or not isinstance(chunk.get("content"), str):
@@ -34,6 +34,8 @@ def project_tool_results(messages, raw_results, tools, context_window, output_to
                     seen.add(identity)
                     unique.append(chunk)
                     bodies.append((chunk, "content", data))
+                    if isinstance(chunk.get("summary"), str):
+                        bodies.append((chunk, "summary", data))
             data["chunks"] = unique
             if duplicates:
                 data["omitted_duplicate_chunks"] = duplicates
@@ -63,7 +65,7 @@ def project_tool_results(messages, raw_results, tools, context_window, output_to
         parent["truncated"] = True
         parent["context_limited"] = True
         parent["context_notice"] = "部分正文因本轮输入预算被截短，不能把片段当成完整文件；必要时按偏移读取。"
-        if isinstance(item.get("start_offset"), int):
+        if field == "content" and isinstance(item.get("start_offset"), int):
             item["end_offset"] = item["start_offset"] + len(item[field])
         if field == "text_content":
             item["next_offset"] = item.get("offset", item.get("start_offset", 0)) + len(item[field])

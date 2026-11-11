@@ -2,16 +2,26 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import delete, func, select, update
 from backend.app.models.chat import Chat, Message
 from backend.app.models.message_file import MessageFile
+from backend.app.models.knowledge import ChatKnowledgeBase, KnowledgeBase
+from backend.app.models.chat_file import ChatFile
 from backend.app.repositories.message_file import build_attachments, MessageFileError
 import time
 from typing import Literal
 
 
 
-async def create_chat(session: AsyncSession,title: str = "新会话", user_id: str | None = None) -> Chat:
+async def create_chat(session: AsyncSession,title: str = "新会话", user_id: str | None = None, knowledge_base_ids: list[str] | None = None) -> Chat:
     """创建一个会话，保存到数据库并返回。"""
     chat = Chat(title=title, user_id=user_id)#创建 Python 对象，此时还没写入数据库。
     session.add(chat)#把对象加入当前数据库会话，准备插入。
+    if knowledge_base_ids:
+        ids = set(knowledge_base_ids)
+        valid = set((await session.execute(select(KnowledgeBase.id).where(KnowledgeBase.id.in_(ids), KnowledgeBase.user_id == user_id))).scalars())
+        if valid != ids or len(ids) > 5:
+            await session.rollback()
+            raise MessageFileError("选择的知识库不存在或不属于当前账号，请重新选择")
+        await session.flush()
+        session.add_all(ChatKnowledgeBase(chat_id=chat.id, knowledge_base_id=item) for item in ids)
     await session.commit()#提交事务，真正保存记录。我们定义的 ID、时间默认值也会在插入时生成。
     await session.refresh(chat)#从数据库重新读取这条记录，更新对象里的字段。
     return chat
@@ -67,6 +77,12 @@ async def create_message(
             raise MessageFileError("当前只允许用户消息添加附件")
         owner_id = (await session.execute(select(Chat.user_id).where(Chat.id == chat_id))).scalar_one() if file_ids else None
         attachments = await build_attachments(session, file_ids or [], owner_id)  # 附件必须与会话同属一个账号
+        for attachment in attachments:
+            existing = await session.get(ChatFile, (chat_id, attachment.file_id))
+            if existing is None:
+                session.add(ChatFile(chat_id=chat_id, file_id=attachment.file_id, linked_file_id=attachment.file_id, filename=attachment.filename, size=attachment.size))
+            else:
+                existing.active, existing.linked_file_id = True, attachment.file_id  # 用户明确重新附加才恢复已移除资料
 
         # 查询这个会话当前最大的消息序号。
         result = await session.execute(
@@ -199,6 +215,8 @@ async def delete_chat(session: AsyncSession, chat_id: str) -> bool:  # 删除会
         if chat is None:
             return False
         # 先删除子记录，避免留下不属于任何会话的消息。
+        await session.execute(delete(ChatFile).where(ChatFile.chat_id == chat_id))
+        await session.execute(delete(ChatKnowledgeBase).where(ChatKnowledgeBase.chat_id == chat_id))
         message_ids = select(Message.id).where(Message.chat_id == chat_id)  # 当前会话中的消息 ID
         await session.execute(delete(MessageFile).where(MessageFile.message_id.in_(message_ids)))  # 只删除关联，保留原文件
         await session.execute(

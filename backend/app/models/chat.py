@@ -4,6 +4,8 @@ import uuid
 from sqlalchemy import ForeignKey, JSON, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from backend.app.models.message_file import MessageFile  # 消息与文件的关联记录
+from backend.app.models.knowledge import KnowledgeBase
+from backend.app.models.chat_file import ChatFile
 
 from backend.app.core.database import Base
 
@@ -12,6 +14,8 @@ class Chat(Base):
     """聊天会话表，一条记录代表一个会话。"""
 
     __tablename__ = "chats"
+    files: Mapped[list[ChatFile]] = relationship(lazy="selectin", viewonly=True, primaryjoin="and_(Chat.id == ChatFile.chat_id, ChatFile.active == True)", order_by="(ChatFile.created_at, ChatFile.file_id)")
+    knowledge_bases: Mapped[list[KnowledgeBase]] = relationship(secondary="chat_knowledge_bases", lazy="selectin", viewonly=True, order_by=KnowledgeBase.name)
     user_id: Mapped[str | None] = mapped_column(ForeignKey("users.id"), index=True, nullable=True)  # 升级前的数据在首次初始化时交给管理员
 
     # 自动生成唯一的会话 ID。

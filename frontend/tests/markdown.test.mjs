@@ -27,3 +27,13 @@ test('引用只链接工具实际提供的编号，代码和普通链接不变',
   assert.ok(!html.includes('data-citation-id="99"'))
   assert.ok(html.includes('<code>[1]</code>'))
 })
+
+test('历史快照的中文引用别名使用本轮真实来源，未知编号和代码不转换', () => {
+  const html = renderMarkdown('正文〔引用4〕、【引用3】、[引用4]、未知〔引用99〕、旧标记〔原回答引用4〕。`〔引用4〕`\n\n[链接〔引用4〕](https://example.com)', [3, 4])
+  assert.equal((html.match(/data-citation-id="4"/g) || []).length, 2)
+  assert.equal((html.match(/data-citation-id="3"/g) || []).length, 1)
+  assert.ok(!html.includes('data-citation-id="99"'))
+  assert.ok(html.includes('>\u005b4\u005d</button>'))
+  assert.ok(html.includes('<code>〔引用4〕</code>'))
+  assert.ok(html.includes('〔原回答引用4〕'))
+})

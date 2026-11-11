@@ -43,7 +43,7 @@ class VectorValidationTests(unittest.TestCase):  # 参数错误必须在打开�
         self.open_collection.assert_not_called()
 
     def test_search_checks_limit_and_scope(self):
-        for limit in [0, 11, True, 1.5]:
+        for limit in [0, 51, True, 1.5]:
             with self.subTest(limit=limit), self.assertRaises(ValueError):
                 vector_store.search_chunk_vectors([1.0], ["file-a"], limit)
         for scope in [None, "file-a", [""], [None]]:

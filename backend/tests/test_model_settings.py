@@ -87,7 +87,7 @@ class ModelSettingsTests(unittest.IsolatedAsyncioTestCase):  # 只验证密钥�
         real_client = httpx.AsyncClient
         with patch.object(llm.httpx, "AsyncClient", side_effect=lambda **kwargs: real_client(transport=httpx.MockTransport(handler), **kwargs)):
             check = await self.admin.post(self.url + "/models", json={**self.draft, "api_key": None})
-            self.assertEqual(check.json(), {"models": ["listed-model"]})
+            self.assertEqual(check.json()["models"], ["listed-model"])
             check = await self.admin.post(self.url + "/test", json={**self.draft, "model": "unsaved-model", "api_key": None})
             self.assertEqual(check.status_code, 200, check.text)
             self.assertEqual((await self.admin.get(self.url)).json()["config"]["model"], "my-model")
@@ -101,3 +101,30 @@ class ModelSettingsTests(unittest.IsolatedAsyncioTestCase):  # 只验证密钥�
             self.assertEqual(await asyncio.gather(chat(self.admin), chat(self.other)), ["my-model", "second-model"])
         self.assertTrue(any(url == "https://personal.test/v1/chat/completions" and key == "Bearer personal-test-key" and body["model"] == "my-model" for url, key, body in requests))
         self.assertTrue(any(url == "https://second.test/v1/chat/completions" and key == "Bearer second-test-key" and body["model"] == "second-model" for url, key, body in requests))
+
+    async def test_ollama_capabilities_hide_embeddings_keep_unknown_and_respect_proxy_prefix(self):
+        requests = []
+        unavailable = False
+        names = ["nomic-embed-text", "qwen3:4b", "embed-looking-chat", "unknown"]
+        def handler(request):
+            requests.append(request.url.path)
+            if request.url.path == "/proxy/v1/models":
+                return httpx.Response(200, json={"data": [{"id": name, "owned_by": "library"} for name in names]})
+            self.assertEqual(request.url.path, "/proxy/api/show")
+            model = json.loads(request.content)["model"]
+            if unavailable or model == "unknown":
+                return httpx.Response(404)
+            capabilities = ["embedding"] if model == "nomic-embed-text" else ["completion", "tools", "thinking"]
+            return httpx.Response(200, json={"capabilities": capabilities})
+        real_client = httpx.AsyncClient
+        draft = {**self.draft, "provider": "ollama", "base_url": "http://local.test/proxy/v1", "key_source": "none", "api_key": None}
+        with patch.object(llm.httpx, "AsyncClient", side_effect=lambda **kwargs: real_client(transport=httpx.MockTransport(handler), **kwargs)):
+            response = await self.admin.post(self.url + "/models", json=draft)
+            self.assertEqual(response.status_code, 200, response.text)
+            self.assertEqual(set(response.json()["models"]), {"qwen3:4b", "embed-looking-chat", "unknown"})
+            self.assertEqual(response.json()["excluded_models"][0]["id"], "nomic-embed-text")
+            self.assertIn("tools", response.json()["capabilities"]["qwen3:4b"])
+            unavailable = True
+            response = await self.admin.post(self.url + "/models", json=draft)
+            self.assertEqual(set(response.json()["models"]), set(names))
+        self.assertNotIn("/proxy/v1/chat/completions", requests)

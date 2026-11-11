@@ -1,6 +1,6 @@
 import { computed, reactive, ref } from 'vue'
 import { defineStore } from 'pinia'
-import { createChat, deleteChat, getChat, listChats, listMessages, renameChat, saveUserMessage } from '../api/chats'
+import { createChat, deleteChat, getChat, listChats, listMessages, renameChat, saveUserMessage, removeChatFile } from '../api/chats'
 import { streamChatReply } from '../api/stream'
 import type { Chat } from '../api/chats'
 import type { DisplayMessage } from '../types/chat'
@@ -13,7 +13,7 @@ export interface ChatInitializationResult { // 启动结果：只有 missing 才
 
 export const useChatStore = defineStore('chat', () => { // 集中保存聊天状态和数据操作，不直接操作页面元素
   const inputText = ref('') // 当前输入内容
-  const selectedAttachments = ref<MessageAttachment[]>([]) // 本次问题待发送的附件，不自动沿用到下一条问题
+  const selectedAttachments = ref<MessageAttachment[]>([]) // 待发送草稿；发送成功后进入独立的会话资料列表
   const messages = ref<DisplayMessage[]>([]) // 当前会话的页面消息
   const currentChat = ref<Chat | null>(null) // 当前打开的会话
   const chats = ref<Chat[]>([]) // 会话列表
@@ -30,7 +30,8 @@ export const useChatStore = defineStore('chat', () => { // 集中保存聊天状
   const restoringChat = ref(true) // 是否正在恢复上次会话
   const deletingChatId = ref<string | null>(null) // 正在删除的会话 ID
   const renamingChatId = ref<string | null>(null) // 正在重命名的会话 ID
-  const operationBusy = computed(() => sendingMessage.value || creatingChat.value || loadingMessages.value || loadingOlderMessages.value || deletingChatId.value !== null || renamingChatId.value !== null) // 是否正在执行会话或消息操作
+  const removingChatFile = ref(false)
+  const operationBusy = computed(() => sendingMessage.value || creatingChat.value || loadingMessages.value || loadingOlderMessages.value || deletingChatId.value !== null || renamingChatId.value !== null || removingChatFile.value)
   const pageBusy = computed(() => operationBusy.value || restoringChat.value) // 页面是否忙碌，包含启动恢复阶段
   const inputDisabled = computed(() => sendingMessage.value || creatingChat.value || loadingOlderMessages.value || deletingChatId.value !== null || renamingChatId.value !== null) // 输入框禁用规则
   const sendDisabled = computed(() => !inputText.value.trim() || pageBusy.value) // 空白页也可发送，由页面先创建会话
@@ -52,12 +53,12 @@ export const useChatStore = defineStore('chat', () => { // 集中保存聊天状
       loadingChats.value = false
     }
   }
-  async function createNewChat(): Promise<Chat | null> { // 创建会话并更新聊天状态，失败或忙碌时返回 null
+  async function createNewChat(knowledgeBaseIds: string[] = []): Promise<Chat | null> { // 首次发送可同时保存所选知识库
     if (pageBusy.value) return null
     creatingChat.value = true
     errorMessage.value = ''
     try {
-      const chat = await createChat() // 请求后端创建会话
+      const chat = await createChat('新会话', knowledgeBaseIds)
       currentChat.value = chat
       chats.value.unshift(chat)
       messages.value = []
@@ -195,6 +196,10 @@ export const useChatStore = defineStore('chat', () => { // 集中保存聊天状
       errorMessage.value = '该文件已添加到本次问题'
       return false
     }
+    if (currentChat.value?.files?.some(item => item.file_id === file.id && !item.deleted)) {
+      errorMessage.value = '这份资料已在当前会话中，可以直接继续提问'
+      return false
+    }
     if (selectedAttachments.value.length >= 3) {
       errorMessage.value = '每条消息最多添加3份附件'
       return false
@@ -209,11 +214,24 @@ export const useChatStore = defineStore('chat', () => { // 集中保存聊天状
   }
   function markFileDeleted(fileId: string) { // 删除成功后立即更新已加载的历史消息，保留附件快照
     removeAttachment(fileId, true)
+    for (const file of currentChat.value?.files ?? []) { if (file.file_id === fileId) file.deleted = true }
     for (const message of messages.value) {
       for (const file of message.attachments ?? []) {
         if (file.file_id === fileId) file.deleted = true
       }
     }
+  }
+  async function removeConversationFile(fileId: string) {
+    const chat = currentChat.value
+    if (!chat || pageBusy.value) return
+    removingChatFile.value = true
+    try {
+      await removeChatFile(chat.id, fileId)
+      chat.files = (chat.files ?? []).filter(item => item.file_id !== fileId)
+      chats.value = chats.value.map(item => item.id === chat.id ? { ...item, files: chat.files } : item)
+      errorMessage.value = ''
+    } catch (cause) { errorMessage.value = cause instanceof Error ? cause.message : '移出会话资料失败' }
+    finally { removingChatFile.value = false }
   }
   function stopReply() { // 中止本次流程；保存问题尚未结束时，阻止后续模型请求启动
     replyController?.abort()
@@ -272,6 +290,9 @@ export const useChatStore = defineStore('chat', () => { // 集中保存聊天状
       const fileIds = selectedAttachments.value.map((file) => file.file_id) // 只发送文件 ID，由后端校验并保存关联
       const userMessage = await saveUserMessage(chat.id, text, fileIds)
       messages.value.push(userMessage)
+      const files = new Map((chat.files ?? []).map(file => [file.file_id, file]))
+      for (const file of userMessage.attachments ?? []) files.set(file.file_id, file)
+      chat.files = [...files.values()] // 草稿清空后，已发送附件仍在会话资料中
       inputText.value = ''
       selectedAttachments.value = [] // 保存成功即清空；生成失败通过重试复用已保存的问题
       if (controller.signal.aborted) return // 更新已保存的问题，但不再启动模型请求，避免再次提交
@@ -299,5 +320,5 @@ export const useChatStore = defineStore('chat', () => { // 集中保存聊天状
       sendingMessage.value = false
     }
   }
-  return { inputText, selectedAttachments, messages, currentChat, chats, errorMessage, sendingMessage, generatingReply, creatingChat, loadingChats, loadingMessages, hasOlderMessages, nextBeforeSequence, loadingOlderMessages, restoringChat, deletingChatId, renamingChatId, operationBusy, pageBusy, inputDisabled, sendDisabled, canRetryReply, loadChats, createNewChat, openChatSession, initializeChat, loadOlderMessages, renameChatSession, deleteChatSession, sendMessage, retryReply, stopReply, addAttachment, removeAttachment, markFileDeleted }
+  return { inputText, selectedAttachments, messages, currentChat, chats, errorMessage, sendingMessage, generatingReply, creatingChat, loadingChats, loadingMessages, hasOlderMessages, nextBeforeSequence, loadingOlderMessages, restoringChat, deletingChatId, renamingChatId, operationBusy, pageBusy, inputDisabled, sendDisabled, canRetryReply, loadChats, createNewChat, openChatSession, initializeChat, loadOlderMessages, renameChatSession, deleteChatSession, sendMessage, retryReply, stopReply, addAttachment, removeAttachment, markFileDeleted, removeConversationFile }
 })

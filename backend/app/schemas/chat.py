@@ -7,6 +7,21 @@ class ChatCreate(BaseModel):
     model_config = ConfigDict(str_strip_whitespace=True)#去空格
 
     title: str = Field(default="新会话",min_length=1,max_length=200,)
+    knowledge_base_ids: list[str] = Field(default_factory=list, max_length=5)
+
+
+class KnowledgeReference(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: str
+    name: str
+
+
+class ChatFileResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    file_id: str
+    filename: str
+    size: int
+    deleted: bool
 
 
 class ChatResponse(BaseModel):
@@ -19,6 +34,8 @@ class ChatResponse(BaseModel):
     title: str
     created_at: int
     updated_at: int
+    knowledge_bases: list[KnowledgeReference] = Field(default_factory=list)
+    files: list[ChatFileResponse] = Field(default_factory=list)
 
 class MessageAttachmentResponse(BaseModel):  # 消息附件只返回展示所需的基本信息
     model_config = ConfigDict(from_attributes=True)

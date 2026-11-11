@@ -1,15 +1,19 @@
 import asyncio
 import logging
 import uuid
+import hashlib
 import anyio
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from backend.app.core.database import SessionLocal
 from backend.app.models.file import File
-from backend.app.repositories.file_chunk import list_file_chunks, replace_chunk_records, replace_file_chunks
+from backend.app.repositories.file_chunk import list_file_chunks, replace_chunk_records
 from backend.app.models.file_chunk import FileChunk
 from backend.app.rag.embedding import embed_texts, split_for_embedding
 from backend.app.rag.vector_store import delete_file_vectors, get_index_key, save_chunk_vectors
+from backend.app.rag.chunking import chunk_content_key
+from backend.app.core.config import settings
+from sqlalchemy.orm import defer
 
 logger = logging.getLogger(__name__)  # 详细失败原因仅写后端日志
 BATCH_SIZE = 32  # 每批计算切片数量，不一次加载整份文档
@@ -25,28 +29,28 @@ async def reserve_file_index(session: AsyncSession, file_id: str, rebuild_chunks
         result = await session.execute(update(File).where(File.id == file_id).values(updated_at=File.updated_at))  # 先取得SQLite写锁
         if result.rowcount == 0:
             raise FileNotFoundError("文件不存在")
-        record = await session.get(File, file_id, populate_existing=True)
+        record = await session.get(File, file_id, populate_existing=True, options=[defer(File.text_content)])
         if record.status != "completed":
             raise IndexBusyError("文件文字尚未处理成功，不能建立索引")
         if record.index_busy:
             raise IndexBusyError("文件正在等待或建立索引，请稍后再操作")
         if rebuild_chunks:
-            await replace_file_chunks(session, file_id, record.text_content)
+            record.chunk_key = None  # 预约后台重切；请求阶段不再生成另一套字符切片
         task_id = str(uuid.uuid4())
         record.index_status = "pending"
         record.index_error = None
         record.index_key = None
         record.index_task_id = task_id
         await session.commit()
-        await session.refresh(record)
+        await session.refresh(record, attribute_names=[column.name for column in File.__table__.columns if column.name != 'text_content'])
         return record, task_id
     except BaseException:
         await session.rollback()
         raise
 
-async def _finish_index(file_id: str, task_id: str, status: str, error: str | None = None, key: str | None = None):  # 旧任务不能覆盖新任务的状态
+async def _finish_index(file_id: str, task_id: str, status: str, error: str | None = None, key: str | None = None, content_hash: str | None = None):
     async with SessionLocal() as session:
-        await session.execute(update(File).where(File.id == file_id, File.index_task_id == task_id).values(index_status=status, index_error=error, index_key=key, index_task_id=None))
+        await session.execute(update(File).where(File.id == file_id, File.index_task_id == task_id).values(index_status=status, index_error=error, index_key=key, indexed_content_hash=content_hash if status == 'ready' else None, index_task_id=None))
         await session.commit()
 
 async def _owns_task(file_id: str, task_id: str) -> bool:  # 不长时间占用数据库事务
@@ -55,16 +59,19 @@ async def _owns_task(file_id: str, task_id: str) -> bool:  # 不长时间占用�
 
 async def build_chunk_index(file_id: str, task_id: str) -> int:  # 分批读取、计算、写入，全部成功才标记ready
     async with SessionLocal() as session:
-        text = (await session.execute(select(File.text_content).where(File.id == file_id, File.index_task_id == task_id))).scalar_one()
-    prepared = await split_for_embedding(text)
+        text, previous_key = (await session.execute(select(File.text_content, File.chunk_key).where(File.id == file_id, File.index_task_id == task_id))).one()
+    expected_key = chunk_content_key(text, settings.embedding_model)
+    prepared = await split_for_embedding(text) if previous_key != expected_key else None
     async with SessionLocal() as session:
         locked = await session.execute(update(File).where(File.id == file_id, File.index_task_id == task_id, File.index_status == "indexing").values(updated_at=File.updated_at))
         if locked.rowcount == 0:
             raise RuntimeError("索引任务已失效")
-        previous = (await session.execute(select(FileChunk.content, FileChunk.start_offset, FileChunk.end_offset).where(FileChunk.file_id == file_id).order_by(FileChunk.chunk_index))).all()
-        expected = [(chunk["content"], chunk["start_offset"], chunk["end_offset"]) for chunk in prepared]
-        if [tuple(row) for row in previous] != expected:
-            await replace_chunk_records(session, file_id, prepared)
+        if prepared is not None:
+            previous = (await session.execute(select(FileChunk.content, FileChunk.start_offset, FileChunk.end_offset).where(FileChunk.file_id == file_id).order_by(FileChunk.chunk_index))).all()
+            expected = [(chunk["content"], chunk["start_offset"], chunk["end_offset"]) for chunk in prepared]
+            if [tuple(row) for row in previous] != expected:
+                await replace_chunk_records(session, file_id, prepared)
+        await session.execute(update(File).where(File.id == file_id, File.index_task_id == task_id).values(chunk_key=expected_key))
         await session.commit()  # 原文不变；只有切片策略或内容变化才更换切片ID
     await anyio.to_thread.run_sync(delete_file_vectors, file_id)
     offset = 0
@@ -96,8 +103,11 @@ async def index_file(file_id: str, task_id: str):  # 后台任务自行创建会
                 return
             await session.commit()
         key = get_index_key()
+        async with SessionLocal() as session:
+            text = (await session.execute(select(File.text_content).where(File.id == file_id, File.index_task_id == task_id))).scalar_one()
+        content_hash = hashlib.sha256(text.encode('utf-8')).hexdigest()
         await build_chunk_index(file_id, task_id)
-        await _finish_index(file_id, task_id, "ready", key=key)
+        await _finish_index(file_id, task_id, "ready", key=key, content_hash=content_hash)
     except BaseException as error:
         logger.exception("文件索引失败，文件ID：%s", file_id)
         with anyio.CancelScope(shield=True):

@@ -10,7 +10,7 @@ from threading import RLock
 from typing import Any
 from backend.app.core.config import settings
 from backend.app.core.database import DATA_DIR
-from backend.app.rag.chunking import CHUNKING_VERSION
+from backend.app.rag.chunking import chunk_policy_key
 
 VECTOR_DIR = DATA_DIR / "vector_db"  # ChromaDB本地持久化目录，不随启动位置变化
 _store_lock = RLock()  # 写入、查询和空集合回收互斥，避免检查为空后另一个任务刚好写入
@@ -23,7 +23,7 @@ def _get_client():  # 所有集合共用持久化客户端，未使用时不创�
     return chromadb.PersistentClient(path=str(VECTOR_DIR), settings=ChromaSettings(anonymized_telemetry=False))
 
 def get_index_key() -> str:  # 不打开向量库，仅计算当前配置对应的集合名称
-    identity = CHUNKING_VERSION + "\n" + settings.embedding_model + "\n" + settings.embedding_query_prefix
+    identity = chunk_policy_key(settings.embedding_model) + "\n" + settings.embedding_query_prefix + "\nnormalize_embeddings=True"
     digest = hashlib.sha256(identity.encode("utf-8")).hexdigest()[:16]
     return f"file-chunks-{digest}"
 
@@ -64,8 +64,8 @@ def save_chunk_vectors(items: list[dict[str, Any]], vectors: list[list[float]]) 
         collection.upsert(ids=[item["id"] for item in items], embeddings=vectors, documents=[item["content"] for item in items], metadatas=[{"file_id": item["file_id"], "chunk_index": item["chunk_index"]} for item in items])
 
 def search_chunk_vectors(vector: list[float], file_ids: list[str], limit: int = 5) -> dict:  # 文件范围必须由业务层提供，不能扩大为全库搜索
-    if type(limit) is not int or not 1 <= limit <= 10:
-        raise ValueError("检索数量必须是1到10之间的整数")
+    if type(limit) is not int or not 1 <= limit <= 50:
+        raise ValueError("候选检索数量必须是1到50之间的整数")
     if not isinstance(file_ids, list) or any(not isinstance(file_id, str) or not file_id.strip() for file_id in file_ids):
         raise ValueError("检索范围必须是有效文件ID列表")
     if not file_ids:

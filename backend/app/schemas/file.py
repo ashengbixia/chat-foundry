@@ -17,11 +17,14 @@ class FileResponse(BaseModel):
     index_error: str | None = None  # 索引失败说明
     index_key: str | None = None  # 已建立索引的向量配置
     index_busy: bool = False  # 不向前端暴露任务令牌
+    reused: bool = False  # 仅本次上传响应标注是否复用同账号已有资料
+    index_current: bool = True
 
     @model_validator(mode="after")
     def check_index_config(self):  # 更换模型后，旧索引不能误显示为可检索
-        if self.index_status == "ready" and self.index_key != get_index_key():
+        if self.index_status == "ready" and (self.index_key != get_index_key() or not self.index_current):
             self.index_status = "pending"
+            self.index_current = False
         return self
 
 class FileContentResponse(BaseModel):
@@ -49,4 +52,5 @@ class FileChunkPageResponse(BaseModel):
 class FileChunkBuildResponse(BaseModel):
     """已有文件重新切片的结果。"""
     file_id: str  # 文件ID
-    chunk_count: int  # 本次生成的块数
+    chunk_count: int | None = None  # 后台完成前不能伪报最终块数
+    status: str = "queued"

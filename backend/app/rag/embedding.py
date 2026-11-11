@@ -40,10 +40,22 @@ async def prepare_embedding_model() -> bool:  # 启动阶段等待模型准备�
     logger.info("本地向量模型已准备完成：%s", settings.embedding_model)
     return True
 
-def _encode_sync(texts: list[str]) -> list[list[float]]:  # 工作线程执行计算；启动准备失败时仍允许重新加载
+def _encode_sync(texts: list[str], compact_query: bool = False) -> list[list[float]]:  # 工作线程执行计算；启动准备失败时仍允许重新加载
     with _model_lock:
         model = _get_model_locked()
         encoded = model.tokenizer(texts, add_special_tokens=True, truncation=False, verbose=False)
+        if compact_query and len(encoded['input_ids'][0]) > model.max_seq_length:
+            # 查询只保留能进入真实窗口的前部；文档仍严格拒绝超长，不能截断原文证据。
+            text, low, high = texts[0], 0, len(texts[0])
+            while low < high:
+                middle = (low + high + 1) // 2
+                ids = model.tokenizer([text[:middle]], add_special_tokens=True, truncation=False, verbose=False)['input_ids'][0]
+                if len(ids) <= model.max_seq_length:
+                    low = middle
+                else:
+                    high = middle - 1
+            texts = [text[:low]]
+            encoded = model.tokenizer(texts, add_special_tokens=True, truncation=False, verbose=False)
         if any(len(ids) > model.max_seq_length for ids in encoded["input_ids"]):
             raise ValueError("文字超过向量模型Token上限，请重新切片或缩短检索问题")  # 禁止静默丢弃片段尾部
         vectors = model.encode(texts, batch_size=32, normalize_embeddings=True, show_progress_bar=False)
@@ -70,5 +82,5 @@ async def embed_query(query: str) -> list[float]:  # 检索问题单独添加模
     if not isinstance(query, str) or not query.strip():
         raise ValueError("检索问题不能为空")
     text = settings.embedding_query_prefix + query.strip()
-    vectors = await embed_texts([text])
+    vectors = await anyio.to_thread.run_sync(_encode_sync, [text], True)
     return vectors[0]

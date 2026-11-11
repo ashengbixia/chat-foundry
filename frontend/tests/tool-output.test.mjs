@@ -38,6 +38,19 @@ test('来源只从配对工具结果恢复，快照定位兼容中文及emoji', 
   assert.equal(citations.locateCitation('已变化的正文', sources[0]).matches, false)
 })
 
+test('历史来源保留原回答信息，分段总结显示覆盖范围并以原文生成引用', async () => {
+  const citations = loader('src/utils/citations.ts')
+  const historical = { file_id: 'f1', filename: '历史资料.txt', citation_id: 1, start_offset: 3, content: '真正的原文', historical: true, origin_message_id: 'answer-before', origin_created_at: 100 }
+  const sources = citations.getCitationSources([call('h', 'read_history_sources'), result('h', JSON.stringify({ chunks: [historical] }))])
+  assert.equal(sources[0].historical, true)
+  assert.equal(sources[0].originMessageId, 'answer-before')
+  const summary = { chunks: [{ ...historical, historical: false, summary: '模型生成的归纳' }], total_files: 3, complete_files: 1, complete: false }
+  assert.equal(citations.getCitationSources([call('s', 'summarize_uploaded_files'), result('s', JSON.stringify(summary))])[0].content, '真正的原文')
+  const html = await renderToString(createSSRApp(ToolCallList, { output: [call('s', 'summarize_uploaded_files'), result('s', JSON.stringify(summary))] }))
+  assert.match(html, /完整覆盖 1\/3 份/)
+  assert.match(html, /其余未完整读取/)
+})
+
 test('按 ID 配对工具，保留调用顺序并忽略孤立结果', () => {
   assert.deepEqual(utils.getToolCalls([call('a'), call('b'), result('b', '第二个结果'), result('a'), result('orphan')]), [
     { callId: 'a', name: 'get_current_time', arguments: '{}', result: '{"timezone":"Asia/Shanghai"}', failed: false },

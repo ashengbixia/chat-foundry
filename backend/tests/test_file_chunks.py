@@ -2,7 +2,7 @@ from backend.tests.auth_fixture import allow_legacy_test_user
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import Mock, patch
+from unittest.mock import AsyncMock, Mock, patch
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import event, select
@@ -15,6 +15,7 @@ from backend.app.models.file import File
 from backend.app.models.file_chunk import FileChunk
 from backend.app.repositories.file import update_file
 from backend.tests.index_fixture import mock_file_vectors
+from backend.app.rag import indexing
 
 class SplitTextTests(unittest.TestCase):
     def test_default_overlap_and_last_chunk(self):
@@ -120,7 +121,8 @@ class FileChunkTests(unittest.IsolatedAsyncioTestCase):  # 只操作临时文件
         self.assertEqual((await self.client.get("/api/files/legacy/chunks")).json()["total"], 0)
         for _ in range(2):
             response = await self.client.post("/api/files/legacy/chunks")
-            self.assertEqual(response.json(), {"file_id": "legacy", "chunk_count": 1})
+            self.assertEqual(response.status_code, 202)
+            self.assertEqual(response.json(), {"file_id": "legacy", "chunk_count": None, "status": "queued"})
             chunks = await self.chunks("legacy")
             self.assertEqual(len(chunks), 1)
             self.assertEqual(chunks[0].content, "旧正文")
@@ -138,42 +140,46 @@ class FileChunkTests(unittest.IsolatedAsyncioTestCase):  # 只操作临时文件
         before = [(item.id, item.content) for item in await self.chunks("legacy")]
         event.listen(self.engine.sync_engine, "before_cursor_execute", self.fail_insert)
         try:
-            with patch.object(file_api, "logger", Mock()):
+            with patch.object(indexing, "split_for_embedding", AsyncMock(return_value=split_text('旧正文', 2, 0))), patch.object(indexing, 'logger', Mock()):
                 response = await self.client.post("/api/files/legacy/chunks")
         finally:
             event.remove(self.engine.sync_engine, "before_cursor_execute", self.fail_insert)
-        self.assertEqual(response.status_code, 500)
+        self.assertEqual(response.status_code, 202)
         self.assertNotIn("内部信息", response.text)
         self.assertEqual([(item.id, item.content) for item in await self.chunks("legacy")], before)
+        self.assertEqual((await self.client.get('/api/files/legacy')).json()['index_status'], 'failed')
 
     async def test_body_status_and_chunks_rollback_together(self):
         await self.client.post("/api/files/legacy/chunks")
         before = [(item.id, item.content) for item in await self.chunks("legacy")]
-        event.listen(self.engine.sync_engine, "before_cursor_execute", self.fail_insert)
+        def fail_delete(connection, cursor, statement, parameters, context, executemany):
+            if statement.lstrip().upper().startswith('DELETE FROM FILE_CHUNKS'):
+                raise RuntimeError('模拟旧切片删除失败')
+        event.listen(self.engine.sync_engine, "before_cursor_execute", fail_delete)
         try:
             async with self.sessions() as session:
                 with self.assertRaises(RuntimeError):
                     await update_file(session, "legacy", 100, text_content="不应提交的新正文")
         finally:
-            event.remove(self.engine.sync_engine, "before_cursor_execute", self.fail_insert)
+            event.remove(self.engine.sync_engine, "before_cursor_execute", fail_delete)
         async with self.sessions() as session:
             record = await session.get(File, "legacy")
             self.assertEqual((record.text_content, record.status, record.size), ("旧正文", "completed", 9))
         self.assertEqual([(item.id, item.content) for item in await self.chunks("legacy")], before)
 
-    async def test_failed_upload_cleans_file_and_partial_chunks(self):
+    async def test_failed_index_keeps_uploaded_source_without_partial_chunks(self):
         event.listen(self.engine.sync_engine, "before_cursor_execute", self.fail_insert)
         try:
-            with patch.object(service, "logger", Mock()):
+            with patch.object(indexing, "logger", Mock()):
                 response = await self.client.post("/api/files", files={"file": ("失败.txt", "测试正文".encode(), "text/plain")})
         finally:
             event.remove(self.engine.sync_engine, "before_cursor_execute", self.fail_insert)
-        self.assertEqual(response.status_code, 500)
+        self.assertEqual(response.status_code, 201)
         async with self.sessions() as session:
             record = (await session.execute(select(File).where(File.filename == "失败.txt"))).scalar_one()
-            self.assertEqual((record.status, record.text_content), ("failed", ""))
+            self.assertEqual((record.status, record.text_content, record.index_status), ("completed", "测试正文", 'failed'))
             self.assertEqual(await self.chunks(record.id), [])
-        self.assertEqual(list(self.upload_dir.iterdir()), [])
+        self.assertEqual(len(list(self.upload_dir.iterdir())), 1)
 
     async def test_marking_file_failed_clears_chunks(self):
         await self.client.post("/api/files/legacy/chunks")

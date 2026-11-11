@@ -1,3 +1,4 @@
+from backend.tests.auth_fixture import allow_legacy_test_user
 import tempfile
 import unittest
 from pathlib import Path
@@ -13,6 +14,7 @@ from backend.app.files.splitter import split_text
 from backend.app.models.file import File
 from backend.app.models.file_chunk import FileChunk
 from backend.app.repositories.file import update_file
+from backend.tests.index_fixture import mock_file_vectors
 
 class SplitTextTests(unittest.TestCase):
     def test_default_overlap_and_last_chunk(self):
@@ -49,6 +51,7 @@ class FileChunkTests(unittest.IsolatedAsyncioTestCase):  # 只操作临时文件
     async def asyncSetUp(self):
         self.engine = create_async_engine("sqlite+aiosqlite:///:memory:")
         self.sessions = async_sessionmaker(self.engine, expire_on_commit=False)
+        mock_file_vectors(self, self.sessions)
         await database.create_tables(self.engine)
         self.directory = tempfile.TemporaryDirectory()
         self.upload_dir = Path(self.directory.name) / "uploads"
@@ -58,6 +61,7 @@ class FileChunkTests(unittest.IsolatedAsyncioTestCase):  # 只操作临时文件
             session.add_all([File(id="legacy", filename="旧文件.txt", storage_path="legacy.txt", text_content="旧正文", status="completed", size=9), File(id="pending", filename="p.txt", storage_path="p.txt"), File(id="failed", filename="f.txt", storage_path="f.txt", status="failed")])
             await session.commit()
         app = FastAPI()
+        allow_legacy_test_user(app)
         app.include_router(file_api.router)
         async def override_db():
             async with self.sessions() as session:

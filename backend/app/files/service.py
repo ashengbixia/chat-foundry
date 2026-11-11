@@ -7,6 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from backend.app.core.database import DATA_DIR
 from backend.app.models.file import File
 from backend.app.repositories.file import create_file, delete_file_rows, prepare_file_deletion, update_file
+from backend.app.rag.vector_store import delete_all_file_vectors
 
 logger = logging.getLogger(__name__)  # 只在后端记录详细异常
 UPLOAD_DIR = DATA_DIR / "uploads"  # 所有原文件统一保存的位置
@@ -49,9 +50,13 @@ async def delete_uploaded_file(session: AsyncSession, file_id: str) -> bool:  # 
                 await anyio.Path(staged).unlink(missing_ok=True)
             except OSError:
                 logger.exception("清理删除暂存文件失败，文件ID：%s", file_id)
+        try:
+            await anyio.to_thread.run_sync(delete_all_file_vectors, file_id)  # SQL提交成功后清理，避免删除回滚时破坏原索引
+        except Exception:
+            logger.exception("文件已删除，但清理残留向量失败，文件ID：%s", file_id)  # 后续检索必须核对SQL文件存在和索引状态
         return True
 
-async def process_text_file(session: AsyncSession, upload: UploadFile) -> File:  # 校验 TXT、保存原文件、提取正文并入库
+async def process_text_file(session: AsyncSession, upload: UploadFile, user_id: str | None = None) -> File:  # 校验 TXT、保存原文件、提取正文并入库
     filename = PurePosixPath((upload.filename or "").replace("\\", "/")).name  # 去掉客户端路径，仅保留展示名称
     if not filename or len(filename) > 255 or "\x00" in filename:
         raise HTTPException(status_code=400, detail="文件名为空或不合法，最长 255 个字符")
@@ -60,7 +65,7 @@ async def process_text_file(session: AsyncSession, upload: UploadFile) -> File: 
     file_id = str(uuid.uuid4())  # 提前生成 ID，让数据库记录与磁盘文件对应
     storage_path = f"{file_id}.txt"  # 原始名称不参与磁盘路径拼接
     path = UPLOAD_DIR / storage_path  # 本次唯一的保存位置
-    await create_file(session, file_id, filename, storage_path, upload.content_type)
+    await create_file(session, file_id, filename, storage_path, upload.content_type, user_id)
     content = bytearray()  # 累计最多 5MB，用于完成后的 UTF-8 解码
     size = 0  # 当前已读取的字节数
     created = False  # 仅清理本次确实创建的文件

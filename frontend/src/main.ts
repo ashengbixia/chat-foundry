@@ -1,6 +1,6 @@
 import { createApp } from 'vue'
 import { createPinia } from 'pinia'
-import App from './App.vue'
+import App from './AuthRoot.vue'
 import './styles/theme.css'
 
 const app = createApp(App)

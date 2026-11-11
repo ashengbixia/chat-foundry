@@ -93,6 +93,9 @@ class BudgetClientTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_legacy_endpoint_returns_clear_budget_error(self):
         from backend.app import main
+        from backend.tests.auth_fixture import allow_legacy_test_user
+        allow_legacy_test_user(main.app)
+        self.addCleanup(main.app.dependency_overrides.clear)
         with patch.object(main, "generate_reply", AsyncMock(side_effect=InputBudgetError("模型输入超过预算"))):
             async with self.real_client(transport=httpx.ASGITransport(app=main.app), base_url="http://test") as client:
                 response = await client.post("/api/chat", json={"message": "问题"})

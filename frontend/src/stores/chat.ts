@@ -33,7 +33,7 @@ export const useChatStore = defineStore('chat', () => { // 集中保存聊天状
   const operationBusy = computed(() => sendingMessage.value || creatingChat.value || loadingMessages.value || loadingOlderMessages.value || deletingChatId.value !== null || renamingChatId.value !== null) // 是否正在执行会话或消息操作
   const pageBusy = computed(() => operationBusy.value || restoringChat.value) // 页面是否忙碌，包含启动恢复阶段
   const inputDisabled = computed(() => sendingMessage.value || creatingChat.value || loadingOlderMessages.value || deletingChatId.value !== null || renamingChatId.value !== null) // 输入框禁用规则
-  const sendDisabled = computed(() => !currentChat.value || !inputText.value.trim() || inputDisabled.value) // 发送按钮禁用规则
+  const sendDisabled = computed(() => !inputText.value.trim() || pageBusy.value) // 空白页也可发送，由页面先创建会话
   const canRetryReply = computed(() => { // 根据最后一条页面消息判断是否提供重试入口
     const latest = messages.value[messages.value.length - 1] // 最后一条页面消息
     if (!latest) return false
@@ -187,10 +187,6 @@ export const useChatStore = defineStore('chat', () => { // 集中保存聊天状
   }
   function addAttachment(file: FileInfo): boolean { // 添加已处理成功的文件，不读取正文
     if (pageBusy.value) return false
-    if (!currentChat.value) {
-      errorMessage.value = '请先新建或打开一个会话'
-      return false
-    }
     if (file.status !== 'completed') {
       errorMessage.value = '只能添加处理完成的文件'
       return false

@@ -32,6 +32,11 @@ export async function getFile(fileId: string, signal?: AbortSignal): Promise<Fil
   if (!response.ok) throw await createApiError(response, '读取文件信息失败')
   return await response.json()
 }
+export async function rebuildFileIndex(fileId: string, signal?: AbortSignal): Promise<FileInfo> { // 202表示已安排后台任务，之后手动刷新状态
+  const response = await fetch(`/api/files/${encodeURIComponent(fileId)}/index`, { method: 'POST', headers: { Accept: 'application/json' }, signal })
+  if (!response.ok) throw await createApiError(response, '建立文件索引失败')
+  return await response.json()
+}
 export async function getFileContent(fileId: string, signal?: AbortSignal): Promise<FileContent> { // 点击预览时才查询正文
   const response = await fetch(`/api/files/${encodeURIComponent(fileId)}/content`, { headers: { Accept: 'application/json' }, signal })
   if (!response.ok) throw await createApiError(response, '读取文件正文失败')

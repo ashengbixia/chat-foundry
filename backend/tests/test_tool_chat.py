@@ -8,6 +8,8 @@ from unittest.mock import AsyncMock, Mock, patch
 from backend.app.chat import service
 from backend.app.llm.client import ModelStreamError
 from backend.app.tools.registry import get_available_tools
+from backend.app.chat.context import build_model_messages
+from backend.app.llm.budget import estimate_input_tokens
 
 def text(value: str) -> dict:  # 构造正文事件
     return {"type": "text_delta", "text": value}
@@ -60,6 +62,27 @@ class ToolChatTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(events[-1].startswith("event: done"))
         self.assertEqual(closed, [0])
 
+    async def test_repeated_search_results_only_compact_model_input(self):
+        self.read.return_value = [SimpleNamespace(role="user", content="FT-204是什么", status="completed", attachments=[SimpleNamespace(file_id="f1", filename="资料.txt", size=1)])]
+        chunk = {"file_id": "f1", "filename": "资料.txt", "chunk_id": "c1", "start_offset": 0, "end_offset": 1000, "content": "资料" * 500}
+        original = json.dumps({"status": "ok", "chunks": [chunk]}, ensure_ascii=False)
+        requests, _ = self.model([[tool(name="search_uploaded_files", call_id="a")], [tool(name="search_uploaded_files", call_id="b")], [text("FT-204是泵出口流量。")]])
+        with patch.object(service, "execute_tool", AsyncMock(return_value=original)):
+            events = await self.run_chat()
+        self.assertEqual(len(requests), 3)
+        result = json.loads(requests[-1][0][-1]["content"])
+        self.assertEqual(result["chunks"], [])
+        self.assertEqual(len(result["omitted_duplicate_chunks"]), 1)
+        saved = self.update.call_args.kwargs
+        self.assertEqual(saved["status"], "completed")
+        expected = json.loads(original)
+        expected["chunks"][0]["citation_id"] = 1
+        snapshots = [json.loads(item["output"]) for item in saved["output"] if item["type"] == "function_call_output"]
+        self.assertEqual(snapshots, [expected, expected])  # 完整原文快照及后端编号均保存，重复检索沿用同一编号
+        self.assertEqual(json.loads(requests[1][0][-1]["content"])["chunks"][0]["citation_id"], 1)
+        streamed = [json.loads(event.split("data: ", 1)[1])["output"] for event in events if event.startswith("event: tool_result")]
+        self.assertEqual([json.loads(value) for value in streamed], snapshots)
+
     async def test_split_call_and_result_round_trip(self):
         requests, _ = self.model([[tool(name="get_current_", arguments="{"), {"type": "tool_call_delta", "tool_calls": [{"index": 0, "function": {"name": "time", "arguments": "}"}}]}], [text("当前是北京时间。")]])
         events = await self.run_chat()
@@ -94,6 +117,19 @@ class ToolChatTests(unittest.IsolatedAsyncioTestCase):
             await self.run_chat()
         self.assertEqual(execute.await_args.args[3], {"f1"})
         self.assertIn("read_uploaded_file", [definition["function"]["name"] for definition in requests[0][1]])
+
+    async def test_budget_trim_removes_attachment_access_and_recalculates_tools(self):
+        self.read.return_value = [SimpleNamespace(role="user", content="旧问题" * 2000, status="completed", attachments=[SimpleNamespace(file_id="old-file", filename="旧附件.txt", size=1)]), SimpleNamespace(role="assistant", content="旧回答", status="completed"), SimpleNamespace(role="user", content="最新问题", status="completed")]
+        original = build_model_messages(self.read.return_value)
+        current = [original[0], original[-1]]
+        budget = estimate_input_tokens(current, get_available_tools(set())) + 1000
+        requests, _ = self.model([[tool(name="read_uploaded_file", arguments='{"file_id":"old-file"}')], [text("附件已不在当前上下文，请重新添加。")]])
+        config = SimpleNamespace(llm_model="test", llm_context_window=budget + 10, llm_max_output_tokens=10, llm_context_margin=0)
+        with patch.object(service, "settings", config):
+            await self.run_chat()
+        self.assertEqual([item["function"]["name"] for item in requests[0][1]], ["get_current_time"])
+        self.assertEqual(sum(item["role"] == "user" for item in requests[0][0]), 1)
+        self.assertIn("不属于", json.loads(requests[1][0][-1]["content"])["error"])
 
     async def test_next_turn_restores_saved_tool_history(self):  # 使用上一轮实际保存的 output 构造下一轮输入
         self.model([[tool()], [text("当前是北京时间。")]])

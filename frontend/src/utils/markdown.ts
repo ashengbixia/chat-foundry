@@ -6,7 +6,17 @@ parser.renderer.rules.image = (tokens, index) => { // 图片不自动加载外�
 }
 parser.renderer.rules.table_open = () => '<div class="table-wrap"><table>' // 宽表格只在自己的区域横向滚动
 parser.renderer.rules.table_close = () => '</table></div>'
+parser.renderer.rules.text = (tokens, index, _options, env) => { // 仅正文文本中的真实来源编号可点击，代码块和普通链接保持原样
+  const content = parser.utils.escapeHtml(tokens[index]?.content || '')
+  let linkDepth = 0 // 防止在模型生成的普通链接内部嵌套引用按钮
+  for (let offset = 0; offset < index; offset++) {
+    if (tokens[offset]?.type === 'link_open') linkDepth++
+    if (tokens[offset]?.type === 'link_close') linkDepth--
+  }
+  if (linkDepth > 0 || !env?.citationIds) return content
+  return content.replace(/\[(\d+)\]/g, (label, value) => env.citationIds.has(Number(value)) ? `<button type="button" class="citation-link" data-citation-id="${Number(value)}" aria-label="查看来源 ${Number(value)}">${label}</button>` : label)
+}
 
-export function renderMarkdown(content: string): string { // 只有经过受限解析的结果才交给 v-html
-  return parser.render(content)
+export function renderMarkdown(content: string, citationIds: number[] = []): string { // 只有经过受限解析的结果才交给 v-html
+  return parser.render(content, { citationIds: new Set(citationIds) })
 }

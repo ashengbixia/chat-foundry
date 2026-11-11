@@ -13,9 +13,11 @@ async def prepare_file_deletion(session: AsyncSession, file_id: str):  # 先取�
     result = await session.execute(update(File).where(File.id == file_id).values(updated_at=File.updated_at))
     if result.rowcount == 0:
         return None
-    record = (await session.execute(select(File.id, File.storage_path, File.status).where(File.id == file_id))).one()
+    record = (await session.execute(select(File.id, File.storage_path, File.status, File.index_task_id, File.index_status).where(File.id == file_id))).one()
     if record.status == "processing":
         raise FileDeletionError("文件正在处理中，请稍后再删除")
+    if record.index_task_id is not None or record.index_status == "indexing":
+        raise FileDeletionError("文件正在等待或建立索引，请稍后再删除")
     return record
 
 async def delete_file_rows(session: AsyncSession, file_id: str):  # 保留历史快照，切断外键后再删除切片及文件
@@ -23,13 +25,14 @@ async def delete_file_rows(session: AsyncSession, file_id: str):  # 保留历史
     await session.execute(delete(FileChunk).where(FileChunk.file_id == file_id))
     await session.execute(delete(File).where(File.id == file_id))
 
-async def list_files(session: AsyncSession) -> list[File]:  # 查询全部基本信息，最近更新的排在前面
-    statement = select(File).options(load_only(File.id, File.filename, File.content_type, File.size, File.status, File.error, File.created_at, File.updated_at)).order_by(File.updated_at.desc(), File.id.desc())
+async def list_files(session: AsyncSession, user_id: str | None = None) -> list[File]:  # 查询当前账号的基本信息，最近更新的排在前面
+    statement = select(File).options(load_only(File.id, File.filename, File.content_type, File.size, File.status, File.error, File.created_at, File.updated_at, File.index_status, File.index_error, File.index_key, File.index_task_id)).order_by(File.updated_at.desc(), File.id.desc())
+    statement = statement.where(File.user_id == user_id)
     result = await session.execute(statement)
     return list(result.scalars().all())
 
-async def create_file(session: AsyncSession, file_id: str, filename: str, storage_path: str, content_type: str | None) -> File:  # 创建正在处理的文件记录
-    record = File(id=file_id, filename=filename, storage_path=storage_path, content_type=content_type)
+async def create_file(session: AsyncSession, file_id: str, filename: str, storage_path: str, content_type: str | None, user_id: str | None = None) -> File:  # 创建正在处理的文件记录
+    record = File(id=file_id, filename=filename, storage_path=storage_path, content_type=content_type, user_id=user_id)
     try:
         session.add(record)
         await session.commit()
@@ -47,10 +50,15 @@ async def update_file(session: AsyncSession, file_id: str, size: int, text_conte
         record = await get_file(session, file_id)
         if record is None:
             raise ValueError("文件记录不存在")
+        if record.index_busy:
+            raise ValueError("文件正在等待或建立索引，不能替换正文和切片")
         record.size = size
         record.text_content = text_content
         record.status = "failed" if error is not None else "completed"
         record.error = error
+        record.index_status = "pending"
+        record.index_error = None
+        record.index_key = None
         await replace_file_chunks(session, file_id, text_content if error is None else "")  # 正文、状态、切片同一事务保存，失败时清理未完成切片
         await session.commit()
         await session.refresh(record)

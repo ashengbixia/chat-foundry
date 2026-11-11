@@ -3,8 +3,8 @@ import type { MessageAttachment } from '../../types/file'
 import { onMounted, ref, watch } from 'vue'
 import AppIcon from '../AppIcon.vue'
 
-const props = defineProps<{ modelValue: string; inputDisabled: boolean; sendDisabled: boolean; sending: boolean; attachments?: MessageAttachment[] }>() // 接收正文、附件和禁用状态
-const emit = defineEmits<{ 'update:modelValue': [value: string]; send: []; stop: []; openFiles: []; removeAttachment: [fileId: string] }>() // 将输入、文件和生成操作交给父页面
+const props = defineProps<{ modelValue: string; inputDisabled: boolean; sendDisabled: boolean; sending: boolean; attachments?: MessageAttachment[]; uploadingAttachments?: boolean }>() // 接收正文、附件和禁用状态
+const emit = defineEmits<{ 'update:modelValue': [value: string]; send: []; stop: []; openFiles: []; pickFiles: []; removeAttachment: [fileId: string] }>() // 文件按钮直接选择上传，不必绕道管理面板
 const textareaElement = ref<HTMLTextAreaElement | null>(null) // 输入框元素，用于按内容调整高度
 function resizeInput() { // 高度最多180像素，超出后在输入框内滚动
   const element = textareaElement.value
@@ -46,8 +46,9 @@ function removeAttachment(fileId: string) { // 移除待发送的附件，不删
     </ul>
     <textarea ref="textareaElement" :value="modelValue" :disabled="inputDisabled" rows="2" aria-label="输入你的问题" placeholder="有什么想一起探索的？" @input="handleInput" @keydown="handleKeydown"></textarea>
     <div class="composer-toolbar">
-      <button class="attach-button" type="button" :disabled="inputDisabled" @click="emit('openFiles')"><AppIcon name="plus" :size="17" /><span>添加资料</span></button>
+      <button class="attach-button" type="button" :disabled="inputDisabled || uploadingAttachments" aria-label="选择文件并添加到问题" @click="emit('pickFiles')"><AppIcon name="plus" :size="17" /><span>{{ uploadingAttachments ? '上传中…' : '添加文件' }}</span></button>
       <span class="keyboard-hint">Enter 发送 · Shift + Enter 换行</span>
+      <slot name="model-picker"></slot>
       <button v-if="sending" class="send-button stop-button" type="button" aria-label="停止生成" title="停止生成" @click="emit('stop')"><AppIcon name="stop" :size="17" /></button>
       <button v-else class="send-button" type="submit" :disabled="sendDisabled" aria-label="发送消息" title="发送消息"><AppIcon name="arrow" :size="20" /></button>
     </div>
@@ -64,7 +65,8 @@ textarea:disabled { opacity: .65; }
 .composer-toolbar { display: flex; align-items: center; gap: 12px; margin-top: 8px; }
 .attach-button { display: flex; align-items: center; gap: 6px; padding: 6px 8px; border: 0; border-radius: 7px; background: transparent; font-size: 11px; color: #777f88; }
 .attach-button:hover:not(:disabled) { background: var(--surface); }
-.keyboard-hint { margin-left: auto; font-size: 10px; color: #a1a5ad; }
+.keyboard-hint { margin-left: auto; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-size: 10px; color: #a1a5ad; }
+.composer-toolbar :deep(.composer-model-picker) { margin-left: auto; }
 .send-button { display: grid; place-items: center; width: 34px; height: 34px; flex-shrink: 0; border: 0; border-radius: 11px; background: #263b32; color: #fff; }
 .send-button:hover:not(:disabled) { background: #267d69; }
 .send-button:disabled { background: #e7ebe8; color: #9fa9a3; opacity: 1; }
@@ -73,5 +75,5 @@ textarea:disabled { opacity: .65; }
 .pending-attachments li { display: flex; align-items: center; gap: 6px; max-width: 100%; padding: 5px 6px 5px 9px; background: var(--surface); border: 1px solid var(--border); border-radius: 8px; font-size: 11px; color: #66716a; }
 .pending-attachments li > span { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .pending-attachments .icon-button { width: 22px; height: 22px; }
-@media (max-width: 600px) { .keyboard-hint { display: none; } .send-button { margin-left: auto; } .composer { padding: 14px 12px 10px; border-radius: 16px; } }
+@media (max-width: 600px) { .keyboard-hint, .attach-button span { display: none; } .composer { padding: 14px 12px 10px; border-radius: 16px; } }
 </style>

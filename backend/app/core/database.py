@@ -35,6 +35,8 @@ async def get_db():
     async with SessionLocal() as session:
         yield session
 def register_models():  # 集中注册模型，供启动、迁移检查和测试共用
+    from backend.app.models.user import User, UserSession
+    from backend.app.models.model_setting import UserModelSetting
     from backend.app.models.chat import Chat, Message
     from backend.app.models.file import File  # 注册文件表，启动时创建尚不存在的表
     from backend.app.models.message_file import MessageFile  # 注册消息附件关联表

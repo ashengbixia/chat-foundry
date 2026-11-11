@@ -1,5 +1,6 @@
 from typing import Literal  # 限制文件处理状态
-from pydantic import BaseModel, ConfigDict  # 定义接口返回格式
+from pydantic import BaseModel, ConfigDict, model_validator  # 定义接口返回格式
+from backend.app.rag.vector_store import get_index_key
 
 class FileResponse(BaseModel):
     """返回文件基本信息，不返回磁盘路径和完整正文。"""
@@ -12,6 +13,16 @@ class FileResponse(BaseModel):
     error: str | None  # 失败说明
     created_at: int  # 创建时间
     updated_at: int  # 更新时间
+    index_status: Literal["pending", "indexing", "ready", "failed"] = "pending"  # 向量索引状态
+    index_error: str | None = None  # 索引失败说明
+    index_key: str | None = None  # 已建立索引的向量配置
+    index_busy: bool = False  # 不向前端暴露任务令牌
+
+    @model_validator(mode="after")
+    def check_index_config(self):  # 更换模型后，旧索引不能误显示为可检索
+        if self.index_status == "ready" and self.index_key != get_index_key():
+            self.index_status = "pending"
+        return self
 
 class FileContentResponse(BaseModel):
     """需要查看正文时单独查询，避免基本信息接口返回大量文字。"""

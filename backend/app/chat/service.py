@@ -6,10 +6,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.core.config import settings
 from backend.app.repositories.chat import create_message, update_message,list_recent_messages
-from backend.app.chat.context import build_model_messages, trim_model_messages
+from backend.app.chat.context import build_model_messages, get_context_file_ids, trim_model_messages
+from backend.app.chat.tool_context import project_tool_results
+from backend.app.chat.citations import add_citation_ids
 from backend.app.llm.budget import InputBudgetError
 from backend.app.chat.events import format_sse
 from backend.app.llm.client import ModelStreamError, stream_reply, stream_model_events
+from backend.app.llm.connection import ModelConnection
 from backend.app.tools.registry import execute_tool, get_available_tools  # 根据本次附件范围提供工具
 import asyncio  # 识别异步任务取消
 import anyio  # 为取消后的清理提供短暂保护
@@ -19,12 +22,13 @@ from backend.app.repositories.chat import cancel_message  # 保存取消状态
 logger = logging.getLogger(__name__)
 
 
-async def stream_chat_events(message: str) -> AsyncIterator[str]:
+async def stream_chat_events(message: str, connection: ModelConnection | None = None) -> AsyncIterator[str]:
     """读取模型正文，转换成前端可以识别的事件。"""
     try:
         messages = [{"role": "user", "content": message}]
         # 离开这个代码块时，确保关闭模型流的生成器。
-        async with aclosing(stream_reply(messages)) as stream:
+        reply = stream_reply(messages, connection) if connection is not None else stream_reply(messages)
+        async with aclosing(reply) as stream:
             async for text in stream:
                 yield format_sse("text_delta", {"text": text})
 
@@ -45,11 +49,14 @@ async def stream_chat_events(message: str) -> AsyncIterator[str]:
 async def stream_chat_history_events(
     session: AsyncSession,
     chat_id: str,
+    connection: ModelConnection | None = None,
 ) -> AsyncGenerator[str, None]:
     """读取已保存的会话历史，调用模型并产出事件。"""
     assistant_message_id = None  # 当前助手消息的数据库 ID
     text_parts = []  # 所有正文片段
     output = []  # 本次回答的正文、工具调用和工具结果
+    raw_tool_results = {}  # 本轮完整结果，用于每次重新计算模型输入视图
+    citation_sources = {}  # 本条助手回答内的来源编号，重复读取同一正文沿用编号
     try:
         # ① 查询数据库中的最近消息,组装模型输入
         history = await list_recent_messages(
@@ -59,15 +66,11 @@ async def stream_chat_history_events(
         if not history:
             raise ValueError("没有可以发送给模型的消息")
 
-        allowed_file_ids = set()  # 只允许读取本次已完成用户历史中明确关联的附件
-        for message in history:
-            if message.role == "user" and message.status == "completed":
-                for attachment in getattr(message, "attachments", []):
-                    allowed_file_ids.add(attachment.file_id)
-        available_tools = get_available_tools(allowed_file_ids)
-
         # ② 将数据库对象转换成模型输入。
-        messages = build_model_messages(history)
+        attachment_scopes = {}  # 在内存中关联每条模型消息与真实附件，随上下文裁剪缩小权限
+        messages = build_model_messages(history, attachment_scopes=attachment_scopes)
+        allowed_file_ids = get_context_file_ids(messages, attachment_scopes)
+        available_tools = get_available_tools(allowed_file_ids)
 
         # ② 创建一条正在生成的助手消息。
         assistant_message = await create_message(
@@ -76,7 +79,7 @@ async def stream_chat_history_events(
             role="assistant",
             content="",
             status="generating",
-            model=settings.llm_model,
+            model=connection.model if connection is not None else settings.llm_model,
         )
         assistant_message_id=assistant_message.id
 
@@ -86,11 +89,18 @@ async def stream_chat_history_events(
             round_text_parts = []  # 本次模型请求产生的正文
             round_output = None  # 收到正文时创建记录，停止或失败时也能保存当前片段
             tools = available_tools if request_index < 4 else None  # 最后一次只要求生成回答
-            trimmed = trim_model_messages(messages, tools, settings.llm_context_window, settings.llm_max_output_tokens, settings.llm_context_margin)  # 每一轮都检查，工具结果也计入
+            def resolve_tools(context):  # 每裁掉一轮历史，同时重算附件工具及其输入开销
+                return get_available_tools(get_context_file_ids(context, attachment_scopes)) if request_index < 4 else None
+            messages = project_tool_results(messages, raw_tool_results, resolve_tools(messages), settings.llm_context_window, settings.llm_max_output_tokens, settings.llm_context_margin)
+            trimmed = trim_model_messages(messages, tools, settings.llm_context_window, settings.llm_max_output_tokens, settings.llm_context_margin, resolve_tools=resolve_tools)  # 工具结果也计入预算
             if len(trimmed) < len(messages):
                 logger.info("本次模型输入裁剪了 %s 条旧消息，数据库历史保持不变", len(messages) - len(trimmed))
             messages = trimmed
-            async with aclosing(stream_model_events(messages, tools)) as stream:
+            allowed_file_ids = get_context_file_ids(messages, attachment_scopes)  # 已裁掉的旧问题不能继续授权附件访问
+            available_tools = get_available_tools(allowed_file_ids)
+            tools = available_tools if request_index < 4 else None
+            events = stream_model_events(messages, tools, connection) if connection is not None else stream_model_events(messages, tools)
+            async with aclosing(events) as stream:
                 async for event in stream:
                     if event["type"] == "text_delta":
                         text = event["text"]  # 当前正文片段
@@ -136,7 +146,9 @@ async def stream_chat_history_events(
                 except Exception:
                     logger.exception("工具执行失败：%s", name)
                     result = '{"error":"工具执行失败，请检查工具名称和参数，或告知用户无法完成。"}'
+                result = add_citation_ids(name, result, citation_sources, allowed_file_ids)  # 编号随原文快照一起保存并发送给前端
                 messages.append({"role": "tool", "tool_call_id": call["id"], "content": result})
+                raw_tool_results[call["id"]] = result
                 output.append({"type": "function_call_output", "call_id": call["id"], "output": result})
                 yield format_sse("tool_result", {"call_id": call["id"], "output": result})
         # ④ 模型正常结束，保存完整回答。

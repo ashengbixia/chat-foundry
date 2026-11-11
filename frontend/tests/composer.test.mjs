@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs'
 import test from 'node:test'
 import { parse } from '@vue/compiler-sfc'
 import ts from 'typescript'
+import { createTypeScriptLoader } from './helpers/loadTypeScript.mjs'
 
 const { descriptor } = parse(readFileSync(new URL('../src/components/chat/MessageInput.vue', import.meta.url), 'utf8'))
 const tree = ts.createSourceFile('MessageInput.ts', descriptor.scriptSetup.content, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS)
@@ -15,6 +16,19 @@ function fixture(overrides = {}) {
   const actions = new Function('props', 'emit', 'textareaElement', `${code}; return { handleKeydown, handleInput, resizeInput, removeAttachment }`)(props, (...args) => events.push(args), textareaElement)
   return { props, events, textareaElement, actions }
 }
+
+test('弹窗仅点击外侧关闭，内部点击和从内部拖到外侧不关闭', () => {
+  let closed = 0
+  const backdrop = createTypeScriptLoader()('src/utils/dialog.ts').createDialogBackdrop(() => closed++)
+  const dialog = { getBoundingClientRect: () => ({ left: 100, right: 400, top: 100, bottom: 400 }) }
+  const inside = { currentTarget: dialog, target: dialog, clientX: 150, clientY: 150 }
+  const outside = { ...inside, clientX: 20 }
+  backdrop.pointerdown(inside); backdrop.click(inside)
+  backdrop.pointerdown(inside); backdrop.click(outside)
+  assert.equal(closed, 0)
+  backdrop.pointerdown(outside); backdrop.click(outside)
+  assert.equal(closed, 1)
+})
 
 test('Enter发送，Shift+Enter和中文输入法确认不发送也不拦截换行', () => {
   const { actions, events } = fixture()

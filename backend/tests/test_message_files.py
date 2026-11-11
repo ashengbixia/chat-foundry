@@ -1,3 +1,4 @@
+from backend.tests.auth_fixture import allow_legacy_test_user
 import unittest
 from unittest.mock import patch
 from fastapi import FastAPI
@@ -25,6 +26,7 @@ class MessageFileTests(unittest.IsolatedAsyncioTestCase):  # 不连接真实数�
             session.add_all([File(id=f"f{index}", filename=f"资料{index}.txt", storage_path=f"f{index}.txt", size=index, text_content="不应自动发给模型的正文", status=status) for index, status in [(1, "completed"), (2, "completed"), (3, "processing"), (4, "failed"), (5, "completed"), (6, "completed")]])
             await session.commit()
         app = FastAPI()
+        allow_legacy_test_user(app)
         app.include_router(router)
         async def override_db():
             async with self.sessions() as session:

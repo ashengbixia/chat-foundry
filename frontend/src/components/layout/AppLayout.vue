@@ -3,7 +3,7 @@ import { ref, watch } from 'vue'
 import AppIcon from '../AppIcon.vue'
 
 const props = defineProps<{ filesOpen: boolean; currentChatId?: string | null }>() // 文件面板状态，以及窄屏自动收起侧栏的依据
-const emit = defineEmits<{ closeFiles: [] }>() // 通知父页面关闭文件区域
+const emit = defineEmits<{ closeFiles: []; openSettings: [] }>() // 布局只发出事件，设置数据由专门面板管理
 const sidebarOpen = ref(false) // 窄屏下是否展开侧栏
 watch(() => props.currentChatId, () => { sidebarOpen.value = false }) // 成功新建或切换会话后收起窄屏导航
 </script>
@@ -21,16 +21,14 @@ watch(() => props.currentChatId, () => { sidebarOpen.value = false }) // 成功�
         <slot name="sidebar"></slot>
       </div>
       <footer class="sidebar-footer">
-        <span title="设置功能暂未开放">
-          <button class="settings-button" type="button" disabled><AppIcon name="settings" :size="16" />设置<span>即将开放</span></button>
-        </span>
-        <div class="user-info">
+        <button class="settings-button" type="button" @click="sidebarOpen = false; emit('openSettings')"><AppIcon name="settings" :size="16" />设置<span>模型服务</span></button>
+        <slot name="account"><div class="user-info">
           <span class="avatar" aria-hidden="true">U</span>
           <div>
             <strong>本地用户</strong>
             <small>个人工作空间</small>
           </div>
-        </div>
+        </div></slot>
       </footer>
     </aside>
     <main class="workspace">

@@ -1,3 +1,4 @@
+from backend.tests.auth_fixture import allow_legacy_test_user
 import asyncio
 import io
 import tempfile
@@ -13,11 +14,13 @@ from backend.app.core.database import Base, get_db
 from backend.app.files import service
 from backend.app.models.file import File
 from backend.app.repositories.file import list_files
+from backend.tests.index_fixture import mock_file_vectors
 
 class FileUploadTests(unittest.IsolatedAsyncioTestCase):  # 测试仅使用临时目录和内存数据库
     async def asyncSetUp(self):
         self.engine = create_async_engine("sqlite+aiosqlite:///:memory:")
         self.sessions = async_sessionmaker(self.engine, expire_on_commit=False)
+        mock_file_vectors(self, self.sessions)
         async with self.engine.begin() as connection:
             await connection.run_sync(Base.metadata.create_all)
         self.directory = tempfile.TemporaryDirectory()
@@ -25,6 +28,7 @@ class FileUploadTests(unittest.IsolatedAsyncioTestCase):  # 测试仅使用临�
         self.path_patch = patch.object(service, "UPLOAD_DIR", self.upload_dir)
         self.path_patch.start()
         self.app = FastAPI()
+        allow_legacy_test_user(self.app)
         self.app.include_router(router)
         async def override_db():
             async with self.sessions() as session:
@@ -55,7 +59,11 @@ class FileUploadTests(unittest.IsolatedAsyncioTestCase):  # 测试仅使用临�
         self.assertIsNone(record["error"])
         self.assertNotIn("storage_path", record)
         self.assertNotIn("text_content", record)
-        self.assertEqual((await self.client.get(f'/api/files/{record["id"]}')).json(), record)
+        latest = (await self.client.get(f'/api/files/{record["id"]}')).json()
+        self.assertEqual(record["index_status"], "pending")  # 上传响应先返回，测试传输器随后等待后台任务执行完
+        self.assertEqual(latest["index_status"], "ready")
+        self.assertEqual(latest["id"], record["id"])
+        self.assertFalse(latest["index_busy"])
         self.assertEqual((await self.client.get(f'/api/files/{record["id"]}/content')).json(), {"id": record["id"], "text_content": "中文测试\n第二行"})
         saved = (await self.records())[0]
         self.assertEqual((self.upload_dir / saved.storage_path).read_bytes(), data)
@@ -151,7 +159,7 @@ class FileUploadTests(unittest.IsolatedAsyncioTestCase):  # 测试仅使用临�
             self.assertEqual(len(records), 105)
             self.assertEqual([record["id"] for record in records[:2]], ["tie-b", "tie-a"])
             self.assertEqual([record["id"] for record in records[2:]], [f"file-{index:03d}" for index in reversed(range(103))])
-            self.assertTrue(all(set(record) == {"id", "filename", "content_type", "size", "status", "error", "created_at", "updated_at"} for record in records))
+            self.assertTrue(all(set(record) == {"id", "filename", "content_type", "size", "status", "error", "created_at", "updated_at", "index_status", "index_error", "index_key", "index_busy"} for record in records))
         finally:
             event.remove(self.engine.sync_engine, "before_cursor_execute", capture)
         self.assertTrue(statements)

@@ -43,3 +43,32 @@ export function getToolStatus(call: DisplayToolCall, status: DisplayMessage['sta
   if (status === 'failed') return '调用中断，未收到结果'
   return '未记录结果'
 }
+
+export interface RetrievalPreview { // 将检索结果整理为可展示的来源卡片，原始JSON仍保留
+  status: 'ok' | 'unavailable' | 'no_matches'
+  chunks: { fileId: string; filename: string; chunkId: string; chunkIndex: number; content: string; startOffset: number; endOffset: number; truncated: boolean }[]
+  unavailable: { fileId: string; filename: string; message: string }[]
+  notice: string
+  truncated: boolean
+}
+export function getRetrievalPreview(output: string | null): RetrievalPreview | null { // 损坏的旧结果回退为原始文本，不在页面执行任何内容
+  if (output === null) return null
+  try {
+    const value: unknown = JSON.parse(output)
+    if (!isRecord(value) || !['ok', 'unavailable', 'no_matches'].includes(String(value.status)) || !Array.isArray(value.chunks)) return null
+    const chunks: RetrievalPreview['chunks'] = []
+    for (const item of value.chunks.slice(0, 10)) {
+      if (!isRecord(item) || typeof item.file_id !== 'string' || typeof item.filename !== 'string' || typeof item.chunk_id !== 'string' || typeof item.content !== 'string') continue
+      if (typeof item.chunk_index !== 'number' || !Number.isInteger(item.chunk_index) || item.chunk_index < 0) continue
+      if (typeof item.start_offset !== 'number' || !Number.isInteger(item.start_offset) || item.start_offset < 0 || typeof item.end_offset !== 'number' || !Number.isInteger(item.end_offset) || item.end_offset < item.start_offset) continue
+      chunks.push({ fileId: item.file_id, filename: item.filename, chunkId: item.chunk_id, chunkIndex: item.chunk_index, content: item.content, startOffset: item.start_offset, endOffset: item.end_offset, truncated: item.truncated === true })
+    }
+    const unavailable: RetrievalPreview['unavailable'] = []
+    for (const item of Array.isArray(value.unavailable_files) ? value.unavailable_files : []) {
+      if (isRecord(item) && typeof item.file_id === 'string' && typeof item.message === 'string') unavailable.push({ fileId: item.file_id, filename: typeof item.filename === 'string' ? item.filename : '原附件', message: item.message })
+    }
+    return { status: value.status as RetrievalPreview['status'], chunks, unavailable, notice: typeof value.notice === 'string' ? value.notice : '', truncated: value.truncated === true }
+  } catch {
+    return null
+  }
+}

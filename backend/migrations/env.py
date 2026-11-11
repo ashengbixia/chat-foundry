@@ -10,6 +10,8 @@ from backend.app.models.chat import Chat, Message
 from backend.app.models.file import File  # 让迁移比较也能识别文件表
 from backend.app.models.message_file import MessageFile  # 识别消息附件关联表
 from backend.app.models.file_chunk import FileChunk  # 识别文件切片表
+from backend.app.models.user import User, UserSession
+from backend.app.models.model_setting import UserModelSetting
 
 
 # Alembic 的配置对象。

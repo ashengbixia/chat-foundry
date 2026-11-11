@@ -9,7 +9,7 @@ import ts from 'typescript'
 import { createTypeScriptLoader } from './helpers/loadTypeScript.mjs'
 
 const api = createTypeScriptLoader()('src/api/files.ts') // 加载真实的文件请求代码
-const record = { id: 'file-id', filename: '资料.txt', content_type: 'text/plain', size: 10, status: 'completed', error: null, created_at: 1, updated_at: 1 }
+const record = { id: 'file-id', filename: '资料.txt', content_type: 'text/plain', size: 10, status: 'completed', error: null, index_status: 'pending', index_error: null, index_key: null, index_busy: false, created_at: 1, updated_at: 1 }
 const selected = () => new File(['测试资料'], '资料.txt', { type: 'text/plain' })
 const source = readFileSync(new URL('../src/components/files/FilePanel.vue', import.meta.url), 'utf8')
 const { descriptor } = parse(source)
@@ -27,7 +27,7 @@ function fixture(overrides = {}, props = {}) { // 使用真实 Vue ref，替换�
   const unmount = []
   const mount = []
   const emitted = []
-  const actions = { validateTextFile: api.validateTextFile, deleteFile: async () => {}, listFiles: async () => [record], uploadFile: async () => record, getFile: async () => record, getFileContent: async () => ({ id: record.id, text_content: '提取的正文' }), ...overrides }
+  const actions = { validateTextFile: api.validateTextFile, deleteFile: async () => {}, listFiles: async () => [record], uploadFile: async () => record, getFile: async () => record, getFileContent: async () => ({ id: record.id, text_content: '提取的正文' }), rebuildFileIndex: async () => ({ ...record, index_status: 'pending', index_busy: true }), ...overrides }
   const tracked = Object.fromEntries(Object.entries(actions).map(([name, action]) => [name, (...args) => { calls.push([name, ...args]); return action(...args) }]))
   const component = evaluate(script.content, { '../../api/files': tracked, vue: { ...nativeRequire('vue'), onMounted: (callback) => mount.push(callback), onUnmounted: (callback) => unmount.push(callback) } }).default
   const state = component.setup(props, { expose() {}, emit: (...args) => emitted.push(args) })
@@ -43,6 +43,95 @@ function confirmDeletion(context, confirmed = true) { // 安装模拟确认框�
   Object.defineProperty(globalThis, 'window', { configurable: true, value: { confirm: () => confirmed } })
   context.after(() => { if (descriptor) Object.defineProperty(globalThis, 'window', descriptor); else delete globalThis.window })
 }
+
+test('索引重建请求编码ID，返回后台等待状态，错误使用后端说明', async (context) => {
+  context.mock.method(globalThis, 'fetch', async (url, options) => {
+    assert.equal(url, '/api/files/a%2Fb/index')
+    assert.equal(options.method, 'POST')
+    return Response.json({ ...record, index_busy: true }, { status: 202 })
+  })
+  assert.equal((await api.rebuildFileIndex('a/b')).index_busy, true)
+  context.mock.method(globalThis, 'fetch', async () => Response.json({ detail: '正在建立索引' }, { status: 409 }))
+  await assert.rejects(api.rebuildFileIndex('a'), /正在建立索引/)
+})
+
+test('文字处理和索引状态独立展示，等待、计算、完成和失败不会混淆', () => {
+  const { state } = fixture()
+  for (const [index_status, index_busy, text] of [['pending', false, '待建立索引'], ['pending', true, '等待建立索引'], ['indexing', true, '正在建立索引'], ['ready', false, '可检索'], ['failed', false, '索引失败']]) {
+    assert.equal(state.indexStatusText({ ...record, index_status, index_busy }), text)
+  }
+})
+
+test('索引任务每2秒自动刷新，操作时暂停，完成后停止并保留预览', async (context) => {
+  let scheduled = null
+  context.mock.method(globalThis, 'setTimeout', (callback, delay) => { assert.equal(delay, 2000); scheduled = callback; return 1 })
+  context.mock.method(globalThis, 'clearTimeout', () => { scheduled = null })
+  let ready = false
+  const { state, mount, unmount, calls } = fixture({ listFiles: async () => [{ ...record, index_status: ready ? 'ready' : 'indexing', index_busy: !ready }] })
+  await mount[0]()
+  assert.equal(typeof scheduled, 'function')
+  state.textContent.value = '保留正文'
+  state.contentLoaded.value = true
+  state.previewOpen.value = true
+  state.uploading.value = true
+  assert.equal(scheduled, null)
+  state.uploading.value = false
+  assert.equal(typeof scheduled, 'function')
+  ready = true
+  const callback = scheduled
+  scheduled = null // 模拟计时器已触发，后续只有重新安排才会再次赋值
+  await callback()
+  assert.equal(state.uploadedFile.value.index_status, 'ready')
+  assert.equal(state.textContent.value, '保留正文')
+  assert.equal(state.previewOpen.value, true)
+  assert.equal(scheduled, null)
+  unmount[0]()
+  assert.equal(calls.filter(([name]) => name === 'listFiles').length, 2)
+})
+
+test('重建索引保留预览并同步列表，重复操作和后台任务期间的删除会拦截', async (context) => {
+  confirmDeletion(context)
+  let finish
+  const { state, calls } = fixture({ rebuildFileIndex: () => new Promise((resolve) => { finish = resolve }) })
+  state.files.value = [record]
+  state.displayFile(record)
+  state.textContent.value = '保留正文'
+  state.previewOpen.value = true
+  state.contentLoaded.value = true
+  const pending = state.rebuildIndex()
+  await state.rebuildIndex()
+  await state.removeFile(record)
+  assert.equal(calls.filter(([name]) => name === 'rebuildFileIndex').length, 1)
+  assert.equal(calls.filter(([name]) => name === 'deleteFile').length, 0)
+  finish({ ...record, index_status: 'pending', index_busy: true })
+  await pending
+  assert.equal(state.uploadedFile.value.index_busy, true)
+  assert.equal(state.files.value[0].index_busy, true)
+  assert.equal(state.textContent.value, '保留正文')
+  assert.equal(state.previewOpen.value, true)
+  await state.rebuildIndex()
+  await state.removeFile(state.uploadedFile.value)
+  assert.equal(calls.length, 1)
+})
+
+test('索引请求失败可重试，刷新完成后释放任务状态，卸载后忽略迟到结果', async () => {
+  const { state } = fixture({ rebuildFileIndex: async () => { throw new Error('索引请求失败') }, getFile: async () => ({ ...record, index_status: 'ready' }) })
+  state.displayFile(record)
+  await state.rebuildIndex()
+  assert.match(state.errorMessage.value, /索引请求失败/)
+  assert.equal(state.busy.value, false)
+  await state.refreshFile()
+  assert.equal(state.uploadedFile.value.index_status, 'ready')
+  let finish
+  const other = fixture({ rebuildFileIndex: () => new Promise((resolve) => { finish = resolve }) })
+  other.state.displayFile(record)
+  const pending = other.state.rebuildIndex()
+  other.unmount[0]()
+  finish({ ...record, index_busy: true })
+  await pending
+  assert.equal(other.state.uploadedFile.value.index_busy, false)
+  assert.equal(other.state.busy.value, false)
+})
 
 test('删除请求编码 ID，204不解析空正文，409显示处理中说明', async (context) => {
   context.mock.method(globalThis, 'fetch', async (url, options) => {
@@ -348,4 +437,16 @@ test('页面渲染上传状态和预览正文；HTML 正文只作为文字展示
   assert.match(html, /处理完成/)
   assert.match(html, /&lt;script&gt;/)
   assert.ok(!html.includes('<script>'))
+})
+
+test('输入框直接选择文件后上传并附加，超出剩余数量不上传', async () => {
+  const { state, emitted, calls } = fixture({ uploadFile: async (file) => ({ ...record, id: file.name, filename: file.name }) }, { attachmentSlots: 2 })
+  const files = [new File(['正文'], 'a.txt'), new File(['正文'], 'b.txt')]
+  await state.uploadAttachments({ target: { files, value: 'selected' } })
+  assert.deepEqual(emitted.filter(([name]) => name === 'attach').map(([, file]) => file.id), ['a.txt', 'b.txt'])
+  assert.deepEqual(emitted.filter(([name]) => name === 'attachmentUpload'), [['attachmentUpload', true], ['attachmentUpload', false]])
+  assert.equal(state.files.value.length, 2)
+  await state.uploadAttachments({ target: { files: [...files, selected()], value: 'selected' } })
+  assert.equal(calls.filter(([name]) => name === 'uploadFile').length, 2)
+  assert.match(emitted.at(-1)[1], /减少选择数量/)
 })

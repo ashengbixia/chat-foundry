@@ -5,31 +5,32 @@ from collections.abc import AsyncIterator
 from typing import Any  # 模型消息和事件可以包含不同类型的数据
 from contextlib import aclosing  # 外层停止读取时，及时关闭内部模型流
 from backend.app.llm.budget import ensure_input_budget
+from backend.app.llm.connection import ModelConnection
 
 class ModelStreamError(RuntimeError):
     """模型流未完整结束，或回答被服务端截断；说明可直接展示给用户。"""
 
-async def generate_reply(message: str) -> str:
+async def generate_reply(message: str, connection: ModelConnection | None = None) -> str:
     """把用户的问题发送给模型，返回回答正文。"""
-    api_key = settings.llm_api_key.get_secret_value()  # 仅在后端请求模型时读取密钥，不打印或返回给前端
+    connection = connection or ModelConnection(settings.llm_base_url, settings.llm_model, settings.llm_timeout, settings.llm_api_key)
+    api_key = connection.api_key.get_secret_value()  # 仅在后端请求模型时读取密钥，不打印或返回给前端
     # 先检查必要配置，避免发送无效请求。
     if not all((
-        settings.llm_base_url,
-        api_key,
-        settings.llm_model,
+        connection.base_url,
+        api_key or connection.allow_no_key,
+        connection.model,
     )):
         raise ValueError("请先配置模型地址、密钥和模型名称")
 
     # 地址应是模型服务的 API 基础地址。
-    url = settings.llm_base_url.rstrip("/") + "/chat/completions"
+    url = connection.base_url.rstrip("/") + "/chat/completions"
 
-    headers = {
-        "Authorization": f"Bearer {api_key}",
-        "Content-Type": "application/json",
-    }
+    headers = {"Content-Type": "application/json"}
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
 
     payload = {
-        "model": settings.llm_model,
+        "model": connection.model,
         "messages": [
             {"role": "user", "content": message}
         ],
@@ -39,7 +40,7 @@ async def generate_reply(message: str) -> str:
     ensure_input_budget(payload["messages"], None, settings.llm_context_window, settings.llm_max_output_tokens, settings.llm_context_margin)
 
     async with httpx.AsyncClient(
-        timeout=settings.llm_timeout
+        timeout=connection.timeout
     ) as client:
         response = await client.post(
             url,
@@ -63,26 +64,26 @@ async def generate_reply(message: str) -> str:
 
         return content
 
-async def stream_model_events(messages: list[dict[str, Any]], tools: list[dict[str, Any]] | None = None) -> AsyncIterator[dict[str, Any]]:
+async def stream_model_events(messages: list[dict[str, Any]], tools: list[dict[str, Any]] | None = None, connection: ModelConnection | None = None) -> AsyncIterator[dict[str, Any]]:
     """流式读取模型的正文和工具调用片段，不执行工具。"""
 
-    api_key = settings.llm_api_key.get_secret_value()  # 流式请求同样只在后端读取真实密钥
+    connection = connection or ModelConnection(settings.llm_base_url, settings.llm_model, settings.llm_timeout, settings.llm_api_key)
+    api_key = connection.api_key.get_secret_value()  # 流式请求同样只在后端读取真实密钥
     if not all((
-        settings.llm_base_url,
-        api_key,
-        settings.llm_model,
+        connection.base_url,
+        api_key or connection.allow_no_key,
+        connection.model,
     )):
         raise ValueError("请先配置模型地址、密钥和模型名称")
 
-    url = settings.llm_base_url.rstrip("/") + "/chat/completions"
+    url = connection.base_url.rstrip("/") + "/chat/completions"
 
-    headers = {
-        "Authorization": f"Bearer {api_key}",
-        "Content-Type": "application/json",
-    }
+    headers = {"Content-Type": "application/json"}
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
 
     payload = {
-        "model": settings.llm_model,
+        "model": connection.model,
         "messages": messages,
         "stream": True,
         "max_tokens": settings.llm_max_output_tokens,
@@ -93,7 +94,7 @@ async def stream_model_events(messages: list[dict[str, Any]], tools: list[dict[s
     ensure_input_budget(messages, tools, settings.llm_context_window, settings.llm_max_output_tokens, settings.llm_context_margin)  # 所有流式入口都必须通过检查
 
     async with httpx.AsyncClient(
-        timeout=settings.llm_timeout
+        timeout=connection.timeout
     ) as client:
         async with client.stream(
             "POST",
@@ -159,9 +160,10 @@ async def stream_model_events(messages: list[dict[str, Any]], tools: list[dict[s
             if not received_text and not received_tool:
                 raise ModelStreamError("模型没有返回正文或工具调用")
 
-async def stream_reply(messages: list[dict[str, str]]) -> AsyncIterator[str]:
+async def stream_reply(messages: list[dict[str, str]], connection: ModelConnection | None = None) -> AsyncIterator[str]:
     """兼容现有聊天流程，不传工具定义，仍然只产出正文。"""
-    async with aclosing(stream_model_events(messages)) as stream:
+    events = stream_model_events(messages, connection=connection) if connection is not None else stream_model_events(messages)
+    async with aclosing(events) as stream:
         async for event in stream:
             if event["type"] == "text_delta":
                 yield event["text"]

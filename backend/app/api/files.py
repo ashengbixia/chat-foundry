@@ -1,26 +1,32 @@
 import logging
 import anyio
-from fastapi import APIRouter, Depends, HTTPException, Query, Response, UploadFile
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Response, UploadFile
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from backend.app.core.database import get_db
 from backend.app.files.service import delete_uploaded_file, process_text_file
 from backend.app.repositories.file import FileDeletionError, get_file, list_files
 from backend.app.models.file import File
-from backend.app.repositories.file_chunk import list_file_chunks, replace_file_chunks
+from backend.app.repositories.file_chunk import list_file_chunks
 from backend.app.schemas.file import FileChunkBuildResponse, FileChunkPageResponse, FileContentResponse, FileResponse
+from backend.app.rag.indexing import IndexBusyError, index_file, reserve_file_index
+from backend.app.auth import check_file_access, get_current_user
+from backend.app.models.user import User
 
 logger = logging.getLogger(__name__)  # 记录后端异常，不向客户端暴露磁盘路径
-router = APIRouter(prefix="/api/files", tags=["文件管理"])  # 文件接口分组
+router = APIRouter(prefix="/api/files", tags=["文件管理"], dependencies=[Depends(check_file_access)])  # 所有文件路径共用账号与归属检查
 
 @router.get("", response_model=list[FileResponse])
-async def list_files_endpoint(session: AsyncSession = Depends(get_db)):  # 只返回文件基本信息，不读取正文
-    return await list_files(session)
+async def list_files_endpoint(session: AsyncSession = Depends(get_db), user: User = Depends(get_current_user)):  # 只返回当前账号的文件
+    return await list_files(session, user.id)
 
 @router.post("", response_model=FileResponse, status_code=201)
-async def upload_file_endpoint(file: UploadFile, session: AsyncSession = Depends(get_db)):  # multipart/form-data 中的字段名为 file
+async def upload_file_endpoint(background_tasks: BackgroundTasks, file: UploadFile, session: AsyncSession = Depends(get_db), user: User = Depends(get_current_user)):  # 上传响应后再执行索引
     try:
-        return await process_text_file(session, file)
+        record = await process_text_file(session, file, user.id)
+        record, task_id = await reserve_file_index(session, record.id)
+        background_tasks.add_task(index_file, record.id, task_id)
+        return record
     except HTTPException:
         raise
     except Exception:
@@ -71,17 +77,32 @@ async def list_file_chunks_endpoint(file_id: str, offset: int = Query(default=0,
     return {"items": items, "total": total, "offset": offset, "limit": limit}
 
 @router.post("/{file_id}/chunks", response_model=FileChunkBuildResponse)
-async def rebuild_file_chunks_endpoint(file_id: str, session: AsyncSession = Depends(get_db)):  # 为旧文件补建切片，重复执行替换旧切片
-    record = await get_file(session, file_id)
-    if record is None:
-        raise HTTPException(status_code=404, detail="文件不存在")
-    if record.status != "completed":
-        raise HTTPException(status_code=409, detail="文件尚未处理成功")
+async def rebuild_file_chunks_endpoint(file_id: str, background_tasks: BackgroundTasks, session: AsyncSession = Depends(get_db)):  # 替换切片与预约新索引在同一个SQL事务中完成
     try:
-        count = await replace_file_chunks(session, file_id, record.text_content)
-        await session.commit()
+        record, task_id = await reserve_file_index(session, file_id, rebuild_chunks=True)
+        _, count = await list_file_chunks(session, file_id, 0, 1)
+        background_tasks.add_task(index_file, record.id, task_id)
         return {"file_id": file_id, "chunk_count": count}
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail="文件不存在") from None
+    except IndexBusyError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from None
     except Exception:
         await session.rollback()
         logger.exception("重新切片失败，文件ID：%s", file_id)
         raise HTTPException(status_code=500, detail="重新切片失败，请查看后端日志") from None
+
+@router.post("/{file_id}/index", response_model=FileResponse, status_code=202)
+async def rebuild_file_index_endpoint(file_id: str, background_tasks: BackgroundTasks, session: AsyncSession = Depends(get_db)):  # 仅重建向量，不修改原文与切片ID
+    try:
+        record, task_id = await reserve_file_index(session, file_id)
+        background_tasks.add_task(index_file, file_id, task_id)
+        return record
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail="文件不存在") from None
+    except IndexBusyError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from None
+    except Exception:
+        await session.rollback()
+        logger.exception("安排文件索引失败，文件ID：%s", file_id)
+        raise HTTPException(status_code=500, detail="安排文件索引失败，请查看后端日志") from None

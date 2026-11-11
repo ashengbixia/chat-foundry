@@ -140,11 +140,22 @@ test('页面协调：仅 missing 清记录，仅 restored 等待页面更新后�
     let mounted // 页面登记的启动回调
     let pageUpdated = false // 模拟页面更新是否完成
     const result = { status, chat: status === 'restored' ? chat : null } // 模拟 store 初始化结果
-    const wrapper = new Function('onMounted', 'initializeChat', 'getLastChatId', 'clearLastChatId', 'saveLastChatId', 'nextTick', 'scrollMessagesToBottom', `let autoFollowMessages = false; ${code}; return { get following() { return autoFollowMessages } }`)(
+    const wrapper = new Function('onMounted', 'initializeChat', 'getLastChatId', 'clearLastChatId', 'saveLastChatId', 'nextTick', 'scrollMessagesToBottom', `const accountId = 'test-user'; let autoFollowMessages = false; ${code}; return { get following() { return autoFollowMessages } }`)(
       (callback) => { mounted = callback }, async () => result, () => chat.id, () => events.push('clear'), () => events.push('save'), async () => { pageUpdated = true; events.push('tick') }, () => { assert.equal(pageUpdated, true); events.push('scroll') },
     )
     await mounted()
     assert.deepEqual(events, status === 'missing' ? ['clear'] : status === 'restored' ? ['save', 'tick', 'scroll'] : [])
     assert.equal(wrapper.following, status === 'restored')
   }
+})
+
+test('空白页第一次发送自动创建会话，保留正文与附件', async () => {
+  const script = parse(readFileSync(new URL('../src/App.vue', import.meta.url), 'utf8')).descriptor.scriptSetup.content
+  const tree = ts.createSourceFile('App.ts', script, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS)
+  const method = tree.statements.find((node) => ts.isFunctionDeclaration(node) && node.name?.text === 'sendChatMessage')
+  const code = ts.transpileModule(method.getText(tree), { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText
+  const input = { value: '已经写好的问题' }, current = { value: null }, attachments = { value: [{ file_id: 'f1' }] }, sent = []
+  const send = new Function('inputText', 'currentChat', 'selectedAttachments', 'createNewChat', 'sendMessage', 'saveLastChatId', `const interactionBusy = {value:false}, accountId = 'u1', pageActive = true; let autoFollowMessages = false; ${code}; return sendChatMessage`)(input, current, attachments, async () => { current.value = { id: 'new' }; input.value = ''; attachments.value = []; return current.value }, async () => sent.push([current.value.id, input.value, attachments.value]), () => {})
+  await send()
+  assert.deepEqual(sent, [['new', '已经写好的问题', [{ file_id: 'f1' }]]])
 })

@@ -1,10 +1,11 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref } from 'vue'
-import { deleteFile, getFile, getFileContent, listFiles, uploadFile, validateTextFile } from '../../api/files'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
+import { deleteFile, getFile, getFileContent, listFiles, rebuildFileIndex, uploadFile, validateTextFile } from '../../api/files'
 import type { FileInfo } from '../../types/file'
 
-const props = defineProps<{ attachDisabled?: boolean; deleteDisabled?: boolean }>() // 聊天正在操作时禁止删除文件
-const emit = defineEmits<{ attach: [file: FileInfo]; removed: [fileId: string] }>() // 删除成功后通知父页面清理待发送附件
+const props = defineProps<{ attachDisabled?: boolean; deleteDisabled?: boolean; attachmentSlots?: number }>() // 输入框上传与管理面板共用同一套文件操作
+const emit = defineEmits<{ attach: [file: FileInfo]; removed: [fileId: string]; attachmentUpload: [active: boolean]; attachmentError: [message: string] }>()
+const attachPicker = ref<HTMLInputElement | null>(null) // 输入框“＋”直接打开的本地文件选择器
 const selectedFile = ref<File | null>(null) // 当前选择的本地文件
 const uploadedFile = ref<FileInfo | null>(null) // 当前查看的后端文件，可以是新上传或历史文件
 const files = ref<FileInfo[]>([]) // 已保存的文件列表，不包含正文
@@ -12,20 +13,127 @@ const loadingFiles = ref(false) // 是否正在读取列表
 const deletingFileId = ref<string | null>(null) // 正在删除的文件，用于禁用操作和显示进度
 const uploading = ref(false) // 是否正在上传并等待后端处理
 const refreshing = ref(false) // 是否正在刷新处理状态
+const rebuildingIndex = ref(false) // 是否正在提交索引请求，不代表后台索引已经完成
 const loadingContent = ref(false) // 是否正在读取正文
 const textContent = ref('') // 已提取的正文
 const contentLoaded = ref(false) // 是否已成功读取本文件正文
 const previewOpen = ref(false) // 是否展开正文预览
 const errorMessage = ref('') // 文件区域自己的错误提示
-const busy = computed(() => uploading.value || refreshing.value || loadingContent.value || loadingFiles.value || deletingFileId.value !== null) // 文件操作互斥，防止重复删除
+const pollingError = ref('') // 自动刷新失败单独提示，不覆盖上传、删除等操作的错误
+const busy = computed(() => uploading.value || refreshing.value || rebuildingIndex.value || loadingContent.value || loadingFiles.value || deletingFileId.value !== null) // 文件操作互斥
 const statusText = computed(() => { // 将后端状态转换为中文
   if (uploadedFile.value?.status === 'completed') return '处理完成'
   if (uploadedFile.value?.status === 'failed') return '处理失败'
   return '处理中'
 })
 let requestController: AbortController | null = null // 组件销毁时取消当前上传或查询请求
-onMounted(loadFiles) // 页面打开后恢复文件列表，默认查看最近一份
-onUnmounted(() => requestController?.abort()) // 不让已离开的页面继续等待请求
+let pollingTimer: ReturnType<typeof setTimeout> | null = null // 每次请求结束后再安排下一次，避免请求重叠
+let pollingController: AbortController | null = null // 后台刷新独立取消，不占用页面操作状态
+let mounted = false // 仅在组件挂载后安排刷新，卸载后不再启动请求
+const hasPendingFiles = computed(() => files.value.some((file) => file.status === 'processing' || file.index_busy || file.index_status === 'indexing')) // 待手动重建的旧索引不需要持续查询
+function attachmentError(message: string) { errorMessage.value = message; emit('attachmentError', message) } // 面板隐藏时也能在聊天区看见失败原因
+function pickAttachments() {
+  if (busy.value || props.attachDisabled) { attachmentError('文件区域正在处理其他操作，请稍后再试'); return }
+  if ((props.attachmentSlots ?? 3) <= 0) { attachmentError('每条消息最多添加3份附件，请先移除一份'); return }
+  attachPicker.value?.click()
+}
+async function uploadAttachments(event: Event) { // 选择后立即上传，成功的文件直接加入本次问题
+  const input = event.target as HTMLInputElement
+  const selected = Array.from(input.files ?? [])
+  input.value = ''
+  if (!selected.length || busy.value || props.attachDisabled) return
+  if (selected.length > (props.attachmentSlots ?? 3)) { attachmentError(`本次还可添加${props.attachmentSlots ?? 3}份附件，请减少选择数量`); return }
+  for (const file of selected) { const error = validateTextFile(file); if (error) { attachmentError(`${file.name}：${error}`); return } }
+  const controller = new AbortController()
+  requestController = controller
+  uploading.value = true
+  errorMessage.value = ''
+  emit('attachmentUpload', true)
+  try {
+    for (const file of selected) {
+      const record = await uploadFile(file, controller.signal)
+      if (controller.signal.aborted) return
+      files.value = [record, ...files.value.filter((item) => item.id !== record.id)]
+      if (!uploadedFile.value) displayFile(record)
+      emit('attach', record)
+    }
+  } catch (error) {
+    if (!controller.signal.aborted) attachmentError(error instanceof Error ? error.message : '上传附件失败')
+  } finally {
+    uploading.value = false
+    requestController = null
+    emit('attachmentUpload', false)
+  }
+}
+defineExpose({ pickAttachments })
+onMounted(async () => { mounted = true; await loadFiles() }) // 页面打开后恢复文件列表，默认查看最近一份
+onUnmounted(() => { // 离开页面时同时停止计时器、后台查询及当前操作
+  mounted = false
+  stopPolling()
+  requestController?.abort()
+})
+watch([hasPendingFiles, busy], schedulePolling, { flush: 'sync' }) // 状态完成后停止，操作期间暂停，操作结束后自动恢复
+
+function stopPolling() { // 停止等待和正在进行的后台查询
+  if (pollingTimer !== null) clearTimeout(pollingTimer)
+  pollingTimer = null
+  pollingController?.abort()
+}
+function schedulePolling() { // 有后台任务时每2秒刷新，不因为自动查询禁用按钮
+  if (pollingTimer !== null) clearTimeout(pollingTimer)
+  pollingTimer = null
+  if (!hasPendingFiles.value) pollingError.value = ''
+  if (!mounted || busy.value || !hasPendingFiles.value) {
+    pollingController?.abort()
+    return
+  }
+  if (pollingController === null) pollingTimer = setTimeout(pollFileStatuses, 2000)
+}
+async function pollFileStatuses() { // 只刷新文件基本信息，保留当前选择和已展开的正文
+  pollingTimer = null
+  if (!mounted || busy.value || !hasPendingFiles.value || pollingController !== null) return
+  const controller = new AbortController() // 当前后台查询，用户操作开始时会取消它
+  pollingController = controller
+  try {
+    const records = await listFiles(controller.signal)
+    if (!mounted || controller.signal.aborted || busy.value) return
+    const currentId = uploadedFile.value?.id // 采用响应到达时的选择，不能跳回查询发起时的旧文件
+    files.value = records
+    displayFile(records.find((item) => item.id === currentId) ?? records[0] ?? null)
+    pollingError.value = ''
+  } catch (error) {
+    if (mounted && !controller.signal.aborted) pollingError.value = '状态自动刷新失败，稍后会重试，也可以手动刷新。'
+  } finally {
+    pollingController = null
+    schedulePolling()
+  }
+}
+
+function indexStatusText(file: FileInfo): string { // 旧响应缺少字段时按待建立索引处理
+  if (file.index_status === 'ready') return '可检索'
+  if (file.index_status === 'indexing') return '正在建立索引'
+  if (file.index_status === 'failed') return '索引失败'
+  return file.index_busy ? '等待建立索引' : '待建立索引'
+}
+async function rebuildIndex() { // 仅提交后台任务，原文和预览保持不变
+  const file = uploadedFile.value
+  if (!file || file.status !== 'completed' || file.index_busy || file.index_status === 'indexing' || busy.value || props.deleteDisabled) return
+  const controller = new AbortController()
+  requestController = controller
+  rebuildingIndex.value = true
+  errorMessage.value = ''
+  try {
+    const record = await rebuildFileIndex(file.id, controller.signal)
+    if (controller.signal.aborted) return
+    uploadedFile.value = record
+    files.value = files.value.map((item) => item.id === record.id ? record : item)
+  } catch (error) {
+    if (!controller.signal.aborted) errorMessage.value = error instanceof Error ? error.message : '建立索引失败'
+  } finally {
+    rebuildingIndex.value = false
+    requestController = null
+  }
+}
 
 function displayFile(file: FileInfo | null) { // 切换文件时清理旧预览，同一份已完成文件保留预览
   const changed = uploadedFile.value?.id !== file?.id // 判断文件是否已经切换
@@ -48,7 +156,7 @@ function selectSavedFile(fileId: string) { // 点击文件名选中，同名文�
   displayFile(file)
 }
 async function removeFile(file: FileInfo) { // 删除一份历史文件，失败时保留列表和预览
-  if (busy.value || props.deleteDisabled || file.status === 'processing') return
+  if (busy.value || props.deleteDisabled || file.status === 'processing' || file.index_busy || file.index_status === 'indexing') return
   if (!window.confirm(`确定永久删除文件“${file.filename}”及其切片吗？`)) return
   const controller = new AbortController()
   requestController = controller
@@ -128,7 +236,7 @@ async function submitFile() { // 上传成功才替换现有展示，失败时�
     requestController = null
   }
 }
-async function refreshFile() { // 手动查看后端最新状态，不启动轮询
+async function refreshFile() { // 手动查看所选文件最新状态，后台任务仍由自动刷新跟进
   const file = uploadedFile.value // 本次查询的文件
   if (!file || busy.value) return
   const controller = new AbortController()
@@ -180,8 +288,9 @@ async function togglePreview() { // 按需读取正文，再次展开同一文�
 
 <template>
   <section class="file-panel" aria-labelledby="file-panel-title" :aria-busy="busy">
+    <input ref="attachPicker" type="file" accept=".txt" multiple hidden aria-label="直接上传聊天附件" @change="uploadAttachments" />
     <h2 id="file-panel-title">把资料带进对话</h2>
-    <p class="hint">上传文本，添加到问题，让助手围绕你的资料回答。支持 UTF-8 TXT，最大 5MB。</p>
+    <p class="hint">支持 UTF-8 TXT，最大 5MB。上传后自动建立向量索引，状态会自动更新。</p>
     <form class="upload-form" @submit.prevent="submitFile">
       <label class="file-picker" :class="{ disabled: busy }"><span class="upload-symbol" aria-hidden="true">＋</span><strong>{{ selectedFile ? '重新选择文件' : '选择 TXT 文件' }}</strong><small>每次问题最多添加 3 份资料</small><input type="file" accept=".txt" :disabled="busy" aria-label="选择TXT文件" @change="selectFile" /></label>
       <button type="submit" :disabled="!selectedFile || busy">{{ uploading ? '正在上传并处理…' : '上传' }}</button>
@@ -193,20 +302,25 @@ async function togglePreview() { // 按需读取正文，再次展开同一文�
     </div>
     <ul v-if="files.length" class="saved-files" aria-label="历史文件">
       <li v-for="file in files" :key="file.id" :class="{ current: uploadedFile?.id === file.id }">
-        <button type="button" class="file-name" :disabled="busy" :aria-pressed="uploadedFile?.id === file.id" :title="`${file.filename} · ${file.id}`" @click="selectSavedFile(file.id)"><span class="file-type">TXT</span><span>{{ file.filename }}<small>{{ formatSize(file.size) }} · {{ file.status === 'completed' ? '可引用' : file.status === 'failed' ? '处理失败' : '处理中' }}</small></span></button>
-        <button type="button" class="delete-file" :disabled="busy || props.deleteDisabled || file.status === 'processing'" :aria-label="`删除文件 ${file.filename}`" :title="`删除 ${file.filename}`" @click="removeFile(file)">{{ deletingFileId === file.id ? '…' : '×' }}</button>
+        <button type="button" class="file-name" :disabled="busy" :aria-pressed="uploadedFile?.id === file.id" :title="`${file.filename} · ${file.id}`" @click="selectSavedFile(file.id)"><span class="file-type">TXT</span><span>{{ file.filename }}<small>{{ formatSize(file.size) }} · {{ file.status === 'completed' ? indexStatusText(file) : file.status === 'failed' ? '处理失败' : '处理中' }}</small></span></button>
+        <button type="button" class="delete-file" :disabled="busy || props.deleteDisabled || file.status === 'processing' || file.index_busy || file.index_status === 'indexing'" :aria-label="`删除文件 ${file.filename}`" :title="file.index_busy || file.index_status === 'indexing' ? '索引任务完成后可删除' : `删除 ${file.filename}`" @click="removeFile(file)">{{ deletingFileId === file.id ? '…' : '×' }}</button>
       </li>
     </ul>
     <div v-else-if="!loadingFiles" class="empty-files">这里还没有资料<small>上传第一份文件，建立你的对话资料库。</small></div>
     <p v-if="errorMessage" role="alert">{{ errorMessage }}</p>
+    <p v-if="pollingError" class="hint" role="status">{{ pollingError }}</p>
     <div v-if="uploadedFile" class="file-result">
       <p><strong>{{ uploadedFile.filename }}</strong> · {{ formatSize(uploadedFile.size) }} · <span role="status">{{ statusText }}</span></p>
       <details class="file-id"><summary>文件信息</summary><p>文件ID：{{ uploadedFile.id }}</p></details>
       <p v-if="uploadedFile.error" role="alert">{{ uploadedFile.error }}</p>
+      <p v-if="uploadedFile.status === 'completed'" class="index-status" role="status">向量索引：{{ indexStatusText(uploadedFile) }}</p>
+      <p v-if="uploadedFile.index_error" role="alert">{{ uploadedFile.index_error }}</p>
+      <p v-if="uploadedFile.index_busy || uploadedFile.index_status === 'indexing'" class="hint">索引在后台执行，状态每2秒自动更新。首次使用可能需要下载模型。</p>
       <div class="file-actions">
         <button type="button" :disabled="busy || props.attachDisabled || uploadedFile.status !== 'completed'" @click="attachFile">添加到本次问题</button>
         <button type="button" :disabled="busy" @click="refreshFile">{{ refreshing ? '正在刷新…' : '刷新状态' }}</button>
         <button type="button" :disabled="busy || uploadedFile.status !== 'completed'" @click="togglePreview">{{ loadingContent ? '正在读取正文…' : previewOpen ? '收起正文' : '查看正文' }}</button>
+        <button type="button" :disabled="busy || props.deleteDisabled || uploadedFile.status !== 'completed' || uploadedFile.index_busy || uploadedFile.index_status === 'indexing'" @click="rebuildIndex">{{ rebuildingIndex ? '正在提交…' : uploadedFile.index_status === 'ready' ? '重建索引' : '建立 / 重试索引' }}</button>
       </div>
       <pre v-if="previewOpen" class="file-preview" aria-label="提取出的文件正文">{{ textContent }}</pre>
     </div>

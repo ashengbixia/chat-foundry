@@ -27,7 +27,7 @@ class DatabaseSetupTests(unittest.TestCase):  # 全部使用临时磁盘库，�
     def make_old_database(self, with_attachment=True):  # 从当前结构降级，构造真实的旧版表结构
         db_setup.prepare_database(self.path)
         command.downgrade(db_setup.make_config(self.path), "5b9b94b2c2ac")
-        self.execute("INSERT INTO chats VALUES ('chat', '保留会话', 1, 1); INSERT INTO messages (id, chat_id, sequence, role, content, output, status, created_at, updated_at) VALUES ('msg', 'chat', 1, 'user', '保留正文', '[]', 'completed', 1, 1);")
+        self.execute("INSERT INTO chats (id, title, created_at, updated_at) VALUES ('chat', '保留会话', 1, 1); INSERT INTO messages (id, chat_id, sequence, role, content, output, status, created_at, updated_at) VALUES ('msg', 'chat', 1, 'user', '保留正文', '[]', 'completed', 1, 1);")
         if with_attachment:
             self.execute("INSERT INTO files (id, filename, size, storage_path, text_content, status, created_at, updated_at) VALUES ('file', '附件.txt', 6, 'file.txt', '原文', 'completed', 1, 1); INSERT INTO message_files VALUES ('msg', 'file', '附件.txt', 6, 0);")
         else:
@@ -40,9 +40,20 @@ class DatabaseSetupTests(unittest.TestCase):  # 全部使用临时磁盘库，�
         tables = {row[0] for row in self.query("SELECT name FROM sqlite_master WHERE type='table'")}
         self.assertTrue({"chats", "messages", "files", "message_files", "file_chunks", "alembic_version"} <= tables)
 
+    def test_previous_version_upgrade_preserves_file_and_starts_pending(self):
+        db_setup.prepare_database(self.path)
+        command.downgrade(db_setup.make_config(self.path), "b7e2a4c9d610")
+        self.execute("INSERT INTO files (id, filename, size, storage_path, text_content, status, created_at, updated_at) VALUES ('file', '保留.txt', 6, 'file.txt', '已有正文', 'completed', 1, 1)")
+        with self.assertRaisesRegex(RuntimeError, "需要升级"):
+            db_setup.prepare_database(self.path)
+        result = db_setup.prepare_database(self.path, upgrade=True)
+        self.assertEqual(result["status"], "upgraded")
+        self.assertEqual(self.query("SELECT text_content, status, index_status, index_task_id FROM files"), [("已有正文", "completed", "pending", None)])
+        self.assertEqual(result["revision"], "f1c6e9a4b832")
+
     def test_current_database_does_not_change_data_or_create_backup(self):
         db_setup.prepare_database(self.path)
-        self.execute("INSERT INTO chats VALUES ('chat', '不变', 1, 1);")
+        self.execute("INSERT INTO chats (id, title, created_at, updated_at) VALUES ('chat', '不变', 1, 1);")
         before = self.path.read_bytes()
         self.assertEqual(db_setup.prepare_database(self.path, upgrade=True)["status"], "ready")
         self.assertEqual(before, self.path.read_bytes())
@@ -123,7 +134,7 @@ class DatabaseSetupTests(unittest.TestCase):  # 全部使用临时磁盘库，�
         db_setup.prepare_database(self.path)
         with closing(sqlite3.connect(str(self.path))) as connection:
             connection.execute("PRAGMA journal_mode=WAL")
-            connection.execute("INSERT INTO chats VALUES ('wal', 'WAL中的数据', 1, 1)")
+            connection.execute("INSERT INTO chats (id, title, created_at, updated_at) VALUES ('wal', 'WAL中的数据', 1, 1)")
             connection.commit()
             backup = db_setup.backup_database(self.path)
             with closing(sqlite3.connect(str(backup))) as copied:

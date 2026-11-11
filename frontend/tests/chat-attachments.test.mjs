@@ -32,7 +32,8 @@ test('保存消息发送附件 ID，旧调用使用空列表', async (context) =
 test('附件校验、去重、最多3份和移除都在仓库执行', () => {
   const { store } = fixture()
   store.currentChat = null
-  assert.equal(store.addAttachment(file('f1')), false)
+  assert.equal(store.addAttachment(file('f1')), true)
+  store.removeAttachment('f1') // 空白页可先准备附件，首次发送时再创建会话
   store.currentChat = chat
   assert.equal(store.addAttachment(file('bad', 'failed')), false)
   for (const id of ['f1', 'f2', 'f3']) assert.equal(store.addAttachment(file(id)), true)

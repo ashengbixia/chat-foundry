@@ -22,8 +22,21 @@ function component(filename, mocks) { // 在内存编译真实 Vue 组件，用�
   return module.exports.default
 }
 const ToolCallList = component('ToolCallList.vue', { '../../utils/toolOutput': utils })
-const MessageList = component('MessageList.vue', { './ToolCallList.vue': ToolCallList, '../../utils/markdown': createTypeScriptLoader()('src/utils/markdown.ts') })
+const loader = createTypeScriptLoader()
+const MessageAnswer = component('MessageAnswer.vue', { '../../utils/markdown': loader('src/utils/markdown.ts'), '../../utils/citations': loader('src/utils/citations.ts'), '../../utils/dialog': loader('src/utils/dialog.ts'), '../../api/files': loader('src/api/files.ts'), '../../api/errors': loader('src/api/errors.ts') })
+const MessageList = component('MessageList.vue', { './ToolCallList.vue': ToolCallList, './MessageAnswer.vue': MessageAnswer })
 const MessageInput = component('MessageInput.vue', {})
+
+test('来源只从配对工具结果恢复，快照定位兼容中文及emoji', () => {
+  const citations = loader('src/utils/citations.ts')
+  const snapshot = { file_id: 'f1', filename: '资料.txt', citation_id: 1, offset: 2, text_content: '原文😀' }
+  const output = [call('a', 'read_uploaded_file'), result('a', JSON.stringify(snapshot)), result('orphan', JSON.stringify({ ...snapshot, citation_id: 99 }))]
+  const sources = citations.getCitationSources(output)
+  assert.equal(sources.length, 1)
+  assert.equal(sources[0].endOffset, 5)
+  assert.deepEqual(citations.locateCitation('中😀原文😀后文', sources[0]), { before: '中😀', quote: '原文😀', after: '后文', matches: true })
+  assert.equal(citations.locateCitation('已变化的正文', sources[0]).matches, false)
+})
 
 test('按 ID 配对工具，保留调用顺序并忽略孤立结果', () => {
   assert.deepEqual(utils.getToolCalls([call('a'), call('b'), result('b', '第二个结果'), result('a'), result('orphan')]), [
@@ -109,4 +122,34 @@ test('已删除文件保留历史附件名称和大小，并显示删除标记',
   assert.match(html, /12\s*字节/)
   assert.match(html, /文件已删除/)
   assert.match(html, /原问题/)
+})
+
+const retrievalResult = { status: 'ok', query: '住宿上限', chunks: [{ file_id: 'file-1', filename: '<规定>.txt', chunk_id: 'chunk-1', chunk_index: 2, start_offset: 1700, end_offset: 1710, content: '住宿上限437元。<script>alert(1)</script>', distance: 0.18, truncated: false }], unavailable_files: [], notice: '候选片段不代表全文，距离不是正确率。', truncated: false }
+
+test('检索来源卡片展示文件名、块序号、原文位置和正文，文本仍转义', async () => {
+  const html = await renderToString(createSSRApp(ToolCallList, { output: [call('s1', 'search_uploaded_files'), result('s1', JSON.stringify(retrievalResult))], status: 'completed' }))
+  for (const text of ['检索附件内容', '1 个片段', '&lt;规定&gt;.txt', '片段 3', '1700', '1710', '住宿上限437元', '查看原始调用数据']) assert.ok(html.includes(text), text)
+  assert.ok(!html.includes('<script>'))
+  assert.match(html, /&lt;script&gt;/)
+})
+
+test('索引不可用与没有命中分别提示，长度截断和部分文件失败可见', async () => {
+  const unavailable = { ...retrievalResult, status: 'unavailable', chunks: [], unavailable_files: [{ file_id: 'file-1', filename: '规定.txt', message: '请先建立索引' }] }
+  const html = await renderToString(createSSRApp(ToolCallList, { output: [call('s1', 'search_uploaded_files'), result('s1', JSON.stringify(unavailable))] }))
+  assert.match(html, /索引不可用/)
+  assert.match(html, /请先建立索引/)
+  const empty = await renderToString(createSSRApp(ToolCallList, { output: [call('s2', 'search_uploaded_files'), result('s2', JSON.stringify({ ...unavailable, status: 'no_matches', unavailable_files: [] }))] }))
+  assert.match(empty, /没有找到可用的候选片段/)
+  const truncated = utils.getRetrievalPreview(JSON.stringify({ ...retrievalResult, truncated: true, chunks: [{ ...retrievalResult.chunks[0], truncated: true }] }))
+  assert.equal(truncated.truncated, true)
+  assert.equal(truncated.chunks[0].truncated, true)
+})
+
+test('异常检索结果回退原始展示，非法片段不会渲染为来源卡片', async () => {
+  for (const value of [null, 'bad-json', '[]', '{"error":"失败"}', '{"status":"ok","chunks":{}}']) assert.equal(utils.getRetrievalPreview(value), null)
+  const parsed = utils.getRetrievalPreview(JSON.stringify({ ...retrievalResult, chunks: [null, {}, { ...retrievalResult.chunks[0], start_offset: -1 }, { ...retrievalResult.chunks[0], content: {} }, retrievalResult.chunks[0]] }))
+  assert.equal(parsed.chunks.length, 1)
+  const html = await renderToString(createSSRApp(ToolCallList, { output: [call('s1', 'search_uploaded_files'), result('s1', '损坏的旧结果')] }))
+  assert.match(html, /损坏的旧结果/)
+  assert.match(html, /调用 ID/)
 })

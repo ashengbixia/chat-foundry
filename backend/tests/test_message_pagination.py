@@ -1,3 +1,4 @@
+from backend.tests.auth_fixture import allow_legacy_test_user
 import unittest  # 使用 Python 标准库运行异步测试
 from fastapi import FastAPI  # 创建不执行真实应用启动流程的测试应用
 from httpx import ASGITransport, AsyncClient  # 仅在内存中请求测试接口
@@ -24,7 +25,8 @@ class MessagePaginationTests(unittest.IsolatedAsyncioTestCase):  # 所有数据�
                 session.add(Message(id=f"gap-{sequence}", chat_id="gaps", sequence=sequence, role="user", content="间隔测试"))
             session.add(Message(id="other-1", chat_id="other", sequence=999, role="user", content="不能混入其他会话"))
             await session.commit()
-        self.app = FastAPI()  # 不使用 main.py，不触发真实数据库初始化或恢复
+        self.app = FastAPI()
+        allow_legacy_test_user(self.app)  # 不使用 main.py，不触发真实数据库初始化或恢复
         self.app.include_router(router)
 
         async def override_db():  # 将请求数据库替换为测试数据库

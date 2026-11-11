@@ -9,25 +9,30 @@ from backend.app.chat.service import stream_chat_history_events
 from backend.app.chat.response import ChatStreamingResponse  # 带生成器清理的聊天流式响应
 from backend.app.chat.guards import acquire_generation, release_generation  # 占用和释放会话的生成资格
 from backend.app.repositories.message_file import MessageFileError  # 附件校验失败与会话不存在分别处理
+from backend.app.auth import check_chat_access, get_current_user
+from backend.app.models.user import User
+from backend.app.api.model_settings import get_user_model_connection
+from backend.app.llm.connection import ModelConnection
 
 
 #创建一个接口分组
-router = APIRouter(prefix="/api/chats",tags=["会话管理"])
+router = APIRouter(prefix="/api/chats",tags=["会话管理"], dependencies=[Depends(check_chat_access)])
 
 
 @router.post("", response_model=ChatResponse, status_code=201)
-async def create_chat_endpoint(request: ChatCreate,session: AsyncSession = Depends(get_db)):
+async def create_chat_endpoint(request: ChatCreate,session: AsyncSession = Depends(get_db), user: User = Depends(get_current_user)):
     """创建会话并返回会话信息。"""
 
-    chat = await create_chat(session=session,title=request.title)
+    chat = await create_chat(session=session,title=request.title, user_id=user.id)
     return chat
 @router.get("", response_model=list[ChatResponse])
 async def list_chats_endpoint(
     session: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
 ):
     """一次获取全部会话的基本信息，不包含消息正文。"""
 
-    return await list_chats(session=session)
+    return await list_chats(session=session, user_id=user.id)
 @router.get("/{chat_id}", response_model=ChatResponse)
 async def get_chat_endpoint(chat_id: str,session: AsyncSession = Depends(get_db)):
     """根据 ID 获取一个会话。"""
@@ -74,7 +79,7 @@ async def create_message_endpoint(
     return message
 
 @router.post("/{chat_id}/respond")
-async def respond_endpoint(chat_id: str, session: AsyncSession = Depends(get_db)):  # 检查并占用生成资格，再返回回答流
+async def respond_endpoint(chat_id: str, session: AsyncSession = Depends(get_db), connection: ModelConnection = Depends(get_user_model_connection)):  # 检查并占用生成资格，再返回回答流
     if not acquire_generation(chat_id):
         raise HTTPException(status_code=409, detail="该会话正在生成或清理中，请稍后重试")
     try:
@@ -92,7 +97,7 @@ async def respond_endpoint(chat_id: str, session: AsyncSession = Depends(get_db)
         elif latest.role != "user" or latest.status != "completed":
             raise HTTPException(status_code=409, detail="最新消息不支持生成回答")
         return ChatStreamingResponse(
-            content=stream_chat_history_events(session=session, chat_id=chat_id),
+            content=stream_chat_history_events(session=session, chat_id=chat_id, connection=connection),
             chat_id=chat_id,
         )
     except BaseException:

@@ -8,15 +8,15 @@ from typing import Literal
 
 
 
-async def create_chat(session: AsyncSession,title: str = "新会话",) -> Chat:
+async def create_chat(session: AsyncSession,title: str = "新会话", user_id: str | None = None) -> Chat:
     """创建一个会话，保存到数据库并返回。"""
-    chat = Chat(title=title)#创建 Python 对象，此时还没写入数据库。
+    chat = Chat(title=title, user_id=user_id)#创建 Python 对象，此时还没写入数据库。
     session.add(chat)#把对象加入当前数据库会话，准备插入。
     await session.commit()#提交事务，真正保存记录。我们定义的 ID、时间默认值也会在插入时生成。
     await session.refresh(chat)#从数据库重新读取这条记录，更新对象里的字段。
     return chat
 
-async def list_chats(session: AsyncSession) -> list[Chat]:
+async def list_chats(session: AsyncSession, user_id: str | None = None) -> list[Chat]:
     """查询全部会话的基本信息，最近更新的排在前面。"""
 
     statement = (
@@ -27,6 +27,7 @@ async def list_chats(session: AsyncSession) -> list[Chat]:
         )#更新时间降序、id降序
     )
 
+    statement = statement.where(Chat.user_id == user_id)  # 未分配数据不能出现在其他账号列表里
     result = await session.execute(statement)#执行查询
 
     return list(result.scalars().all())#取查询里的第一个也就是对象并且变成列表
@@ -64,7 +65,8 @@ async def create_message(
 
         if file_ids and role != "user":
             raise MessageFileError("当前只允许用户消息添加附件")
-        attachments = await build_attachments(session, file_ids or [])  # 校验失败时连同会话更新时间一起回滚
+        owner_id = (await session.execute(select(Chat.user_id).where(Chat.id == chat_id))).scalar_one() if file_ids else None
+        attachments = await build_attachments(session, file_ids or [], owner_id)  # 附件必须与会话同属一个账号
 
         # 查询这个会话当前最大的消息序号。
         result = await session.execute(

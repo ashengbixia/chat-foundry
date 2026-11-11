@@ -1,3 +1,4 @@
+from backend.tests.auth_fixture import allow_legacy_test_user
 import tempfile
 import unittest
 from pathlib import Path
@@ -15,6 +16,7 @@ from backend.app.chat.context import build_model_messages
 from backend.app.schemas.chat import MessageResponse
 from backend.app.tools.files import read_uploaded_file
 from backend.app.models.file import File
+from backend.tests.index_fixture import mock_file_vectors
 from backend.app.models.file_chunk import FileChunk
 from backend.app.repositories.chat import create_message
 
@@ -25,12 +27,14 @@ class FileDeletionTests(unittest.IsolatedAsyncioTestCase):
         def enable_fk(connection, record):
             connection.execute("PRAGMA foreign_keys=ON")
         self.sessions = async_sessionmaker(self.engine, expire_on_commit=False)
+        mock_file_vectors(self, self.sessions)
         await database.create_tables(self.engine)
         self.directory = tempfile.TemporaryDirectory()
         self.root = Path(self.directory.name) / "uploads"
         self.path_patch = patch.object(service, "UPLOAD_DIR", self.root)
         self.path_patch.start()
         app = FastAPI()
+        allow_legacy_test_user(app)
         app.include_router(file_api.router)
         async def override_db():
             async with self.sessions() as session:

@@ -12,6 +12,7 @@ class Chat(Base):
     """聊天会话表，一条记录代表一个会话。"""
 
     __tablename__ = "chats"
+    user_id: Mapped[str | None] = mapped_column(ForeignKey("users.id"), index=True, nullable=True)  # 升级前的数据在首次初始化时交给管理员
 
     # 自动生成唯一的会话 ID。
     id: Mapped[str] = mapped_column(

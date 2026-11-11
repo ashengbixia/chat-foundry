@@ -5,6 +5,10 @@ export interface FileInfo { // 对应后端 FileResponse，仅包含基本信息
   size: number // 实际大小，单位字节
   status: 'processing' | 'completed' | 'failed' // 文件处理状态
   error: string | null // 处理失败说明
+  index_status: 'pending' | 'indexing' | 'ready' | 'failed' // 向量索引状态，与文字处理分开
+  index_error: string | null // 索引失败说明
+  index_key: string | null // 成功索引使用的向量配置
+  index_busy: boolean // 等待或计算中的任务，期间不可删除或重复建立索引
   created_at: number // 创建时间戳
   updated_at: number // 更新时间戳
 }

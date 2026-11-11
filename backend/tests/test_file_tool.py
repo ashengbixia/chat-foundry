@@ -77,7 +77,7 @@ class FileToolTests(unittest.IsolatedAsyncioTestCase):  # 全部使用内存数�
     async def test_registry_preserves_time_tool_and_controls_available_tools(self):
         names = lambda ids: [definition["function"]["name"] for definition in get_available_tools(ids)]
         self.assertEqual(names(set()), ["get_current_time"])
-        self.assertEqual(names({"f1"}), ["get_current_time", "read_uploaded_file"])
+        self.assertEqual(set(names({"f1"})), {"get_current_time", "read_uploaded_file", "search_uploaded_files"})
         result = json.loads(await execute_tool("get_current_time", "{}", None, set()))
         self.assertEqual(result["timezone"], "Asia/Shanghai")
         async with self.sessions() as session:

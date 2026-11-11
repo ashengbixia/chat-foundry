@@ -2,7 +2,7 @@
 import type { DisplayMessage } from '../../types/chat'
 import ToolCallList from './ToolCallList.vue'
 import AppIcon from '../AppIcon.vue'
-import { renderMarkdown } from '../../utils/markdown'
+import MessageAnswer from './MessageAnswer.vue'
 
 defineProps<{ messages: DisplayMessage[]; hasChat?: boolean }>() // 接收消息和会话状态，不在此处请求接口或修改消息
 </script>
@@ -18,13 +18,13 @@ defineProps<{ messages: DisplayMessage[]; hasChat?: boolean }>() // 接收消息
       <div><AppIcon name="file" :size="19" /><strong>读懂你的资料</strong><span>添加文本附件，围绕内容交流</span></div>
       <div><AppIcon name="spark" :size="19" /><strong>让工具来帮忙</strong><span>按需调用，过程清晰可见</span></div>
     </div>
-    <small>{{ hasChat ? '在下方输入问题，开始这段对话' : '新对话请先点击侧栏的「新建对话」' }}</small>
+    <small>{{ hasChat ? '在下方输入问题，开始这段对话' : '直接输入问题即可开始新对话，也可以先添加资料' }}</small>
   </div>
   <article v-for="message in messages" :key="message.id" class="message" :class="message.role === 'user' ? 'user-message' : 'assistant-message'" :aria-label="message.role === 'user' ? '我的消息' : '助手消息'">
     <div v-if="message.role === 'assistant'" class="assistant-heading"><span class="assistant-mark"><AppIcon name="spark" :size="16" /></span><strong>ChatFoundry</strong><span>助手</span></div>
     <div class="message-body">
     <ToolCallList v-if="message.role === 'assistant'" :output="message.output" :status="message.status" />
-    <div v-if="message.content && message.role === 'assistant'" class="message-text markdown-body" v-html="renderMarkdown(message.content)"></div>
+    <MessageAnswer v-if="message.content && message.role === 'assistant'" class="message-text markdown-body" :content="message.content" :output="message.output" />
     <div v-else-if="message.content" class="message-text">{{ message.content }}</div>
     <ul v-if="message.attachments?.length" class="message-attachments" aria-label="消息附件">
       <li v-for="file in message.attachments" :key="file.file_id" :title="file.file_id"><AppIcon name="file" :size="16" /><span>{{ file.filename }}<small>{{ file.size }} 字节</small></span><span v-if="file.deleted" class="deleted-file">（文件已删除）</span></li>

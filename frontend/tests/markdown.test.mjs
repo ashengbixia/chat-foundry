@@ -20,3 +20,10 @@ test('Markdown图片不加载外部资源，流式中未闭合代码片段仍安
   assert.match(renderMarkdown('```html\n<script>'), /&lt;script&gt;/)
   assert.doesNotThrow(() => renderMarkdown('**还没写完'))
 })
+
+test('引用只链接工具实际提供的编号，代码和普通链接不变', () => {
+  const html = renderMarkdown('结论[1]，未知[99]。`[1]`\n\n[链接[1]](https://example.com)', [1])
+  assert.equal((html.match(/data-citation-id="1"/g) || []).length, 1)
+  assert.ok(!html.includes('data-citation-id="99"'))
+  assert.ok(html.includes('<code>[1]</code>'))
+})

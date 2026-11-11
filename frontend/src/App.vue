@@ -6,20 +6,32 @@ import ChatSidebar from './components/chat/ChatSidebar.vue'
 import FilePanel from './components/files/FilePanel.vue'
 import AppLayout from './components/layout/AppLayout.vue'
 import AppIcon from './components/AppIcon.vue'
-import { nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
+import AccountMenu from './components/auth/AccountMenu.vue'
+import SettingsPanel from './components/settings/SettingsPanel.vue'
+import ComposerModelPicker from './components/chat/ComposerModelPicker.vue'
+import { useAuthStore } from './stores/auth'
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { storeToRefs } from 'pinia'
 import { useChatStore } from './stores/chat'
 import { clearLastChatId, getLastChatId, saveLastChatId } from './utils/chatStorage'
 
 const chatStore = useChatStore() // 获取当前应用共用的聊天状态仓库
+const accountId = useAuthStore().user!.id // 固定本次页面所属账号，迟到请求不能覆盖另一个账号的浏览器记录
+const settingsPanel = ref<InstanceType<typeof SettingsPanel> | null>(null) // 当前账号的模型服务设置入口
+const currentModelName = ref('') // 设置面板加载或保存成功后更新实际模型名称
+const filePanel = ref<InstanceType<typeof FilePanel> | null>(null) // 直接复用文件面板的校验、上传和索引流程
+const uploadingAttachments = ref(false)
+const switchingModel = ref(false)
 const { createNewChat, openChatSession, initializeChat, renameChatSession, deleteChatSession, sendMessage, retryReply, stopReply, loadOlderMessages, addAttachment, removeAttachment, markFileDeleted } = chatStore // 获取仓库中的数据操作方法
 const { inputText, selectedAttachments, messages, currentChat, chats, errorMessage, sendingMessage, generatingReply, creatingChat, loadingChats, restoringChat, deletingChatId, renamingChatId, pageBusy, inputDisabled, sendDisabled, canRetryReply, hasOlderMessages, loadingOlderMessages } = storeToRefs(chatStore) // 保持响应式连接，不复制出另一份状态
 const messageListElement = ref<HTMLElement | null>(null) // 消息区域的页面元素
 const filesOpen = ref(false) // 是否显示文件管理区域，隐藏时保留上传与预览状态
+const interactionBusy = computed(() => pageBusy.value || uploadingAttachments.value || switchingModel.value) // 文件上传或模型切换未完成时暂缓发送与切换会话
+let pageActive = true
 let preservingScroll = false // 加载旧消息期间暂停自动滚动，避免前插内容后跳到底部
 let autoFollowMessages = true // 是否跟随新消息滚动，向上翻阅时暂停
 watch(generatingReply, (active) => { if (active) autoFollowMessages = true }, { flush: 'sync' }) // 开始生成时立即恢复跟随，赶在消息展示和滚动监听之前
-onUnmounted(stopReply) // 页面销毁时中止未完成流程，避免继续产生无人接收的回答
+onUnmounted(() => { pageActive = false; stopReply() }) // 退出账号时中止流程，不让迟到的新建会话继续发送
 function updateScrollFollow() { // 根据距离底部的位置判断是否继续自动滚动
   const element = messageListElement.value // 当前消息滚动容器
   if (!element || preservingScroll) return
@@ -63,36 +75,53 @@ async function removeChat(chat: Chat) { // 确认删除，成功后处理浏览�
 
   const wasCurrent = currentChat.value?.id === chat.id // 删除前记住它是否为当前会话
   const deleted = await deleteChatSession(chat.id) // 删除操作交给 store
-  if (deleted && wasCurrent) clearLastChatId()
+  if (deleted && wasCurrent) clearLastChatId(accountId)
 }
 async function openChat(chat: Chat) { // 打开成功后，处理浏览器记录和页面滚动
   if (pageBusy.value) return // 启动恢复由 store 内部打开会话，页面手动操作需要等恢复完成
   const opened = await openChatSession(chat) // 请求和状态更新交给 store
   if (!opened) return
   autoFollowMessages = true
-  saveLastChatId(chat.id)
+  saveLastChatId(chat.id, accountId)
   await nextTick() // 等消息显示到页面后，再根据新高度滚动
   scrollMessagesToBottom()
 }
 onMounted(async () => { // 启动时读取浏览器记录，由 store 恢复数据，页面只负责记录和滚动
-  const result = await initializeChat(getLastChatId()) // 初始化结果区分会话不存在和请求失败
-  if (result.status === 'missing') clearLastChatId()
+  const result = await initializeChat(getLastChatId(accountId)) // 初始化结果区分会话不存在和请求失败
+  if (result.status === 'missing') clearLastChatId(accountId)
   if (result.status !== 'restored' || result.chat === null) return
-  saveLastChatId(result.chat.id)
+  saveLastChatId(result.chat.id, accountId)
   autoFollowMessages = true
   await nextTick()
   scrollMessagesToBottom()
 })
 async function startNewChat() { // 新建成功后，恢复页面自动滚动
+  if (interactionBusy.value) return
   const chat = await createNewChat() // 创建和状态更新交给 store
   if (chat === null) return
-  saveLastChatId(chat.id) // 新建会话也记录为上次会话，刷新后可以恢复
+  saveLastChatId(chat.id, accountId) // 新建会话也记录为上次会话，刷新后可以恢复
   autoFollowMessages = true
+}
+async function sendChatMessage() { // 第一次发送时自动新建会话，保留已经写好的正文和附件
+  if (interactionBusy.value || !inputText.value.trim()) return
+  if (!currentChat.value) {
+    const text = inputText.value
+    const attachments = [...selectedAttachments.value]
+    const chat = await createNewChat()
+    if (!chat || !pageActive) return
+    inputText.value = text
+    selectedAttachments.value = attachments
+    saveLastChatId(chat.id, accountId)
+    autoFollowMessages = true
+  }
+  await sendMessage()
 }
 </script>
 
 <template>
-  <AppLayout :files-open="filesOpen" :current-chat-id="currentChat?.id" @close-files="filesOpen = false">
+  <SettingsPanel ref="settingsPanel" @model-changed="currentModelName = $event" />
+  <AppLayout :files-open="filesOpen" :current-chat-id="currentChat?.id" @close-files="filesOpen = false" @open-settings="settingsPanel?.open()">
+    <template #account><AccountMenu /></template>
     <template #sidebar>
       <ChatSidebar
         :chats="chats"
@@ -101,8 +130,8 @@ async function startNewChat() { // 新建成功后，恢复页面自动滚动
         :creating="creatingChat"
         :deleting-chat-id="deletingChatId"
         :renaming-chat-id="renamingChatId"
-        :action-disabled="pageBusy"
-        :open-disabled="pageBusy"
+        :action-disabled="interactionBusy"
+        :open-disabled="interactionBusy"
         @create="startNewChat"
         @open="openChat"
         @remove="removeChat"
@@ -111,8 +140,8 @@ async function startNewChat() { // 新建成功后，恢复页面自动滚动
     </template>
     <template #header>
       <div class="chat-title"><span class="workspace-label">工作空间 <span>/</span> 对话</span><strong>{{ currentChat?.title ?? '新的开始' }}</strong></div>
-      <span class="model-placeholder" title="模型选择暂未开放，当前使用后端配置的模型">
-        <button class="model-button" type="button" disabled><span class="model-dot"></span>默认模型<AppIcon name="chevron" :size="12" /></button>
+      <span class="model-placeholder" title="打开当前账号的模型服务设置">
+        <button class="model-button" type="button" @click="settingsPanel?.open()"><span class="model-dot"></span>{{ currentModelName || '设置模型服务' }}<AppIcon name="chevron" :size="12" /></button>
       </span>
       <button class="files-toggle" :class="{ active: filesOpen }" type="button" aria-controls="file-manager" :aria-expanded="filesOpen" @click="filesOpen = !filesOpen"><AppIcon name="panel" :size="16" /><span>文件管理</span></button>
     </template>
@@ -134,24 +163,26 @@ async function startNewChat() { // 新建成功后，恢复页面自动滚动
     <template #composer>
       <div class="composer-content">
         <div class="reply-actions">
-          <button v-if="canRetryReply" class="retry-button" type="button" :disabled="!currentChat || pageBusy" @click="retryReply"><AppIcon name="refresh" :size="13" />重试回答</button>
+          <button v-if="canRetryReply" class="retry-button" type="button" :disabled="!currentChat || interactionBusy" @click="retryReply"><AppIcon name="refresh" :size="13" />重试回答</button>
         </div>
         <MessageInput
           v-model="inputText"
           :input-disabled="inputDisabled"
-          :send-disabled="sendDisabled"
+          :send-disabled="sendDisabled || uploadingAttachments || switchingModel"
           :sending="sendingMessage"
           :attachments="selectedAttachments"
+          :uploading-attachments="uploadingAttachments"
           @remove-attachment="removeAttachment"
-          @send="sendMessage"
+          @send="sendChatMessage"
           @stop="stopReply"
           @open-files="filesOpen = true"
-        />
+          @pick-files="filePanel?.pickAttachments()"
+        ><template #model-picker><ComposerModelPicker :current-model="currentModelName" :disabled="pageBusy || uploadingAttachments" @changed="currentModelName = $event" @busy="switchingModel = $event" @open-settings="settingsPanel?.open()" /></template></MessageInput>
         <small class="input-hint"><span>ChatFoundry · 让思考发生</span><span>AI 回答仅供参考，请核实重要信息</span></small>
       </div>
     </template>
     <template #files>
-      <FilePanel :attach-disabled="!currentChat || pageBusy" :delete-disabled="pageBusy" @attach="addAttachment" @removed="markFileDeleted" />
+      <FilePanel ref="filePanel" :attach-disabled="pageBusy || switchingModel" :delete-disabled="interactionBusy" :attachment-slots="3 - selectedAttachments.length" @attach="addAttachment" @removed="markFileDeleted" @attachment-upload="uploadingAttachments = $event" @attachment-error="errorMessage = $event" />
     </template>
   </AppLayout>
 </template>

@@ -160,5 +160,10 @@ class LlmStreamTests(unittest.IsolatedAsyncioTestCase):
             finally:
                 await engine.dispose()
 
+    async def test_reasoning_is_separate_from_answer(self):
+        self.mock_model([chunk({'reasoning_content': '先核对依据'}), chunk({'content': '结论'}, 'stop'), 'data: [DONE]'])
+        events = [event async for event in llm.stream_model_events([])]
+        self.assertEqual(events, [{'type': 'reasoning_delta', 'text': '先核对依据'}, {'type': 'text_delta', 'text': '结论'}])
+
 if __name__ == "__main__":
     unittest.main()

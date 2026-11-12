@@ -52,7 +52,7 @@ class MessagePaginationTests(unittest.IsolatedAsyncioTestCase):  # 所有数据�
         self.assertEqual(len({chat["id"] for chat in chats}), 127)
         self.assertEqual([chat["id"] for chat in chats[:2]], ["tie-b", "tie-a"])
         self.assertEqual([chat["id"] for chat in chats[-121:]], [f"extra-{index:03d}" for index in reversed(range(121))])
-        self.assertTrue(all(set(chat) == {"id", "title", "created_at", "updated_at"} for chat in chats))
+        self.assertTrue(all(set(chat) == {"id", "title", "created_at", "updated_at", "knowledge_bases", "files", "web_search_enabled", "title_status"} for chat in chats))
 
     async def test_latest_page(self):  # 首次返回最近 8 条，并恢复正序
         async with self.sessions() as session:

@@ -9,6 +9,12 @@ import ts from 'typescript'
 import { createTypeScriptLoader } from './helpers/loadTypeScript.mjs'
 
 const utils = createTypeScriptLoader()('src/utils/toolOutput.ts') // 测试实际的记录解析方法
+test('仅入口网页展示真实安全链接并区别于正文和资料充分', () => {
+  const raw = JSON.stringify({ status: 'navigation_only', links: [{ title: '电影频道', url: 'https://example.com/movies' }, { title: '非法链接', url: 'javascript:alert(1)' }], notice: '尚未取得正文' })
+  assert.equal(utils.getNavigationPreview(raw).links.length, 1)
+  assert.equal(utils.getToolStatus({ result: raw }, 'completed'), '仅取得入口链接')
+  assert.equal(utils.getToolStatus({ result: '{"outcome":"insufficient_evidence"}' }, 'completed'), '执行结束 · 资料不足')
+})
 const call = (id, name = 'get_current_time') => ({ type: 'function_call', call_id: id, name, arguments: '{}' })
 const result = (id, output = '{"timezone":"Asia/Shanghai"}') => ({ type: 'function_call_output', call_id: id, output })
 function component(filename, mocks) { // 在内存编译真实 Vue 组件，用服务端渲染检查最终 HTML
@@ -21,11 +27,13 @@ function component(filename, mocks) { // 在内存编译真实 Vue 组件，用�
   new Function('require', 'module', 'exports', code)((name) => mocks[name] ?? (name === '../AppIcon.vue' ? component('../AppIcon.vue', {}) : require(name)), module, module.exports)
   return module.exports.default
 }
-const ToolCallList = component('ToolCallList.vue', { '../../utils/toolOutput': utils })
+const processUtils = createTypeScriptLoader()('src/utils/messageProcess.ts')
+const ToolCallList = component('ToolCallList.vue', { '../../utils/toolOutput': utils, '../../utils/messageProcess': processUtils, './SubagentTasks.vue': { render: () => null } })
+const MessageProcess = component('MessageProcess.vue', { '../../utils/toolOutput': utils, '../../utils/messageProcess': processUtils, '../../utils/markdown': createTypeScriptLoader()('src/utils/markdown.ts'), './ToolCallList.vue': ToolCallList })
 const loader = createTypeScriptLoader()
 const MessageAnswer = component('MessageAnswer.vue', { '../../utils/markdown': loader('src/utils/markdown.ts'), '../../utils/citations': loader('src/utils/citations.ts'), '../../utils/dialog': loader('src/utils/dialog.ts'), '../../api/files': loader('src/api/files.ts'), '../../api/errors': loader('src/api/errors.ts') })
-const MessageList = component('MessageList.vue', { './ToolCallList.vue': ToolCallList, './MessageAnswer.vue': MessageAnswer })
-const MessageInput = component('MessageInput.vue', {})
+const MessageList = component('MessageList.vue', { './MessageProcess.vue': MessageProcess, '../../utils/messageProcess': processUtils, './MessageAnswer.vue': MessageAnswer })
+const MessageInput = component('MessageInput.vue', { './ComposerResourceMenu.vue': component('ComposerResourceMenu.vue', { '../../api/files': loader('src/api/files.ts'), '../../api/knowledge': loader('src/api/knowledge.ts') }) })
 
 test('来源只从配对工具结果恢复，快照定位兼容中文及emoji', () => {
   const citations = loader('src/utils/citations.ts')
@@ -36,6 +44,31 @@ test('来源只从配对工具结果恢复，快照定位兼容中文及emoji', 
   assert.equal(sources[0].endOffset, 5)
   assert.deepEqual(citations.locateCitation('中😀原文😀后文', sources[0]), { before: '中😀', quote: '原文😀', after: '后文', matches: true })
   assert.equal(citations.locateCitation('已变化的正文', sources[0]).matches, false)
+})
+
+test('网页引用从已保存快照恢复URL和读取时间，拒绝不安全链接', () => {
+  const citations = loader('src/utils/citations.ts')
+  const chunk = { source_type: 'web', url: 'https://example.com/article', title: '网页文章', content: '原文😀', start_offset: 3, citation_id: 1, retrieved_at: 100 }
+  const sources = citations.getCitationSources([call('w', 'read_webpage'), result('w', JSON.stringify({ chunks: [chunk] }))])
+  assert.equal(sources[0].sourceType, 'web')
+  assert.equal(sources[0].url, chunk.url)
+  assert.equal(sources[0].retrievedAt, 100)
+  assert.equal(sources[0].endOffset, 6)
+  for (const url of ['javascript:alert(1)', 'file:///private', 'https://user:password@example.com']) {
+    assert.equal(citations.getCitationSources([call('w', 'read_webpage'), result('w', JSON.stringify({ chunks: [{ ...chunk, url }] }))]).length, 0)
+  }
+})
+
+test('搜索候选显示摘要卡片且不冒充已读来源，不安全地址不生成链接', async () => {
+  const data = { status: 'ok', query: 'Python 文档', provider: 'bing', results: [{ title: '官方文档', url: 'https://example.com/docs', snippet: '搜索摘要' }, { title: '非法地址', url: 'javascript:alert(1)', snippet: '不应显示' }] }
+  const output = [call('search', 'search_web'), result('search', JSON.stringify(data))]
+  const parsed = utils.getSearchPreview(JSON.stringify(data))
+  assert.equal(parsed.results.length, 1)
+  assert.equal(loader('src/utils/citations.ts').getCitationSources(output).length, 0)
+  const html = await renderToString(createSSRApp(ToolCallList, { output }))
+  assert.match(html, /尚未读取网页原文/)
+  assert.match(html, /https:\/\/example.com\/docs/)
+  assert.ok(!html.includes('href="javascript:'))
 })
 
 test('历史来源保留原回答信息，分段总结显示覆盖范围并以原文生成引用', async () => {
@@ -88,7 +121,7 @@ test('消息列表保留助手正文，只有助手的工具记录会展示', as
   const output = [call('a'), result('a')]
   const messages = [{ id: 'user', role: 'user', content: '用户正文', status: 'completed', error: null, output }, { id: 'assistant', role: 'assistant', content: '助手正文', status: 'completed', error: null, output }]
   const html = await renderToString(createSSRApp(MessageList, { messages }))
-  assert.equal((html.match(/<details/g) ?? []).length, 1)
+  assert.equal((html.match(/class="tool-call"/g) ?? []).length, 1)
   assert.match(html, /用户正文/)
   assert.match(html, /助手正文/)
 })

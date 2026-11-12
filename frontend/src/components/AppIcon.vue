@@ -2,6 +2,11 @@
 withDefaults(defineProps<{ name: string; size?: number }>(), { size: 18 }) // 图标名称与尺寸，统一使用线条图标
 const paths: Record<string, string> = { // 本地 SVG 路径，不依赖图标服务
   plus: 'M12 5v14M5 12h14',
+  search: 'M21 21l-5-5M18 10a8 8 0 1 1-16 0 8 8 0 0 1 16 0',
+  back: 'm15 5-7 7 7 7',
+  database: 'M20 6c0 2-3.6 4-8 4S4 8 4 6s3.6-4 8-4 8 2 8 4ZM4 6v12c0 2 3.6 4 8 4s8-2 8-4V6M4 12c0 2 3.6 4 8 4s8-2 8-4',
+  download: 'M12 3v12m-5-5 5 5 5-5M5 16v5h14v-5',
+  globe: 'M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0ZM3 12h18M12 3c5 5 5 13 0 18-5-5-5-13 0-18Z',
   chat: 'M21 11.5a8.5 8.5 0 0 1-8.5 8.5H4l-2 2V11.5a9.5 9.5 0 0 1 19 0Z',
   panel: 'M9 3v18M5 3h14a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2Z',
   file: 'M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8ZM14 2v6h6M8 13h8M8 17h5',
@@ -18,6 +23,7 @@ const paths: Record<string, string> = { // 本地 SVG 路径，不依赖图标�
   refresh: 'M20 7a9 9 0 1 0 1 9M20 2v6h-6',
   chevron: 'm9 5 7 7-7 7',
   check: 'm5 12 4 4L19 6',
+  copy: 'M9 9h12v12H9ZM15 9V3H3v12h6',
 }
 </script>
 

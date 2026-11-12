@@ -20,6 +20,10 @@ class StartupEmbeddingTests(unittest.IsolatedAsyncioTestCase):  # 验证真实�
         self.init = AsyncMock()
         self.recover_messages = AsyncMock(return_value=0)
         self.recover_indexes = AsyncMock(return_value=0)
+        for name in ('recover_interrupted_titles', 'recover_tasks', 'close_title_tasks', 'close_tasks'):
+            change = patch.object(main, name, AsyncMock(return_value=0))
+            change.start()
+            self.addCleanup(change.stop)
         changes = [patch.object(main, "init_db", self.init), patch.object(main, "SessionLocal", self.factory), patch.object(main, "engine", SimpleNamespace(dispose=self.dispose)), patch.object(main, "recover_interrupted_messages", self.recover_messages), patch.object(main, "recover_interrupted_indexes", self.recover_indexes), patch.object(main, "logger", Mock()), patch.object(embedding, "logger", Mock()), patch.object(embedding, "_model", None), patch.object(embedding, "_model_key", None), patch.object(embedding, "_load_model", self.loader), patch.object(embedding, "settings", SimpleNamespace(embedding_model="startup-test-model", embedding_device="cpu", embedding_query_prefix=""))]
         for current in changes:
             current.start()

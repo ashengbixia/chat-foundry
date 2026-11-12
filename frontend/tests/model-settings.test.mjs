@@ -61,7 +61,7 @@ test('快捷列表仅包含服务返回模型，不混入旧配置，失败时�
   const script = compileScript(parse(source).descriptor, { id: 'picker-test' })
   const code = ts.transpileModule(script.content, { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }).outputText
   const require = createRequire(import.meta.url), module = { exports: {} }
-  new Function('require', 'module', 'exports', code)((name) => name === '../../api/modelSettings' ? api : name === 'vue' ? { ...require('vue'), onMounted() {}, onUnmounted() {} } : require(name), module, module.exports)
+  new Function('require', 'module', 'exports', code)((name) => name === '../../api/modelSettings' ? api : name.endsWith('.vue') ? {} : name === 'vue' ? { ...require('vue'), onMounted() {}, onUnmounted() {} } : require(name), module, module.exports)
   const state = module.exports.default.setup({ currentModel: 'deepseek-chat', disabled: false }, { expose() {}, emit: (...args) => events.push(args) })
   await state.load()
   assert.deepEqual(state.models.value, ['deepseek-flash', 'deepseek-v4-pro'])

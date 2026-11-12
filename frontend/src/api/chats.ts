@@ -10,16 +10,18 @@ export interface Chat {
   updated_at: number
   knowledge_bases?: KnowledgeReference[]
   files?: MessageAttachment[]
+  web_search_enabled?: boolean
+  title_status?: 'manual' | 'pending' | 'generating' | 'generated' | 'fallback'
 }
 
-export async function createChat(title: string = '新会话', knowledgeBaseIds: string[] = []): Promise<Chat>
+export async function createChat(title: string = '新会话', knowledgeBaseIds: string[] = [], webSearchEnabled = false): Promise<Chat>
 {
   const response = await fetch('/api/chats', {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
     },
-    body: JSON.stringify({ title, ...(knowledgeBaseIds.length ? { knowledge_base_ids: knowledgeBaseIds } : {}) }),
+    body: JSON.stringify({ title, ...(knowledgeBaseIds.length ? { knowledge_base_ids: knowledgeBaseIds } : {}), ...(webSearchEnabled ? { web_search_enabled: true } : {}) }),
   })
 
   if (!response.ok) {
@@ -27,6 +29,12 @@ export async function createChat(title: string = '新会话', knowledgeBaseIds: 
   }
   const chat: Chat = await response.json()
   return chat
+}
+
+export async function setChatFeatures(chatId: string, webSearchEnabled: boolean): Promise<Chat> {
+  const response = await fetch(`/api/chats/${encodeURIComponent(chatId)}/features`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ web_search_enabled: webSearchEnabled }) })
+  if (!response.ok) throw await createApiError(response, '保存会话功能失败')
+  return await response.json()
 }
 
 export interface ChatMessage {
@@ -107,6 +115,7 @@ export async function listMessages(chatId: string, beforeSequence: number | null
 
 export async function getChat(
   chatId: string,
+  signal?: AbortSignal,
 ): Promise<Chat | null> {
   const response = await fetch(
     `/api/chats/${encodeURIComponent(chatId)}`,
@@ -114,6 +123,7 @@ export async function getChat(
       headers: {
         Accept: 'application/json',
       },
+      ...(signal ? { signal } : {}),
     },
   )
 

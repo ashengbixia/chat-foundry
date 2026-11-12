@@ -27,6 +27,39 @@ test('无上次记录：只加载会话列表，结束恢复状态', async () =>
   assert.equal(store.currentChat, null)
 })
 
+test('空白页开关搜索不改草稿或创建会话，首次创建才提交独立布尔字段', async () => {
+  const { store, calls } = fixture({ createChat: async (title, ids, enabled) => ({ ...chat, web_search_enabled: enabled }) })
+  await store.initializeChat(null)
+  calls.length = 0
+  store.inputText = 'python'
+  assert.equal(await store.setWebSearchEnabled(true), true)
+  assert.equal(store.webSearchEnabled, true)
+  assert.equal(store.inputText, 'python')
+  assert.equal(store.currentChat, null)
+  assert.deepEqual(calls, [])
+  await store.createNewChat()
+  assert.deepEqual(calls, [['createChat', '新会话', [], true]])
+  assert.equal(store.webSearchEnabled, true)
+})
+
+test('会话搜索设置失败保持原状态，保存后可恢复且新对话默认关闭', async () => {
+  let failing = true, enabled = false
+  const { store } = fixture({ getChat: async () => ({ ...chat, web_search_enabled: enabled }), setChatFeatures: async (id, value) => { if (failing) throw new Error('保存失败'); enabled = value; return { ...chat, web_search_enabled: value } } })
+  await store.initializeChat(chat.id)
+  store.inputText = 'python'
+  assert.equal(await store.setWebSearchEnabled(true), false)
+  assert.equal(store.webSearchEnabled, false)
+  assert.equal(store.inputText, 'python')
+  failing = false
+  assert.equal(await store.setWebSearchEnabled(true), true)
+  await store.openChatSession({ ...chat, id: 'other', web_search_enabled: false })
+  assert.equal(store.webSearchEnabled, false)
+  await store.initializeChat(chat.id)
+  assert.equal(store.webSearchEnabled, true)
+  store.startBlankChat()
+  assert.equal(store.webSearchEnabled, false)
+})
+
 test('正常恢复：列表不重复，消息只请求一次', async () => {
   const { store, calls } = fixture()
   assert.deepEqual(await store.initializeChat(chat.id), { status: 'restored', chat })
@@ -158,4 +191,70 @@ test('空白页第一次发送自动创建会话，保留正文与附件', async
   const send = new Function('inputText', 'currentChat', 'selectedAttachments', 'createNewChat', 'sendMessage', 'saveLastChatId', `const pendingKnowledge = {value:[{id:'kb1',name:'资料库'}]}, interactionBusy = {value:false}, accountId = 'u1', pageActive = true; let autoFollowMessages = false; ${code}; return sendChatMessage`)(input, current, attachments, async (ids) => { assert.deepEqual(ids, ['kb1']); current.value = { id: 'new' }; input.value = ''; attachments.value = []; return current.value }, async () => sent.push([current.value.id, input.value, attachments.value]), () => {})
   await send()
   assert.deepEqual(sent, [['new', '已经写好的问题', [{ file_id: 'f1' }]]])
+})
+
+test('新建入口只清空当前草稿和分页，不创建或删除历史会话', async () => {
+  const { store, calls } = fixture()
+  await store.initializeChat(chat.id)
+  calls.length = 0
+  store.inputText = '旧草稿'
+  store.selectedAttachments = [{ file_id: 'file' }]
+  store.hasOlderMessages = true
+  store.nextBeforeSequence = 8
+  assert.equal(store.startBlankChat(), true)
+  assert.equal(store.startBlankChat(), true)
+  assert.equal(store.currentChat, null)
+  assert.equal(store.inputText, '')
+  assert.deepEqual(store.messages, [])
+  assert.deepEqual(store.selectedAttachments, [])
+  assert.deepEqual(store.chats, [chat])
+  assert.equal(store.hasOlderMessages, false)
+  assert.equal(store.nextBeforeSequence, null)
+  assert.deepEqual(calls, [])
+  store.sendingMessage = true
+  store.inputText = '正在发送'
+  assert.equal(store.startBlankChat(), false)
+  assert.equal(store.inputText, '正在发送')
+})
+
+test('点击新建清除上次会话记录并返回空白页，重复点击仍关闭手机导航', async () => {
+  const script = parse(readFileSync(new URL('../src/App.vue', import.meta.url), 'utf8')).descriptor.scriptSetup.content
+  const tree = ts.createSourceFile('App.ts', script, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS)
+  const method = tree.statements.find(node => ts.isFunctionDeclaration(node) && node.name?.text === 'startNewChat')
+  const code = ts.transpileModule(method.getText(tree), { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText
+  const events = [], pending = { value: [{ id: 'old-kb' }] }, revision = { value: 0 }, latest = { value: true }
+  const start = new Function('startBlankChat', 'clearLastChatId', 'focusComposer', 'pendingKnowledge', 'newChatRevision', 'showLatest', `const interactionBusy = { value: false }, accountId = 'u1'; let autoFollowMessages = false; ${code}; return startNewChat`)(() => { events.push('blank'); return true }, id => events.push(['clear', id]), () => events.push('focus'), pending, revision, latest)
+  await start()
+  await start()
+  assert.deepEqual(events, ['blank', ['clear', 'u1'], 'focus', 'blank', ['clear', 'u1'], 'focus'])
+  assert.deepEqual(pending.value, [])
+  assert.equal(revision.value, 2)
+  assert.equal(latest.value, false)
+})
+
+test('自动标题异步刷新只更新标题字段，手动改名后忽略迟到结果', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] })
+  const tick = () => new Promise(resolve => setImmediate(resolve))
+  for (const manual of [false, true]) {
+    let loaded = false, resolvePoll
+    const initial = { ...chat, title: '新会话', title_status: 'pending', web_search_enabled: true }
+    const { store } = fixture({
+      listChats: async () => [initial],
+      getChat: async () => { if (!loaded) { loaded = true; return initial }; return await new Promise(resolve => { resolvePoll = resolve }) },
+      listMessages: async () => ({ items: [{ ...history[0], role: 'assistant', status: 'completed' }], has_more: false, next_before_sequence: null }),
+      renameChat: async () => ({ ...initial, title: '我手动命名', title_status: 'manual' }),
+    })
+    await store.initializeChat(chat.id)
+    t.mock.timers.tick(1500)
+    await tick()
+    assert.equal(typeof resolvePoll, 'function')
+    if (manual) await store.renameChatSession(chat.id, '我手动命名')
+    resolvePoll({ ...initial, title: 'Python学习网站推荐', title_status: 'generated', web_search_enabled: false })
+    await tick()
+    assert.equal(store.currentChat.title, manual ? '我手动命名' : 'Python学习网站推荐')
+    assert.equal(store.chats[0].title, store.currentChat.title)
+    assert.equal(store.currentChat.web_search_enabled, true)
+    assert.equal(store.errorMessage, '')
+    store.$dispose()
+  }
 })

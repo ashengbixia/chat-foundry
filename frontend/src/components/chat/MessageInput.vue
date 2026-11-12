@@ -1,18 +1,13 @@
 <script setup lang="ts">
-import type { MessageAttachment } from '../../types/file'
-import type { KnowledgeReference } from '../../api/knowledge'
-import { onMounted, onUnmounted, ref, watch } from 'vue'
+import type { FileInfo, MessageAttachment } from '../../types/file'
+import type { KnowledgeBase, KnowledgeReference } from '../../api/knowledge'
+import { onMounted, ref, watch } from 'vue'
 import AppIcon from '../AppIcon.vue'
+import ComposerResourceMenu from './ComposerResourceMenu.vue'
 
-const props = defineProps<{ modelValue: string; inputDisabled: boolean; sendDisabled: boolean; sending: boolean; attachments?: MessageAttachment[]; uploadingAttachments?: boolean; knowledgeBases?: KnowledgeReference[]; knowledgeDisabled?: boolean; conversationFiles?: MessageAttachment[] }>()
-const emit = defineEmits<{ 'update:modelValue': [value: string]; send: []; stop: []; openFiles: []; pickFiles: []; openKnowledge: []; removeKnowledge: [id: string]; removeConversationFile: [id: string]; pasteFiles: [files: File[]]; removeAttachment: [fileId: string] }>()
+const props = defineProps<{ modelValue: string; inputDisabled: boolean; sendDisabled: boolean; sending: boolean; attachments?: MessageAttachment[]; uploadingAttachments?: boolean; knowledgeBases?: KnowledgeReference[]; knowledgeDisabled?: boolean; conversationFiles?: MessageAttachment[]; webSearchEnabled?: boolean; webSearchDisabled?: boolean }>()
+const emit = defineEmits<{ 'update:modelValue': [value: string]; send: []; stop: []; openFiles: []; pickFiles: []; openKnowledge: []; manageKnowledge: []; attachSaved: [file: FileInfo]; toggleKnowledge: [base: KnowledgeBase]; addWebLink: [url: string]; toggleWebSearch: []; removeKnowledge: [id: string]; removeConversationFile: [id: string]; pasteFiles: [files: File[]]; removeAttachment: [fileId: string] }>()
 const textareaElement = ref<HTMLTextAreaElement | null>(null) // 输入框元素，用于按内容调整高度
-const attachmentMenu = ref<HTMLElement | null>(null)
-const menuOpen = ref(false)
-function closeOutside(event: PointerEvent) { if (event.target instanceof Node && !attachmentMenu.value?.contains(event.target)) menuOpen.value = false }
-onMounted(() => document.addEventListener('pointerdown', closeOutside))
-onUnmounted(() => document.removeEventListener('pointerdown', closeOutside))
-watch(() => props.inputDisabled || props.uploadingAttachments, (disabled) => { if (disabled) menuOpen.value = false })
 function focus() { textareaElement.value?.focus({ preventScroll: true }) }
 function handlePaste(event: ClipboardEvent) { // 文本照常粘贴，剪贴板中的文件走统一上传校验
   const files = Array.from(event.clipboardData?.files ?? [])
@@ -64,16 +59,10 @@ function removeAttachment(fileId: string) { // 移除待发送的附件，不删
         <button class="icon-button" type="button" :disabled="inputDisabled" :aria-label="`移除附件 ${file.filename}`" @click="removeAttachment(file.file_id)"><AppIcon name="close" :size="13" /></button>
       </li>
     </ul>
-    <textarea ref="textareaElement" :value="modelValue" :disabled="inputDisabled" rows="2" aria-label="输入你的问题" placeholder="发送消息，或把资料拖到这里…" @input="handleInput" @keydown="handleKeydown" @paste="handlePaste"></textarea>
+    <textarea ref="textareaElement" :value="modelValue" :disabled="inputDisabled" rows="2" aria-label="输入你的问题" placeholder="有什么我能帮您的吗？" @input="handleInput" @keydown="handleKeydown" @paste="handlePaste"></textarea>
     <div class="composer-toolbar">
-      <div ref="attachmentMenu" class="attachment-menu" @keydown.esc.stop="menuOpen = false">
-        <button class="attach-button" type="button" :disabled="inputDisabled || uploadingAttachments" aria-label="添加附件" :aria-expanded="menuOpen" @click="menuOpen = !menuOpen"><AppIcon name="plus" :size="17" /><span>{{ uploadingAttachments ? '上传中…' : '添加资料' }}</span></button>
-        <div v-if="menuOpen" class="attachment-options">
-          <button type="button" @click="menuOpen = false; emit('pickFiles')"><AppIcon name="plus" :size="16" /><span>从电脑上传<small>TXT 文件，最大 5 MB</small></span></button>
-          <button type="button" @click="menuOpen = false; emit('openFiles')"><AppIcon name="folder" :size="16" /><span>选择已有资料<small>复用上传过的文件</small></span></button>
-          <button type="button" :disabled="knowledgeDisabled" @click="menuOpen = false; emit('openKnowledge')"><AppIcon name="folder" :size="16" /><span>选择知识库<small>持续用于当前会话</small></span></button>
-        </div>
-      </div>
+      <ComposerResourceMenu :disabled="inputDisabled" :uploading="uploadingAttachments" :knowledge-disabled="knowledgeDisabled" :attachments="attachments" :conversation-files="conversationFiles" :selected-knowledge="knowledgeBases" @upload="emit('pickFiles')" @attach="emit('attachSaved', $event)" @toggle-knowledge="emit('toggleKnowledge', $event)" @manage-files="emit('openFiles')" @manage-knowledge="emit('manageKnowledge')" @web-link="emit('addWebLink', $event)" :web-search-enabled="webSearchEnabled" :web-search-disabled="webSearchDisabled" @toggle-web-search="emit('toggleWebSearch')" />
+      <button v-if="webSearchEnabled" class="web-search-chip" type="button" :disabled="webSearchDisabled" aria-label="关闭联网搜索" title="联网搜索已开启，点击关闭" @click="emit('toggleWebSearch')"><AppIcon name="globe" :size="14" /><span>联网搜索</span><AppIcon name="close" :size="12" /></button>
       <span class="keyboard-hint">Enter 发送 · Shift + Enter 换行</span>
       <slot name="model-picker"></slot>
       <button v-if="sending" class="send-button stop-button" type="button" aria-label="停止生成" title="停止生成" @click="emit('stop')"><AppIcon name="stop" :size="17" /></button>
@@ -84,24 +73,21 @@ function removeAttachment(fileId: string) { // 移除待发送的附件，不删
 </template>
 
 <style scoped>
-.composer { border: 1px solid #e0e3e7; border-radius: 20px; padding: 16px 16px 11px; background: #fff; box-shadow: 0 4px 24px #27352e06, 0 1px 3px #27352e05; }
-.attachment-menu { position: relative; flex-shrink: 0; }
-.attachment-options { position: absolute; left: 0; bottom: calc(100% + 12px); z-index: 16; width: 230px; padding: 6px; border: 1px solid #dce5df; border-radius: 12px; background: #fff; box-shadow: 0 12px 36px #233d2f20; }
-.attachment-options button { display: flex; align-items: center; gap: 12px; width: 100%; border: 0; border-radius: 8px; padding: 12px; background: transparent; text-align: left; color: #526b5c; font-size: 13px; }
-.attachment-options button:hover { background: #f0f6f2; }.attachment-options small { display: block; margin-top: 4px; font-size: 11px; color: #8b9991; }
+.composer { border: 1px solid #e0e3e7; border-radius: 24px; padding: 17px 16px 11px; background: #fff; box-shadow: 0 5px 20px #00000006, 0 1px 3px #00000004; }
 .attachment-progress { margin: 8px 3px 0; color: #718a7b; font-size: 11px; }
-.composer:focus-within { border-color: #abc8bc; box-shadow: 0 0 0 3px #267d6906; }
-textarea { display: block; width: 100%; min-height: 54px; max-height: 180px; padding: 0 3px; border: 0; outline: 0; background: transparent; resize: none; line-height: 1.8; font-size: 14px; color: #30353b; }
+.composer:focus-within { border-color: #d2d2d2; box-shadow: 0 5px 22px #00000008; }
+textarea { display: block; width: 100%; min-height: 54px; max-height: 180px; padding: 0 3px; border: 0; outline: 0; background: transparent; resize: none; line-height: 1.8; font-size: 16px; color: #30353b; }
 textarea:focus-visible { outline: 0; }
-textarea::placeholder { color: #a0a5ad; }
+textarea::placeholder { color: #8d8d8d; }
 textarea:disabled { opacity: .65; }
 .composer-toolbar { display: flex; align-items: center; gap: 12px; margin-top: 8px; }
 .attach-button { display: flex; align-items: center; gap: 6px; padding: 6px 8px; border: 0; border-radius: 7px; background: transparent; font-size: 11px; color: #777f88; }
 .attach-button:hover:not(:disabled) { background: var(--surface); }
+.web-search-chip { display: flex; align-items: center; gap: 5px; flex-shrink: 0; padding: 6px 8px; border: 1px solid #d8e5df; border-radius: 16px; background: #eef5f1; color: #456d59; font-size: 11px; }.web-search-chip:hover:not(:disabled) { background: #e3eee7; }
 .keyboard-hint { margin-left: auto; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-size: 10px; color: #a1a5ad; }
 .composer-toolbar :deep(.composer-model-picker) { margin-left: auto; }
-.send-button { display: grid; place-items: center; width: 34px; height: 34px; flex-shrink: 0; border: 0; border-radius: 11px; background: #263b32; color: #fff; }
-.send-button:hover:not(:disabled) { background: #267d69; }
+.send-button { display: grid; place-items: center; width: 34px; height: 34px; flex-shrink: 0; border: 0; border-radius: 11px; background: #242424; color: #fff; }
+.send-button:hover:not(:disabled) { background: #444; }
 .send-button:disabled { background: #e7ebe8; color: #9fa9a3; opacity: 1; }
 .stop-button { background: #30383f; }
 .pending-attachments { display: flex; flex-wrap: wrap; gap: 7px; list-style: none; margin: 0 0 12px; padding: 0; }

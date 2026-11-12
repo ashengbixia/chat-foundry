@@ -24,6 +24,9 @@ from backend.app.chat.history_sources import collect_history_sources
 from backend.app.chat.reference_context import prepare_auto_reference, resolve_reference_scope
 from backend.tests.index_fixture import mock_file_vectors
 from types import SimpleNamespace
+from backend.app.api import chats as chats_api
+from backend.app.api.model_settings import get_user_model_connection
+from backend.app.chat.guards import acquire_generation, release_generation
 
 
 class KnowledgeTests(unittest.IsolatedAsyncioTestCase):
@@ -59,9 +62,69 @@ class KnowledgeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.status_code, 201, result.text)
         return result.json()["id"]
 
+    async def test_first_reply_schedules_title_without_waiting_for_generation(self):
+        from backend.app.chat import titles
+        import asyncio
+        chat_id = (await self.client.post('/api/chats', json={})).json()['id']
+        await self.client.post(f'/api/chats/{chat_id}/messages', json={'content': 'Python怎么入门'})
+        self.app.dependency_overrides[get_user_model_connection] = lambda: None
+        finish = asyncio.Event()
+        async def title_model(*_):
+            await finish.wait()
+            return 'Python入门学习'
+        async def reply(session, chat_id, **_):
+            answer = await create_message(session, chat_id, 'assistant', '先学习变量和函数')
+            yield 'event: done\ndata: ' + json.dumps({'message_id': answer.id}) + '\n\n'
+        try:
+            with patch.object(chats_api, 'stream_chat_history_events', reply), patch.object(titles, 'generate_title', title_model):
+                response = await asyncio.wait_for(self.client.post(f'/api/chats/{chat_id}/respond'), 3)
+                self.assertIn('event: done', response.text)
+                self.assertIn(chat_id, titles._tasks)
+                task = titles._tasks[chat_id]
+                finish.set()
+                await task
+            updated = (await self.client.get(f'/api/chats/{chat_id}')).json()
+            self.assertEqual((updated['title'], updated['title_status']), ('Python入门学习', 'generated'))
+        finally:
+            finish.set()
+            await titles.close_title_tasks()
+
     async def bind(self, knowledge_id):
         response = await self.client.put("/api/chats/chat/knowledge", json={"knowledge_base_ids": [knowledge_id]})
         self.assertEqual(response.status_code, 200, response.text)
+
+    async def test_chat_search_feature_persists_and_obeys_owner_and_busy_guards(self):
+        self.assertFalse((await self.client.get('/api/chats/chat')).json()['web_search_enabled'])
+        response = await self.client.patch('/api/chats/chat/features', json={'web_search_enabled': True})
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue((await self.client.get('/api/chats/chat')).json()['web_search_enabled'])
+        self.assertEqual((await self.client.patch('/api/chats/chat/features', json={'web_search_enabled': 'true'})).status_code, 422)
+        self.user_id = 'u2'
+        self.assertEqual((await self.client.patch('/api/chats/chat/features', json={'web_search_enabled': False})).status_code, 404)
+        self.user_id = 'u1'
+        self.assertTrue(acquire_generation('chat'))
+        try:
+            self.assertEqual((await self.client.patch('/api/chats/chat/features', json={'web_search_enabled': False})).status_code, 409)
+        finally:
+            release_generation('chat')
+        self.assertTrue((await self.client.get('/api/chats/chat')).json()['web_search_enabled'])
+        created = await self.client.post('/api/chats', json={'web_search_enabled': True})
+        self.assertTrue(created.json()['web_search_enabled'])
+
+    async def test_respond_uses_saved_feature_snapshot(self):
+        async with self.sessions() as session:
+            await create_message(session, 'chat', 'user', 'python')
+        self.app.dependency_overrides[get_user_model_connection] = lambda: None
+        snapshots = []
+        async def stream(**kwargs):
+            snapshots.append(kwargs['web_search_enabled'])
+            yield 'event: done\ndata: {}\n\n'
+        with patch.object(chats_api, 'stream_chat_history_events', stream):
+            for enabled in (True, False):
+                await self.client.patch('/api/chats/chat/features', json={'web_search_enabled': enabled})
+                response = await self.client.post('/api/chats/chat/respond')
+                self.assertEqual(response.status_code, 200)
+        self.assertEqual(snapshots, [True, False])
 
     async def test_bulk_index_only_queues_outdated_owned_members(self):
         mock_file_vectors(self, self.sessions)

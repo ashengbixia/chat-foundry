@@ -19,6 +19,7 @@ import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { storeToRefs } from 'pinia'
 import { useChatStore } from './stores/chat'
 import { clearLastChatId, getLastChatId, saveLastChatId } from './utils/chatStorage'
+import { exportChatMarkdown } from './utils/chatExport'
 
 const chatStore = useChatStore() // 获取当前应用共用的聊天状态仓库
 const accountId = useAuthStore().user!.id // 固定本次页面所属账号，迟到请求不能覆盖另一个账号的浏览器记录
@@ -34,6 +35,7 @@ const selectedKnowledge = computed(() => currentChat.value?.knowledge_bases ?? p
 const messageInput = ref<InstanceType<typeof MessageInput> | null>(null)
 const toast = ref('')
 const showLatest = ref(false)
+const newChatRevision = ref(0)
 let toastTimer: ReturnType<typeof setTimeout> | null = null
 function notify(message: string) {
   toast.value = message
@@ -45,14 +47,20 @@ function settingsSaved() { notify('模型配置已保存，下次回答生效');
 function attachFile(file: FileInfo) { // 已有资料直接引用，不重复上传或建立索引
   if (addAttachment(file)) notify(file.reused ? `同内容资料已存在，已复用：${file.filename}` : `已添加：${file.filename}`)
 }
+function addWebLink(url: string) {
+  if (inputDisabled.value) return
+  inputText.value = [inputText.value.trimEnd(), `请读取这个网页：${url}`].filter(Boolean).join('\n')
+  void focusComposer()
+}
+
 function closeFiles() { filesOpen.value = false; void focusComposer() }
 function jumpToLatest() {
   autoFollowMessages = true
   scrollMessagesToBottom()
   showLatest.value = false
 }
-const { createNewChat, openChatSession, initializeChat, renameChatSession, deleteChatSession, sendMessage, retryReply, stopReply, loadOlderMessages, addAttachment, removeAttachment, markFileDeleted, removeConversationFile } = chatStore
-const { inputText, selectedAttachments, messages, currentChat, chats, errorMessage, sendingMessage, generatingReply, creatingChat, loadingChats, restoringChat, deletingChatId, renamingChatId, pageBusy, inputDisabled, sendDisabled, canRetryReply, hasOlderMessages, loadingOlderMessages } = storeToRefs(chatStore) // 保持响应式连接，不复制出另一份状态
+const { setWebSearchEnabled, startBlankChat, createNewChat, openChatSession, initializeChat, renameChatSession, deleteChatSession, sendMessage, retryReply, stopReply, loadOlderMessages, addAttachment, removeAttachment, markFileDeleted, removeConversationFile } = chatStore
+const { webSearchEnabled, updatingFeatures, inputText, selectedAttachments, messages, currentChat, chats, errorMessage, sendingMessage, generatingReply, creatingChat, loadingChats, restoringChat, deletingChatId, renamingChatId, pageBusy, inputDisabled, sendDisabled, canRetryReply, hasOlderMessages, loadingOlderMessages } = storeToRefs(chatStore) // 保持响应式连接，不复制出另一份状态
 const messageListElement = ref<HTMLElement | null>(null) // 消息区域的页面元素
 const filesOpen = ref(false) // 是否显示文件管理区域，隐藏时保留上传与预览状态
 const interactionBusy = computed(() => pageBusy.value || uploadingAttachments.value || switchingModel.value || switchingKnowledge.value)
@@ -68,6 +76,13 @@ async function applyKnowledge(items: KnowledgeBase[] | KnowledgeReference[]) {
     chats.value = chats.value.map(chat => chat.id === chatId ? { ...chat, knowledge_bases: selected } : chat)
     notify(selected.length ? '知识库已应用到当前会话' : '已移除当前会话的知识库')
   } finally { switchingKnowledge.value = false }
+}
+async function toggleComposerKnowledge(base: KnowledgeBase) {
+  try {
+    const current = selectedKnowledge.value
+    const selected = current.some(item => item.id === base.id)
+    await applyKnowledge(selected ? current.filter(item => item.id !== base.id) : [...current, base])
+  } catch (cause) { errorMessage.value = cause instanceof Error ? cause.message : '选择知识库失败' }
 }
 async function removeKnowledge(id: string) {
   try { await applyKnowledge(selectedKnowledge.value.filter(item => item.id !== id)) }
@@ -129,6 +144,15 @@ async function editChatTitle(chat: Chat) { // 弹窗收集标题，再交给 sto
   if (input === null || input.trim() === chat.title) return
   await renameChatSession(chat.id, input)
 }
+const exportingChat = ref(false)
+async function downloadChat(chat: Chat) {
+  if (interactionBusy.value || exportingChat.value) return
+  exportingChat.value = true
+  notify('正在准备对话下载…')
+  try { await exportChatMarkdown(chat, () => pageActive); if (pageActive) notify('对话已导出为 Markdown') }
+  catch (cause) { if (pageActive) errorMessage.value = cause instanceof Error ? cause.message : '下载对话失败' }
+  finally { exportingChat.value = false }
+}
 async function removeChat(chat: Chat) { // 确认删除，成功后处理浏览器记录
   if (pageBusy.value) return
   const confirmed = window.confirm(`确定删除“${chat.title}”及全部消息吗？此操作不可恢复。`) // 获取删除确认
@@ -165,12 +189,13 @@ onMounted(async () => { // 启动时读取浏览器记录，由 store 恢复数�
   await nextTick()
   scrollMessagesToBottom()
 })
-async function startNewChat() { // 新建成功后，恢复页面自动滚动
+async function startNewChat() { // 打开空白输入页，不请求创建接口、不增加空会话
   if (interactionBusy.value) return
-  const chat = await createNewChat() // 创建和状态更新交给 store
-  if (chat === null) return
-  saveLastChatId(chat.id, accountId) // 新建会话也记录为上次会话，刷新后可以恢复
+  if (!startBlankChat()) return
+  clearLastChatId(accountId) // 空白页刷新后仍为空白，不恢复刚才离开的会话
   autoFollowMessages = true
+  showLatest.value = false
+  newChatRevision.value++
   void focusComposer()
   pendingKnowledge.value = []
 }
@@ -195,7 +220,7 @@ async function sendChatMessage() { // 第一次发送时自动新建会话，保
   <SettingsPanel ref="settingsPanel" @model-changed="currentModelName = $event" @saved="settingsSaved" />
   <KnowledgePanel ref="knowledgePanel" :selected="selectedKnowledge" :selection-disabled="interactionBusy" :apply-selection="applyKnowledge" @changed="refreshKnowledge" />
   <div v-if="toast" class="toast" role="status">{{ toast }}</div>
-  <AppLayout :files-open="filesOpen" :current-chat-id="currentChat?.id" :drop-disabled="interactionBusy" @close-files="closeFiles" @open-settings="settingsPanel?.open()" @open-knowledge="knowledgePanel?.open()" @dropped-files="filePanel?.uploadSelectedFiles($event)" @attach-saved="filePanel?.attachById($event)">
+  <AppLayout :files-open="filesOpen" :current-chat-id="currentChat?.id" :new-chat-revision="newChatRevision" :drop-disabled="interactionBusy" @close-files="closeFiles" @open-settings="settingsPanel?.open()" @open-knowledge="knowledgePanel?.open()" @dropped-files="filePanel?.uploadSelectedFiles($event)" @attach-saved="filePanel?.attachById($event)">
     <template #account><AccountMenu /></template>
     <template #sidebar>
       <ChatSidebar
@@ -211,6 +236,7 @@ async function sendChatMessage() { // 第一次发送时自动新建会话，保
         @open="openChat"
         @remove="removeChat"
         @rename="editChatTitle"
+        @download="downloadChat"
       />
     </template>
     <template #header>
@@ -231,7 +257,7 @@ async function sendChatMessage() { // 第一次发送时自动新建会话，保
             </button>
             <small v-else-if="messages.length">对话从这里开始</small>
           </div>
-          <MessageList :messages="messages" :has-chat="!!currentChat" />
+          <MessageList :messages="messages" :has-chat="!!currentChat" @updated="chatStore.refreshSubagentMessages($event)" />
         </div>
       </section>
     </template>
@@ -254,7 +280,14 @@ async function sendChatMessage() { // 第一次发送时自动新建会话，保
           :conversation-files="currentChat?.files ?? []"
           @remove-conversation-file="removeConversationFile"
           @open-knowledge="knowledgePanel?.open(true)"
+          @manage-knowledge="knowledgePanel?.open()"
           @remove-knowledge="removeKnowledge"
+          @attach-saved="attachFile"
+          @add-web-link="addWebLink"
+          :web-search-enabled="webSearchEnabled"
+          :web-search-disabled="interactionBusy || updatingFeatures"
+          @toggle-web-search="setWebSearchEnabled(!webSearchEnabled)"
+          @toggle-knowledge="toggleComposerKnowledge"
           @remove-attachment="removeAttachment"
           @send="sendChatMessage"
           @stop="stopReply"

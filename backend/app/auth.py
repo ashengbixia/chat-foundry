@@ -97,7 +97,7 @@ async def get_admin(user: User = Depends(get_current_user)) -> User:
     return user
 
 async def require_chat_owner(chat_id: str, user: User = Depends(get_current_user), session: AsyncSession = Depends(get_db)):  # 管理员也不能直接读取别人的私人聊天
-    exists = (await session.execute(select(Chat.id).where(Chat.id == chat_id, Chat.user_id == user.id))).scalar_one_or_none()
+    exists = (await session.execute(select(Chat.id).where(Chat.id == chat_id, Chat.user_id == user.id, Chat.kind == 'conversation'))).scalar_one_or_none()
     if exists is None:
         raise HTTPException(404, "会话不存在")
 

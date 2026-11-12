@@ -17,6 +17,13 @@ test('工具 SSE 解析并校验必要字段', () => {
     assert.throws(() => parseSseEvent(sse(name, data)), /事件字段不符合约定/)
   }
 })
+
+test('新注册工具的中文名称可由后端传递，历史记录无需前端名称表', () => {
+  const event = parseSseEvent(sse('tool_call', { call_id: 'custom', name: 'new_tool', arguments: '{}', display_name: '新工具名称' }))
+  assert.equal(event.displayName, '新工具名称')
+  const calls = load('src/utils/toolOutput.ts').getToolCalls([{ type: 'function_call', call_id: event.callId, name: event.name, arguments: event.arguments, display_name: event.displayName }])
+  assert.equal(calls[0].displayName, '新工具名称')
+})
 test('分段 SSE 保持调用、结果和正文的顺序，仍返回数据库消息 ID', async (context) => {
   const content = sse('tool_call', { call_id: 'c1', name: 'get_current_time', arguments: '{}' }) + sse('tool_result', { call_id: 'c1', output: result.output }) + sse('text_delta', { text: '北京时间' }) + sse('done', { message_id: 'saved' })
   const bytes = new TextEncoder().encode(content)
@@ -28,8 +35,8 @@ test('分段 SSE 保持调用、结果和正文的顺序，仍返回数据库消
 
 function fixture() { // 替换模型流，测试真正的 store 回调及消息状态
   let callbacks
-  const streamChatReply = (_id, onText, signal, onTool) => new Promise((resolve, reject) => {
-    callbacks = { onText, onTool, resolve, reject }
+  const streamChatReply = (_id, onText, signal, onTool, onProcess, onDone) => new Promise((resolve, reject) => {
+    callbacks = { onText, onTool, onProcess, onDone, resolve, reject }
     signal.addEventListener('abort', () => reject(new DOMException('Stopped', 'AbortError')), { once: true })
   })
   const loader = createTypeScriptLoader({ '../api/chats': {}, '../api/stream': { streamChatReply } })
@@ -75,4 +82,23 @@ test('停止和报错保留收到的工具记录；停止后忽略迟到事件',
     assert.equal(draft.content, '')
     assert.equal(state.store.generatingReply, false)
   }
+})
+
+test('思考和工具前过程不混入最终正文，耗时随完成事件保存', async () => {
+  const state = fixture(), pending = state.store.retryReply()
+  await tick()
+  state.callbacks.onProcess({ type: 'reasoning_delta', text: '核对依据' })
+  state.callbacks.onText('我先查询')
+  state.callbacks.onProcess({ type: 'commentary', text: '我先查询' })
+  assert.equal(state.store.messages.at(-1).content, '')
+  state.callbacks.onText('最终结论')
+  state.callbacks.onDone(63000)
+  state.callbacks.resolve('saved')
+  await pending
+  const message = state.store.messages.at(-1)
+  assert.equal(message.content, '最终结论')
+  assert.equal(message.output[0].type, 'reasoning')
+  assert.equal(message.output[1].phase, 'commentary')
+  assert.equal(message.output.at(-1).duration_ms, 63000)
+  assert.deepEqual(parseSseEvent(sse('reasoning_delta', { text: '思考' })), { type: 'reasoning_delta', text: '思考' })
 })

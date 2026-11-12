@@ -4,7 +4,7 @@ from fastapi.responses import StreamingResponse
 
 from backend.app.core.database import get_db
 from backend.app.repositories.chat import get_latest_message, rename_chat, delete_chat, create_chat, list_chats, get_chat, list_messages_page, create_message
-from backend.app.schemas.chat import ChatCreate, ChatResponse, MessageResponse, MessagePageResponse, MessageCreate, ChatRename
+from backend.app.schemas.chat import ChatCreate, ChatResponse, MessageResponse, MessagePageResponse, MessageCreate, ChatRename, ChatFeatures
 from backend.app.chat.service import stream_chat_history_events
 from backend.app.chat.response import ChatStreamingResponse  # 带生成器清理的聊天流式响应
 from backend.app.chat.guards import acquire_generation, release_generation  # 占用和释放会话的生成资格
@@ -16,6 +16,11 @@ from backend.app.llm.connection import ModelConnection
 from backend.app.models.chat_file import ChatFile
 from backend.app.models.chat import Chat
 from sqlalchemy import update
+from contextlib import aclosing
+import logging
+from sqlalchemy.ext.asyncio import async_sessionmaker
+from backend.app.chat.titles import schedule_title
+from backend.app.chat import subagents
 
 
 #创建一个接口分组
@@ -27,7 +32,7 @@ async def create_chat_endpoint(request: ChatCreate,session: AsyncSession = Depen
     """创建会话并返回会话信息。"""
 
     try:
-        chat = await create_chat(session=session,title=request.title, user_id=user.id, knowledge_base_ids=request.knowledge_base_ids)
+        chat = await create_chat(session=session,title=request.title, user_id=user.id, knowledge_base_ids=request.knowledge_base_ids, web_search_enabled=request.web_search_enabled)
     except MessageFileError as error:
         raise HTTPException(400, str(error))
     return chat
@@ -81,7 +86,9 @@ async def create_message_endpoint(
     session: AsyncSession = Depends(get_db),
 ):
     """保存一条用户消息，暂不生成助手回答。"""
-
+    await subagents.pause_delivery(chat_id)
+    if not acquire_generation(chat_id):
+        raise HTTPException(409, '会话正在回答，请先停止当前回答')
     try:
         message = await create_message(
             session=session,
@@ -98,6 +105,8 @@ async def create_message_endpoint(
             status_code=404,
             detail="会话不存在",
         )
+    finally:
+        release_generation(chat_id)
 
     return message
 
@@ -119,17 +128,51 @@ async def respond_endpoint(chat_id: str, session: AsyncSession = Depends(get_db)
                 raise HTTPException(status_code=409, detail="最新回答已完成，请发送新问题")
         elif latest.role != "user" or latest.status != "completed":
             raise HTTPException(status_code=409, detail="最新消息不支持生成回答")
+        async def events():
+            async with aclosing(stream_chat_history_events(session=session, chat_id=chat_id, connection=connection, web_search_enabled=chat.web_search_enabled)) as stream:
+                async for event in stream:
+                    if event.startswith('event: done') and chat.title_status == 'pending':
+                        try:
+                            schedule_title(async_sessionmaker(session.bind, expire_on_commit=False), chat_id, connection)
+                        except Exception:
+                            logging.getLogger(__name__).warning('无法安排自动标题，聊天回答不受影响')
+                    yield event
         return ChatStreamingResponse(
-            content=stream_chat_history_events(session=session, chat_id=chat_id, connection=connection),
+            content=events(),
             chat_id=chat_id,
         )
     except BaseException:
         release_generation(chat_id)  # 尚未交给响应对象就退出，由接口负责释放
         raise
 
+
+@router.patch('/{chat_id}/features', response_model=ChatResponse)
+async def set_chat_features(chat_id: str, request: ChatFeatures, session: AsyncSession = Depends(get_db)):
+    if not acquire_generation(chat_id):
+        raise HTTPException(409, '会话正在回答，请结束后再调整联网搜索')
+    try:
+        result = await session.execute(update(Chat).where(Chat.id == chat_id).values(web_search_enabled=request.web_search_enabled))
+        if not result.rowcount:
+            raise HTTPException(404, '会话不存在')
+        await session.commit()
+        chat = await get_chat(session, chat_id)
+        if chat is None:
+            raise HTTPException(404, '会话不存在')
+        await session.refresh(chat)
+        return chat
+    finally:
+        release_generation(chat_id)
+
 @router.delete("/{chat_id}", status_code=204)
 async def delete_chat_endpoint(chat_id: str, session: AsyncSession = Depends(get_db)):  # 删除指定会话及全部消息
-    deleted = await delete_chat(session, chat_id)  # 执行删除事务
+    await subagents.pause_delivery(chat_id)
+    if not acquire_generation(chat_id):
+        raise HTTPException(409, '请先停止当前回答再删除会话')
+    try:
+        await subagents.stop_parent(async_sessionmaker(session.bind, expire_on_commit=False), chat_id)
+        deleted = await delete_chat(session, chat_id)
+    finally:
+        release_generation(chat_id)
     if not deleted:
         raise HTTPException(status_code=404, detail="会话不存在")
     return Response(status_code=204)
@@ -140,3 +183,32 @@ async def rename_chat_endpoint(chat_id: str, request: ChatRename, session: Async
     if chat is None:
         raise HTTPException(status_code=404, detail="会话不存在")
     return chat
+
+
+@router.get('/{chat_id}/subagents')
+async def list_subagents(chat_id: str, call_id: str | None = None, offset: int = Query(default=0, ge=0), session: AsyncSession = Depends(get_db)):
+    from backend.app.models.subagent import SubagentTask
+    from sqlalchemy import select
+    query = select(SubagentTask).where(SubagentTask.parent_chat_id == chat_id)
+    if call_id:
+        query = query.where(SubagentTask.call_id == call_id)
+    rows = list((await session.execute(query.order_by(SubagentTask.created_at.desc(), SubagentTask.id).offset(offset).limit(21))).scalars())
+    return {'items': [subagents.task_view(task) for task in rows[:20]], 'has_more': len(rows) > 20}
+
+
+@router.get('/{chat_id}/subagents/{task_id}/messages', response_model=MessagePageResponse)
+async def subagent_messages(chat_id: str, task_id: str, before_sequence: int | None = Query(default=None, ge=1), session: AsyncSession = Depends(get_db)):
+    try:
+        task = await subagents.owned_task(session, chat_id, task_id)
+    except ValueError:
+        raise HTTPException(404, '子任务不存在') from None
+    items, more, cursor = await list_messages_page(session, task.child_chat_id, before_sequence)
+    return {'items': items, 'has_more': more, 'next_before_sequence': cursor}
+
+
+@router.post('/{chat_id}/subagents/{task_id}/cancel')
+async def cancel_subagent(chat_id: str, task_id: str, session: AsyncSession = Depends(get_db)):
+    try:
+        return await subagents.cancel_task(async_sessionmaker(session.bind, expire_on_commit=False), chat_id, task_id)
+    except ValueError:
+        raise HTTPException(404, '子任务不存在') from None

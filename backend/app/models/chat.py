@@ -1,7 +1,7 @@
 import time
 import uuid
 
-from sqlalchemy import ForeignKey, JSON, String, Text, UniqueConstraint
+from sqlalchemy import Boolean, ForeignKey, JSON, String, Text, UniqueConstraint, false
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from backend.app.models.message_file import MessageFile  # 消息与文件的关联记录
 from backend.app.models.knowledge import KnowledgeBase
@@ -30,6 +30,9 @@ class Chat(Base):
         String(200),
         default="新会话",
     )
+    web_search_enabled: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false())
+    title_status: Mapped[str] = mapped_column(String(16), default='manual', server_default='manual')
+    kind: Mapped[str] = mapped_column(String(16), default='conversation', server_default='conversation')
 
     # 创建时间：Unix 秒级时间戳。
     created_at: Mapped[int] = mapped_column(

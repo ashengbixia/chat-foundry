@@ -1,6 +1,6 @@
-import { computed, reactive, ref } from 'vue'
+import { computed, onScopeDispose, reactive, ref, watch } from 'vue'
 import { defineStore } from 'pinia'
-import { createChat, deleteChat, getChat, listChats, listMessages, renameChat, saveUserMessage, removeChatFile } from '../api/chats'
+import { createChat, deleteChat, getChat, listChats, listMessages, renameChat, saveUserMessage, removeChatFile, setChatFeatures } from '../api/chats'
 import { streamChatReply } from '../api/stream'
 import type { Chat } from '../api/chats'
 import type { DisplayMessage } from '../types/chat'
@@ -16,7 +16,39 @@ export const useChatStore = defineStore('chat', () => { // 集中保存聊天状
   const selectedAttachments = ref<MessageAttachment[]>([]) // 待发送草稿；发送成功后进入独立的会话资料列表
   const messages = ref<DisplayMessage[]>([]) // 当前会话的页面消息
   const currentChat = ref<Chat | null>(null) // 当前打开的会话
+  const pendingWebSearch = ref(false)
+  const updatingFeatures = ref(false)
+  const webSearchEnabled = computed(() => currentChat.value?.web_search_enabled ?? pendingWebSearch.value)
   const chats = ref<Chat[]>([]) // 会话列表
+  const pendingTaskRefresh = new Set<string>()
+  let disposed = false
+  onScopeDispose(() => { disposed = true; pendingTaskRefresh.clear() })
+  const titlePolls = new Map<string, AbortController>()
+  onScopeDispose(() => { for (const request of titlePolls.values()) request.abort(); titlePolls.clear() })
+  function watchAutoTitle(chatId: string) {
+    if (titlePolls.has(chatId)) return
+    const request = new AbortController()
+    titlePolls.set(chatId, request)
+    void (async () => {
+      try {
+        for (let attempt = 0; attempt < 24 && !request.signal.aborted; attempt++) {
+          await new Promise<void>(resolve => {
+            const finish = () => { clearTimeout(timer); request.signal.removeEventListener('abort', finish); resolve() }
+            const timer = setTimeout(finish, 1500)
+            request.signal.addEventListener('abort', finish, { once: true })
+          })
+          if (request.signal.aborted) return
+          const updated = await getChat(chatId, request.signal)
+          if (request.signal.aborted || !updated || !chats.value.some(chat => chat.id === chatId)) return
+          // 仅同步标题字段，避免覆盖这期间新选的知识库、文件或搜索设置。
+          chats.value = chats.value.map(chat => chat.id === chatId ? { ...chat, title: updated.title, title_status: updated.title_status } : chat)
+          if (currentChat.value?.id === chatId) currentChat.value = { ...currentChat.value, title: updated.title, title_status: updated.title_status }
+          if (!['pending', 'generating'].includes(updated.title_status ?? 'manual')) return
+        }
+      } catch { /* 标题更新失败不覆盖聊天错误；下次打开会话可读取最新结果。 */ }
+      finally { if (titlePolls.get(chatId) === request) titlePolls.delete(chatId) }
+    })()
+  }
   const errorMessage = ref('') // 页面错误说明
   const sendingMessage = ref(false) // 是否正在保存问题或生成回答
   const generatingReply = ref(false) // 是否正在执行模型流式请求，供停止按钮和页面跟随使用
@@ -31,8 +63,23 @@ export const useChatStore = defineStore('chat', () => { // 集中保存聊天状
   const deletingChatId = ref<string | null>(null) // 正在删除的会话 ID
   const renamingChatId = ref<string | null>(null) // 正在重命名的会话 ID
   const removingChatFile = ref(false)
-  const operationBusy = computed(() => sendingMessage.value || creatingChat.value || loadingMessages.value || loadingOlderMessages.value || deletingChatId.value !== null || renamingChatId.value !== null || removingChatFile.value)
+  const operationBusy = computed(() => sendingMessage.value || creatingChat.value || loadingMessages.value || loadingOlderMessages.value || deletingChatId.value !== null || renamingChatId.value !== null || removingChatFile.value || updatingFeatures.value)
   const pageBusy = computed(() => operationBusy.value || restoringChat.value) // 页面是否忙碌，包含启动恢复阶段
+  async function refreshSubagentMessages(chatId: string) {
+    if (disposed || currentChat.value?.id !== chatId) return
+    if (pageBusy.value) { pendingTaskRefresh.add(chatId); return }
+    pendingTaskRefresh.delete(chatId)
+    try {
+      const page = await listMessages(chatId)
+      if (disposed) return
+      if (currentChat.value?.id !== chatId || pageBusy.value) { pendingTaskRefresh.add(chatId); return }
+      const updated = new Map(page.items.map(item => [item.id, item]))
+      const existing = messages.value.filter(item => !item.id.startsWith('pending-') || !page.items.some(saved => saved.role === item.role && saved.status === item.status && saved.content === item.content))
+      const ids = new Set(existing.map(item => item.id))
+      messages.value = existing.map(item => updated.get(item.id) ?? item).concat(page.items.filter(item => !ids.has(item.id)))
+    } catch { /* 子任务刷新不覆盖输入或普通聊天错误。 */ }
+  }
+  watch(pageBusy, busy => { if (!busy) for (const id of [...pendingTaskRefresh]) void refreshSubagentMessages(id) })
   const inputDisabled = computed(() => sendingMessage.value || creatingChat.value || loadingOlderMessages.value || deletingChatId.value !== null || renamingChatId.value !== null) // 输入框禁用规则
   const sendDisabled = computed(() => !inputText.value.trim() || pageBusy.value) // 空白页也可发送，由页面先创建会话
   const canRetryReply = computed(() => { // 根据最后一条页面消息判断是否提供重试入口
@@ -53,13 +100,26 @@ export const useChatStore = defineStore('chat', () => { // 集中保存聊天状
       loadingChats.value = false
     }
   }
+  function startBlankChat(): boolean { // 只切回本地空白草稿，第一条消息发送时才创建数据库会话
+    if (pageBusy.value) return false
+    currentChat.value = null
+    messages.value = []
+    inputText.value = ''
+    selectedAttachments.value = []
+    pendingWebSearch.value = false
+    errorMessage.value = ''
+    hasOlderMessages.value = false
+    nextBeforeSequence.value = null
+    return true
+  }
   async function createNewChat(knowledgeBaseIds: string[] = []): Promise<Chat | null> { // 首次发送可同时保存所选知识库
     if (pageBusy.value) return null
     creatingChat.value = true
     errorMessage.value = ''
     try {
-      const chat = await createChat('新会话', knowledgeBaseIds)
+      const chat = await createChat('新会话', knowledgeBaseIds, pendingWebSearch.value)
       currentChat.value = chat
+      pendingWebSearch.value = false
       chats.value.unshift(chat)
       messages.value = []
       hasOlderMessages.value = false
@@ -81,11 +141,13 @@ export const useChatStore = defineStore('chat', () => { // 集中保存聊天状
     try {
       const page = await listMessages(chat.id) // 首次打开取最近一批消息
       currentChat.value = chat
+      pendingWebSearch.value = false
       messages.value = page.items
       hasOlderMessages.value = page.has_more
       nextBeforeSequence.value = page.next_before_sequence
       inputText.value = ''
       selectedAttachments.value = [] // 成功切换会话后清理原会话的附件草稿
+      if (chat.title_status === 'generating' || (chat.title_status === 'pending' && page.items.some(item => item.role === 'assistant' && item.status === 'completed'))) watchAutoTitle(chat.id)
       return true
     } catch (error) {
       errorMessage.value = error instanceof Error ? error.message : '读取消息失败'
@@ -93,6 +155,22 @@ export const useChatStore = defineStore('chat', () => { // 集中保存聊天状
     } finally {
       loadingMessages.value = false
     }
+  }
+  async function setWebSearchEnabled(enabled: boolean): Promise<boolean> {
+    if (pageBusy.value) return false
+    if (!currentChat.value) { pendingWebSearch.value = enabled; return true }
+    const chatId = currentChat.value.id
+    updatingFeatures.value = true
+    errorMessage.value = ''
+    try {
+      const updated = await setChatFeatures(chatId, enabled)
+      if (currentChat.value?.id === chatId) currentChat.value = { ...currentChat.value, web_search_enabled: updated.web_search_enabled ?? false }
+      chats.value = chats.value.map(chat => chat.id === chatId ? { ...chat, web_search_enabled: updated.web_search_enabled ?? false } : chat)
+      return true
+    } catch (error) {
+      errorMessage.value = error instanceof Error ? error.message : '保存联网搜索设置失败'
+      return false
+    } finally { updatingFeatures.value = false }
   }
   async function initializeChat(lastChatId: string | null): Promise<ChatInitializationResult> { // 初始化会话列表和历史，只处理数据，不直接操作浏览器记录
     restoringChat.value = true
@@ -151,6 +229,7 @@ export const useChatStore = defineStore('chat', () => { // 集中保存聊天状
     errorMessage.value = ''
     try {
       const updatedChat = await renameChat(chatId, title) // 获取后端保存后的会话
+      titlePolls.get(chatId)?.abort()
       chats.value = chats.value.map((item) => item.id === updatedChat.id ? updatedChat : item)
       if (currentChat.value?.id === updatedChat.id) {
         currentChat.value = updatedChat
@@ -169,6 +248,7 @@ export const useChatStore = defineStore('chat', () => { // 集中保存聊天状
     errorMessage.value = ''
     try {
       await deleteChat(chatId)
+      titlePolls.get(chatId)?.abort()
       chats.value = chats.value.filter((item) => item.id !== chatId)
       if (currentChat.value?.id === chatId) {
         currentChat.value = null
@@ -247,6 +327,9 @@ export const useChatStore = defineStore('chat', () => { // 集中保存聊天状
       attachments: [], // 当前只允许用户消息关联附件
       status: 'generating',
       error: null,
+      chat_id: chatId,
+      created_at: Date.now() / 1000,
+      model: null,
     })
     messages.value.push(draft)
     try {
@@ -255,13 +338,27 @@ export const useChatStore = defineStore('chat', () => { // 集中保存聊天状
       }, controller.signal, (event) => { // 工具事件直接更新当前助手消息，无需重新打开会话
         if (controller.signal.aborted) return
         if (event.type === 'tool_call') {
-          draft.output.push({ type: 'function_call', call_id: event.callId, name: event.name, arguments: event.arguments })
+          draft.output.push({ type: 'function_call', call_id: event.callId, name: event.name, arguments: event.arguments, ...(event.displayName ? { display_name: event.displayName } : {}) })
         } else {
-          draft.output.push({ type: 'function_call_output', call_id: event.callId, output: event.output })
+          draft.output.push({ type: 'function_call_output', call_id: event.callId, output: event.output, ...(event.durationMs !== undefined ? { duration_ms: event.durationMs } : {}) })
         }
+      }, (event) => {
+        if (controller.signal.aborted) return
+        if (event.type === 'commentary') {
+          if (event.text && draft.content.endsWith(event.text)) draft.content = draft.content.slice(0, -event.text.length)
+          draft.output.push({ type: 'message', phase: 'commentary', role: 'assistant', content: [{ type: 'output_text', text: event.text }] })
+        } else {
+          const last = draft.output.at(-1) as { type?: string; text?: string } | undefined
+          if (last?.type === 'reasoning') last.text = (last.text ?? '') + event.text
+          else draft.output.push({ type: 'reasoning', text: event.text })
+        }
+      }, (durationMs) => {
+        draft.output.push({ type: 'turn_metadata', duration_ms: durationMs ?? Math.round((Date.now() / 1000 - (draft.created_at ?? Date.now() / 1000)) * 1000) })
       })
       draft.id = messageId
       draft.status = 'completed'
+      const chat = chats.value.find(item => item.id === chatId)
+      if (chat?.title_status === 'pending' || chat?.title_status === 'generating') watchAutoTitle(chatId)
     } catch (error) {
       if (controller.signal.aborted) {
         draft.status = 'cancelled'
@@ -271,6 +368,7 @@ export const useChatStore = defineStore('chat', () => { // 集中保存聊天状
         throw error
       }
     } finally {
+      draft.updated_at = Date.now() / 1000
       generatingReply.value = false
     }
   }
@@ -320,5 +418,5 @@ export const useChatStore = defineStore('chat', () => { // 集中保存聊天状
       sendingMessage.value = false
     }
   }
-  return { inputText, selectedAttachments, messages, currentChat, chats, errorMessage, sendingMessage, generatingReply, creatingChat, loadingChats, loadingMessages, hasOlderMessages, nextBeforeSequence, loadingOlderMessages, restoringChat, deletingChatId, renamingChatId, operationBusy, pageBusy, inputDisabled, sendDisabled, canRetryReply, loadChats, createNewChat, openChatSession, initializeChat, loadOlderMessages, renameChatSession, deleteChatSession, sendMessage, retryReply, stopReply, addAttachment, removeAttachment, markFileDeleted, removeConversationFile }
+  return { refreshSubagentMessages, inputText, selectedAttachments, messages, currentChat, chats, webSearchEnabled, updatingFeatures, setWebSearchEnabled, errorMessage, sendingMessage, generatingReply, creatingChat, loadingChats, loadingMessages, hasOlderMessages, nextBeforeSequence, loadingOlderMessages, restoringChat, deletingChatId, renamingChatId, operationBusy, pageBusy, inputDisabled, sendDisabled, canRetryReply, loadChats, startBlankChat, createNewChat, openChatSession, initializeChat, loadOlderMessages, renameChatSession, deleteChatSession, sendMessage, retryReply, stopReply, addAttachment, removeAttachment, markFileDeleted, removeConversationFile }
 })

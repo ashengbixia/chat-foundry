@@ -8,6 +8,12 @@ class ChatCreate(BaseModel):
 
     title: str = Field(default="新会话",min_length=1,max_length=200,)
     knowledge_base_ids: list[str] = Field(default_factory=list, max_length=5)
+    web_search_enabled: bool = Field(default=False, strict=True)
+
+
+class ChatFeatures(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    web_search_enabled: bool = Field(strict=True)
 
 
 class KnowledgeReference(BaseModel):
@@ -36,6 +42,8 @@ class ChatResponse(BaseModel):
     updated_at: int
     knowledge_bases: list[KnowledgeReference] = Field(default_factory=list)
     files: list[ChatFileResponse] = Field(default_factory=list)
+    web_search_enabled: bool = False
+    title_status: str = 'manual'
 
 class MessageAttachmentResponse(BaseModel):  # 消息附件只返回展示所需的基本信息
     model_config = ConfigDict(from_attributes=True)

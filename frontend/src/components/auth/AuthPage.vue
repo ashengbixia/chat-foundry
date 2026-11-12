@@ -37,7 +37,7 @@ function switchMode() { registering.value = !registering.value; password.value =
       <p>{{ auth.setupRequired ? '设置初始管理员账号。已有会话和资料会归入这个账号。' : isSignup ? '注册后即可使用，聊天和资料仅属于你。' : '登录，继续你的对话与探索。' }}</p>
       <form @submit.prevent="submit">
         <label>用户名<input v-model="username" type="text" :maxlength="isSignup ? 80 : 254" pattern="\S+" autocomplete="username" placeholder="输入用户名" required :disabled="submitting" /></label>
-        <label>密码<input v-model="password" type="password" minlength="8" maxlength="128" :autocomplete="isSignup ? 'new-password' : 'current-password'" required :disabled="submitting" placeholder="至少8个字符" /></label>
+        <label>密码<input v-model="password" type="password" :minlength="isSignup ? 8 : 1" maxlength="128" :autocomplete="isSignup ? 'new-password' : 'current-password'" required :disabled="submitting" :placeholder="isSignup ? '至少8个字符' : '请输入密码'" /></label>
         <label v-if="isSignup">确认密码<input v-model="confirmPassword" type="password" minlength="8" maxlength="128" autocomplete="new-password" required :disabled="submitting" /></label>
         <label v-if="isSignup && !auth.setupRequired" class="admin-request"><input v-model="requestAdmin" type="checkbox" :disabled="submitting" />申请管理员权限<small>批准前仍为普通用户</small></label>
         <p v-if="error" class="error" role="alert">{{ error }}</p>

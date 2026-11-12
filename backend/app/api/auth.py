@@ -24,7 +24,7 @@ class UserResponse(BaseModel):
 
 class Credentials(BaseModel):
     username: str = Field(min_length=1, max_length=254, pattern=r"^\S+$")  # 登录兼容旧账号的原登录名，不要求邮箱格式
-    password: SecretStr = Field(min_length=8, max_length=128)
+    password: SecretStr = Field(min_length=1, max_length=128)  # 登录只验证已有密码，兼容历史短密码。
 
     @field_validator("username", mode="before")
     @classmethod
@@ -33,6 +33,7 @@ class Credentials(BaseModel):
 
 class Signup(Credentials):
     username: str = Field(min_length=1, max_length=80, pattern=r"^\S+$")  # 新用户名不可包含空白，不区分大小写
+    password: SecretStr = Field(min_length=8, max_length=128)
     setup: bool = False  # 首次初始化单独确认，普通注册不能意外变成初始管理员
     request_admin: bool = False  # 只提交申请，不直接授予权限
 

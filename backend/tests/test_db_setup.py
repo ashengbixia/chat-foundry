@@ -49,7 +49,7 @@ class DatabaseSetupTests(unittest.TestCase):  # 全部使用临时磁盘库，�
         result = db_setup.prepare_database(self.path, upgrade=True)
         self.assertEqual(result["status"], "upgraded")
         self.assertEqual(self.query("SELECT text_content, status, index_status, index_task_id FROM files"), [("已有正文", "completed", "pending", None)])
-        self.assertEqual(result["revision"], "c4f9b2d7e165")
+        self.assertEqual(result["revision"], "f7c2e5a0b498")
 
     def test_upgrade_populates_chat_files_from_old_message_attachments(self):
         db_setup.prepare_database(self.path)
@@ -91,6 +91,7 @@ class DatabaseSetupTests(unittest.TestCase):  # 全部使用临时磁盘库，�
         self.make_old_database()
         result = db_setup.prepare_database(self.path, upgrade=True)
         self.assertEqual(result["status"], "upgraded")
+        self.assertEqual(self.query('SELECT web_search_enabled FROM chats'), [(0,)])
         self.assertEqual(self.query("SELECT content, sequence FROM messages"), [("保留正文", 1)])
         self.assertEqual(self.query("SELECT file_id, linked_file_id, filename FROM message_files"), [("file", "file", "附件.txt")])
         with closing(sqlite3.connect(result["backup"])) as connection:
@@ -102,6 +103,7 @@ class DatabaseSetupTests(unittest.TestCase):  # 全部使用临时磁盘库，�
         self.make_old_database(with_attachment=False)
         self.assertEqual(db_setup.prepare_database(self.path, upgrade=True)["status"], "upgraded")
         self.assertEqual(self.query("SELECT content FROM messages"), [("保留正文",)])
+        self.assertEqual(self.query('SELECT title,title_status FROM chats'), [('保留会话', 'manual')])
 
     def test_unversioned_or_unknown_database_is_not_mutated(self):
         db_setup.prepare_database(self.path)

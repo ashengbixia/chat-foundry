@@ -1,14 +1,17 @@
 import { createApiError } from './errors'
 
 export type ToolStreamEvent = // 后端收齐工具参数后才发送调用事件，结果用同一个 callId 关联
-  | { type: 'tool_call'; callId: string; name: string; arguments: string }
-  | { type: 'tool_result'; callId: string; output: string }
+  | { type: 'tool_call'; callId: string; name: string; arguments: string; displayName?: string }
+  | { type: 'tool_result'; callId: string; output: string; durationMs?: number }
+
+export type ProcessStreamEvent = { type: 'reasoning_delta' | 'commentary'; text: string }
 
 export type ChatStreamEvent =
   | { type: 'text_delta'; text: string }
-  | { type: 'done'; messageId: string }
+  | { type: 'done'; messageId: string; durationMs?: number }
   | { type: 'error'; message: string }
   | ToolStreamEvent
+  | ProcessStreamEvent
 
 
 export function parseSseEvent(
@@ -34,21 +37,21 @@ export function parseSseEvent(
     throw new Error('事件数据不是对象')
   }
 
-  if (eventType === 'text_delta') {
+  if (eventType === 'text_delta' || eventType === 'reasoning_delta' || eventType === 'commentary') {
     if ('text' in data && typeof data.text === 'string') {
-      return { type: 'text_delta', text: data.text }
+      return { type: eventType, text: data.text }
     }
   } else if (eventType === 'tool_call') {
     if ('call_id' in data && typeof data.call_id === 'string' && data.call_id && 'name' in data && typeof data.name === 'string' && data.name && 'arguments' in data && typeof data.arguments === 'string') {
-      return { type: 'tool_call', callId: data.call_id, name: data.name, arguments: data.arguments }
+      return { type: 'tool_call', callId: data.call_id, name: data.name, arguments: data.arguments, ...('display_name' in data && typeof data.display_name === 'string' ? { displayName: data.display_name } : {}) }
     }
   } else if (eventType === 'tool_result') {
     if ('call_id' in data && typeof data.call_id === 'string' && data.call_id && 'output' in data && typeof data.output === 'string') {
-      return { type: 'tool_result', callId: data.call_id, output: data.output }
+      return { type: 'tool_result', callId: data.call_id, output: data.output, ...('duration_ms' in data && typeof data.duration_ms === 'number' ? { durationMs: data.duration_ms } : {}) }
     }
   } else if (eventType === 'done') {
     if ('message_id' in data && typeof data.message_id === 'string') {
-      return { type: 'done', messageId: data.message_id }
+      return { type: 'done', messageId: data.message_id, ...('duration_ms' in data && typeof data.duration_ms === 'number' ? { durationMs: data.duration_ms } : {}) }
     }
   } else if (eventType === 'error') {
     if ('message' in data && typeof data.message === 'string') {
@@ -66,7 +69,9 @@ export async function streamChatReply(
     chatId: string,
     onText: (text: string) => void,
     signal?: AbortSignal,
-    onTool?: (event: ToolStreamEvent) => void): Promise<string> { // 保留原有正文和取消参数，增加可选工具事件回调
+    onTool?: (event: ToolStreamEvent) => void,
+    onProcess?: (event: ProcessStreamEvent) => void,
+    onDone?: (durationMs?: number) => void): Promise<string> {
   const response = await fetch(
       `/api/chats/${encodeURIComponent(chatId)}/respond`,
       {
@@ -110,11 +115,14 @@ export async function streamChatReply(
 
         if (event?.type === 'text_delta') {
           onText(event.text)
+        } else if (event?.type === 'reasoning_delta' || event?.type === 'commentary') {
+          onProcess?.(event)
         } else if (event?.type === 'tool_call' || event?.type === 'tool_result') {
           onTool?.(event) // 将工具事件交给仓库，不在请求层修改页面状态
         } else if (event?.type === 'error') {
           throw new Error(event.message)
         } else if (event?.type === 'done') {
+          onDone?.(event.durationMs)
           return event.messageId
         }
 

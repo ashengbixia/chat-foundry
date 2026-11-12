@@ -1,6 +1,7 @@
 import json
 import unittest
-from backend.app.chat.tool_context import project_tool_results
+from backend.app.chat.tool_context import project_tool_results, prepare_model_request
+from backend.app.llm.budget import InputBudgetError
 from backend.app.llm.budget import estimate_input_tokens
 from backend.app.rag.chunking import split_with_tokenizer
 
@@ -12,6 +13,44 @@ class CharacterTokenizer:
         return {"offset_mapping": [(index, index + 1) for index in range(len(text))]}
 
 class ToolContextTests(unittest.TestCase):
+    def test_final_phase_preserves_required_reasoning_and_omits_tool_definitions(self):
+        reasoning = '模型服务要求原样回传的思考' * 100
+        raw = json.dumps({'task_id': 't', 'status': 'completed', 'outcome': 'answered', 'summary': '结论', 'chunks': []})
+        messages = [{'role': 'user', 'content': '比较两个任务'},
+                    {'role': 'assistant', 'reasoning_content': reasoning, 'tool_calls': [{'id': 't', 'function': {'name': 'delegate_task', 'arguments': '{}'}}]},
+                    {'role': 'tool', 'tool_call_id': 't', 'content': raw}]
+        tools = [{'type': 'function', 'function': {'name': 'delegate_task', 'description': '工具说明' * 2000}}]
+        projected, offered, final, reason = prepare_model_request(messages, {'t': raw}, tools, 12000, 1000, 100)
+        self.assertIsNone(offered)
+        self.assertTrue(final)
+        self.assertEqual(reason, 'input_budget')
+        self.assertEqual(next(item['reasoning_content'] for item in projected if 'reasoning_content' in item), reasoning)
+        self.assertLessEqual(estimate_input_tokens(projected), 10900)
+        with self.assertRaises(InputBudgetError):
+            prepare_model_request(messages, {'t': raw}, tools, 1000, 200, 100)
+
+    def test_search_budget_compacts_snippets_without_changing_saved_results(self):
+        data = {'status': 'ok', 'query': 'Python', 'results': [{'title': 'Docs', 'url': 'https://example.com/docs', 'snippet': '摘要' * 2000}, {'title': 'Guide', 'url': 'https://example.com/guide', 'snippet': '片段' * 2000}]}
+        raw = json.dumps(data, ensure_ascii=False)
+        messages = [{'role': 'user', 'content': '搜索'}, {'role': 'assistant', 'tool_calls': [{'id': 'search', 'function': {'name': 'search_web', 'arguments': '{}'}}]}, {'role': 'tool', 'tool_call_id': 'search', 'content': raw}]
+        result = json.loads(project_tool_results(messages, {'search': raw}, [], 1800, 200, 100)[-1]['content'])
+        self.assertTrue(result['context_limited'])
+        self.assertEqual([item['url'] for item in result['results']], [item['url'] for item in data['results']])
+        self.assertLess(len(result['results'][0]['snippet']), 4000)
+        self.assertEqual(len(json.loads(raw)['results'][0]['snippet']), 4000)
+        self.assertNotIn('citation_id', json.dumps(result))
+
+    def test_webpage_budget_projection_keeps_next_offset_at_visible_end(self):
+        data = {'url': 'https://example.com', 'total_chars': 5000, 'next_offset': 4000, 'has_more': True, 'chunks': [{'source_type': 'web', 'url': 'https://example.com', 'title': '文章', 'start_offset': 0, 'end_offset': 4000, 'content': '正文' * 2000}]}
+        raw = json.dumps(data, ensure_ascii=False)
+        messages = [{'role': 'user', 'content': '总结网页'}, {'role': 'assistant', 'tool_calls': [{'id': 'web', 'function': {'name': 'read_webpage', 'arguments': '{}'}}]}, {'role': 'tool', 'tool_call_id': 'web', 'content': raw}]
+        projected = project_tool_results(messages, {'web': raw}, [], 1800, 200, 100)
+        result = json.loads(projected[-1]['content'])
+        self.assertLess(len(result['chunks'][0]['content']), 4000)
+        self.assertEqual(result['next_offset'], result['chunks'][0]['end_offset'])
+        self.assertTrue(result['has_more'])
+        self.assertEqual(json.loads(raw)['next_offset'], 4000)
+
     def test_token_windows_cover_document_and_keep_offsets(self):
         text = "中" * 814 + "FT-204：泵出口流量。" + "文" * 1500
         chunks = split_with_tokenizer(text, CharacterTokenizer(), 512)

@@ -78,8 +78,8 @@ class FileToolTests(unittest.IsolatedAsyncioTestCase):  # 全部使用内存数�
 
     async def test_registry_preserves_time_tool_and_controls_available_tools(self):
         names = lambda ids: [definition["function"]["name"] for definition in get_available_tools(ids)]
-        self.assertEqual(names(set()), ["get_current_time"])
-        self.assertEqual(set(names({"f1"})), {"get_current_time", "read_uploaded_file", "search_uploaded_files"})
+        self.assertEqual(set(names(set())), {"get_current_time", "read_webpage"})
+        self.assertEqual(set(names({"f1"})), {"get_current_time", "read_uploaded_file", "search_uploaded_files", "read_webpage"})
         result = json.loads(await execute_tool("get_current_time", "{}", None, set()))
         self.assertEqual(result["timezone"], "Asia/Shanghai")
         async with self.sessions() as session:
@@ -134,7 +134,7 @@ class FileToolTests(unittest.IsolatedAsyncioTestCase):  # 全部使用内存数�
         self.assertNotIn("甲乙😀丙丁戊", first[-1]["content"])
         self.assertNotIn("不允许读取的内容", str(first))
         self.assertEqual(json.loads(requests[1][0][-1]["content"])["text_content"], "甲乙😀丙丁戊")
-        self.assertEqual([item["type"] for item in saved.output], ["function_call", "function_call_output", "message"])
+        self.assertEqual([item["type"] for item in saved.output], ["function_call", "function_call_output", "message", "turn_metadata"])
         self.assertEqual(saved.status, "completed")
         self.assertTrue(events[-1].startswith("event: done"))
 

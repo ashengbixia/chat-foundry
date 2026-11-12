@@ -9,6 +9,9 @@ from backend.app.chat import service
 from backend.app.llm.client import ModelStreamError
 from backend.app.tools.registry import get_available_tools
 from backend.app.chat.context import build_model_messages
+from backend.app.tools.runtime import ToolArguments, ToolSpec, registry
+from backend.app.tools.local import read_webpage as webpage
+from backend.app.tools.local import search_web as web_search
 from backend.app.llm.budget import estimate_input_tokens
 
 def text(value: str) -> dict:  # 构造正文事件
@@ -51,8 +54,8 @@ class ToolChatTests(unittest.IsolatedAsyncioTestCase):
         self.addCleanup(mock.stop)
         return requests, closed
 
-    async def run_chat(self):  # 收集发送到前端的 SSE 事件
-        return [event async for event in service.stream_chat_history_events(None, "chat-1")]
+    async def run_chat(self, web_search_enabled=False):  # 收集发送到前端的 SSE 事件
+        return [event async for event in service.stream_chat_history_events(None, "chat-1", web_search_enabled=web_search_enabled)]
 
     async def test_plain_answer(self):
         requests, closed = self.model([[text("你好"), text("！")]])
@@ -65,6 +68,74 @@ class ToolChatTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(saved["output"][0]["content"][0]["text"], "你好！")
         self.assertTrue(events[-1].startswith("event: done"))
         self.assertEqual(closed, [0])
+
+    async def test_budget_failure_after_tools_saves_useful_body_and_error_stage(self):
+        self.model([[{'type': 'reasoning_delta', 'text': '长思考' * 16000}, tool()], [text('不应请求第二次模型')]])
+        events = await self.run_chat()
+        saved = self.update.call_args.kwargs
+        self.assertEqual(saved['status'], 'failed')
+        self.assertIn('已保留取得的结果', saved['content'])
+        metadata = next(item for item in saved['output'] if item['type'] == 'turn_metadata')
+        self.assertEqual(metadata['error_info']['code'], 'input_budget_exceeded')
+        self.assertTrue(any('event: text_delta' in event for event in events))
+        self.assertTrue(events[-1].startswith('event: error'))
+
+    async def test_new_async_tool_works_without_chat_specific_branch(self):
+        class EchoArguments(ToolArguments):
+            text: str
+        async def echo(text):
+            return {'echo': text}
+        spec = ToolSpec('test_echo', '测试回显', '返回指定文字', EchoArguments, echo)
+        requests, _ = self.model([[tool(name='test_echo', arguments='{"text":"接入成功"}')], [text('已完成')]])
+        with patch.dict(registry._tools, {'test_echo': spec}):
+            events = await self.run_chat()
+        self.assertIn('test_echo', [item['function']['name'] for item in requests[0][1]])
+        self.assertEqual(json.loads(requests[1][0][-1]['content']), {'echo': '接入成功'})
+        saved = self.update.call_args.kwargs['output']
+        self.assertEqual(next(item for item in saved if item['type'] == 'function_call')['display_name'], '测试回显')
+        self.assertTrue(any('测试回显' in event for event in events))
+
+    async def test_webpage_tool_paginates_and_saves_real_web_citations(self):
+        self.read.return_value = [SimpleNamespace(role='user', content='读取 https://example.com/article', status='completed')]
+        requests, _ = self.model([[tool(name='read_webpage', arguments='{"url":"https://example.com/article","max_chars":3}', call_id='web1')], [tool(name='read_webpage', arguments='{"url":"https://example.com/article","offset":3}', call_id='web2')], [text('网页正文[1][2]')]])
+        document = {'url': 'https://example.com/article', 'title': '网页文章', 'text': '第一段第二段', 'retrieved_at': 100}
+        with patch.object(webpage, 'fetch_page', AsyncMock(return_value=document)) as fetch:
+            events = await self.run_chat()
+        fetch.assert_awaited_once()
+        first, second = [json.loads(requests[index][0][-1]['content']) for index in (1, 2)]
+        self.assertEqual(first['chunks'][0]['citation_id'], 1)
+        self.assertEqual(second['chunks'][0]['citation_id'], 2)
+        self.assertEqual(second['chunks'][0]['content'], '第二段')
+        self.assertEqual(self.update.call_args.kwargs['status'], 'completed')
+        saved = [json.loads(item['output']) for item in self.update.call_args.kwargs['output'] if item['type'] == 'function_call_output']
+        self.assertEqual(saved[0]['chunks'][0]['url'], document['url'])
+        self.assertTrue(any('读取网页正文' in event for event in events))
+
+    async def test_search_then_read_only_cites_fetched_page(self):
+        self.read.return_value = [SimpleNamespace(role='user', content='请联网搜索Python官方文档', status='completed')]
+        requests, _ = self.model([[tool(name='search_web', arguments='{"query":"Python official documentation"}', call_id='s')], [tool(name='read_webpage', arguments='{"url":"https://example.com/docs"}', call_id='r')], [text('官方文档内容[1]')]])
+        found = [{'title': 'Docs', 'url': 'https://example.com/docs', 'snippet': 'Candidate'}]
+        document = {'url': found[0]['url'], 'title': 'Docs', 'text': 'Verified page text', 'retrieved_at': 100}
+        with patch.object(web_search, 'search_provider', AsyncMock(return_value=found)), patch.object(webpage, 'fetch_page', AsyncMock(return_value=document)):
+            await self.run_chat(web_search_enabled=True)
+        self.assertNotIn('citation_id', requests[1][0][-1]['content'])
+        self.assertEqual(json.loads(requests[2][0][-1]['content'])['chunks'][0]['citation_id'], 1)
+        self.assertEqual(self.update.call_args.kwargs['status'], 'completed')
+
+    async def test_search_switch_is_enforced_without_rewriting_user_message(self):
+        self.read.return_value = [SimpleNamespace(role='user', content='python', status='completed')]
+        requests, _ = self.model([[tool(name='search_web', arguments='{"query":"python"}')], [text('请先开启联网搜索')]])
+        with patch.object(web_search, 'search_provider', AsyncMock()) as provider:
+            await self.run_chat(web_search_enabled=False)
+        provider.assert_not_awaited()
+        self.assertNotIn('search_web', [item['function']['name'] for item in requests[0][1]])
+        self.assertIn('权限', json.loads(requests[1][0][-1]['content'])['error'])
+        self.assertEqual(next(item['content'] for item in requests[0][0] if item['role'] == 'user'), 'python')
+        requests, _ = self.model([[text('你好，想了解Python的哪方面？')]])
+        with patch.object(web_search, 'search_provider', AsyncMock()) as provider:
+            await self.run_chat(web_search_enabled=True)
+        provider.assert_not_awaited()
+        self.assertIn('search_web', [item['function']['name'] for item in requests[0][1]])
 
     async def test_repeated_search_results_only_compact_model_input(self):
         service.resolve_chat_files.return_value = {"f1"}
@@ -99,7 +170,7 @@ class ToolChatTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["tool_call_id"], "call-1")
         self.assertEqual(json.loads(result["content"])["timezone"], "Asia/Shanghai")
         saved = self.update.call_args.kwargs
-        self.assertEqual([item["type"] for item in saved["output"]], ["function_call", "function_call_output", "message"])
+        self.assertEqual([item["type"] for item in saved["output"]], ["function_call", "function_call_output", "message", "turn_metadata"])
         self.assertEqual(saved["content"], "当前是北京时间。")
         self.assertEqual([event.splitlines()[0] for event in events], ["event: tool_call", "event: tool_result", "event: text_delta", "event: done"])
         streamed_call = json.loads(events[0].split("data: ", 1)[1])
@@ -121,7 +192,7 @@ class ToolChatTests(unittest.IsolatedAsyncioTestCase):
         requests, _ = self.model([[tool()], [text("回答")]])
         with patch.object(service, "execute_tool", return_value="{}") as execute:
             await self.run_chat()
-        self.assertEqual(execute.await_args.args[3], {"f1"})
+        self.assertEqual(execute.await_args.kwargs['context'].allowed_file_ids, {"f1"})
         self.assertIn("read_uploaded_file", [definition["function"]["name"] for definition in requests[0][1]])
 
     async def test_budget_trim_removes_attachment_access_and_recalculates_tools(self):
@@ -133,9 +204,9 @@ class ToolChatTests(unittest.IsolatedAsyncioTestCase):
         config = SimpleNamespace(llm_model="test", llm_context_window=budget + 10, llm_max_output_tokens=10, llm_context_margin=0)
         with patch.object(service, "settings", config):
             await self.run_chat()
-        self.assertEqual([item["function"]["name"] for item in requests[0][1]], ["get_current_time"])
+        self.assertEqual({item["function"]["name"] for item in requests[0][1]}, {"get_current_time", "read_webpage"})
         self.assertEqual(sum(item["role"] == "user" for item in requests[0][0]), 1)
-        self.assertIn("不属于", json.loads(requests[1][0][-1]["content"])["error"])
+        self.assertIn("权限", json.loads(requests[1][0][-1]["content"])["error"])
 
     async def test_next_turn_restores_saved_tool_history(self):  # 使用上一轮实际保存的 output 构造下一轮输入
         self.model([[tool()], [text("当前是北京时间。")]])
@@ -147,9 +218,9 @@ class ToolChatTests(unittest.IsolatedAsyncioTestCase):
             await self.run_chat()
         execute.assert_not_called()
         messages = requests[0][0]
-        self.assertEqual([item["role"] for item in messages], ["system", "user", "assistant", "tool", "assistant", "user"])
-        self.assertEqual(messages[2]["tool_calls"][0]["id"], messages[3]["tool_call_id"])
-        self.assertEqual(json.loads(messages[3]["content"])["timezone"], "Asia/Shanghai")
+        self.assertEqual([item["role"] for item in messages], ["system", "system", "user", "assistant", "tool", "assistant", "user"])
+        self.assertEqual(messages[3]["tool_calls"][0]["id"], messages[4]["tool_call_id"])
+        self.assertEqual(json.loads(messages[4]["content"])["timezone"], "Asia/Shanghai")
         self.assertEqual(messages[-1]["content"], "刚才查到什么时区？")
 
     async def test_tool_errors_return_to_model(self):
@@ -208,9 +279,9 @@ class ToolChatTests(unittest.IsolatedAsyncioTestCase):
         events = await self.run_chat()
         saved = self.update.call_args.kwargs
         self.assertEqual(saved["status"], "failed")
-        self.assertEqual(saved["content"], "先查时间现在是")
-        self.assertEqual([item["type"] for item in saved["output"]], ["message", "function_call", "function_call_output", "message"])
-        self.assertEqual(saved["output"][-1]["content"][0]["text"], "现在是")
+        self.assertEqual(saved["content"], "现在是")
+        self.assertEqual([item["type"] for item in saved["output"]], ["message", "function_call", "function_call_output", "message", "turn_metadata"])
+        self.assertEqual(saved["output"][-2]["content"][0]["text"], "现在是")
         self.assertEqual(json.loads(saved["output"][2]["output"])["timezone"], "Asia/Shanghai")
         self.assertTrue(events[-1].startswith("event: error"))
 
@@ -220,7 +291,7 @@ class ToolChatTests(unittest.IsolatedAsyncioTestCase):
         saved = self.update.call_args.kwargs
         self.assertEqual(saved["status"], "failed")
         self.assertIn("长度限制", saved["error"])
-        self.assertEqual([item["type"] for item in saved["output"]], ["function_call", "function_call_output", "message"])
+        self.assertEqual([item["type"] for item in saved["output"]], ["function_call", "function_call_output", "message", "turn_metadata"])
         self.assertIn("长度限制", events[-1])
 
     async def test_incomplete_tool_stream_is_not_executed(self):
@@ -248,8 +319,8 @@ class ToolChatTests(unittest.IsolatedAsyncioTestCase):
             with self.assertRaises(asyncio.CancelledError):
                 await self.run_chat()
         saved = cancel.call_args.kwargs["output"]
-        self.assertEqual([item["type"] for item in saved], ["function_call", "function_call_output", "message"])
-        self.assertEqual(saved[-1]["content"][0]["text"], "现在")
+        self.assertEqual([item["type"] for item in saved], ["function_call", "function_call_output", "message", "turn_metadata"])
+        self.assertEqual(saved[-2]["content"][0]["text"], "现在")
         self.assertEqual(saved[0]["call_id"], saved[1]["call_id"])
         self.update.assert_not_called()
 
@@ -272,7 +343,20 @@ class ToolChatTests(unittest.IsolatedAsyncioTestCase):
                 event = await anext(stream)
                 self.assertTrue(event.startswith("event: tool_call"))
         execute.assert_not_called()
-        self.assertEqual([item["type"] for item in cancel.call_args.kwargs["output"]], ["function_call"])
+        self.assertEqual([item["type"] for item in cancel.call_args.kwargs["output"]], ["function_call", "turn_metadata"])
+
+    async def test_reasoning_commentary_and_answer_persist_separately(self):
+        requests, _ = self.model([[{'type': 'reasoning_delta', 'text': '模型返回的思考'}, text('我先查询'), tool()], [text('最终回答')]])
+        events = await self.run_chat()
+        saved = self.update.call_args.kwargs
+        self.assertEqual(saved['content'], '最终回答')
+        self.assertTrue(any(item.get('type') == 'reasoning' for item in saved['output']))
+        self.assertTrue(any(item.get('phase') == 'commentary' for item in saved['output']))
+        meta = next(item for item in saved['output'] if item['type'] == 'turn_metadata')
+        self.assertIn('get_current_time', meta['available_tools'])
+        self.assertGreaterEqual(meta['duration_ms'], 0)
+        self.assertTrue(any('event: commentary' in event for event in events))
+        self.assertEqual(next(item for item in requests[1][0] if item.get('tool_calls'))['reasoning_content'], '模型返回的思考')
 
 if __name__ == "__main__":
     unittest.main()

@@ -10,9 +10,10 @@ from typing import Literal
 
 
 
-async def create_chat(session: AsyncSession,title: str = "新会话", user_id: str | None = None, knowledge_base_ids: list[str] | None = None) -> Chat:
+async def create_chat(session: AsyncSession,title: str = "新会话", user_id: str | None = None, knowledge_base_ids: list[str] | None = None, web_search_enabled: bool = False) -> Chat:
     """创建一个会话，保存到数据库并返回。"""
-    chat = Chat(title=title, user_id=user_id)#创建 Python 对象，此时还没写入数据库。
+    chat = Chat(title=title, user_id=user_id, web_search_enabled=web_search_enabled,
+                title_status='pending' if title in ('新会话', '新对话') else 'manual')
     session.add(chat)#把对象加入当前数据库会话，准备插入。
     if knowledge_base_ids:
         ids = set(knowledge_base_ids)
@@ -37,7 +38,7 @@ async def list_chats(session: AsyncSession, user_id: str | None = None) -> list[
         )#更新时间降序、id降序
     )
 
-    statement = statement.where(Chat.user_id == user_id)  # 未分配数据不能出现在其他账号列表里
+    statement = statement.where(Chat.user_id == user_id, Chat.kind == 'conversation')
     result = await session.execute(statement)#执行查询
 
     return list(result.scalars().all())#取查询里的第一个也就是对象并且变成列表
@@ -214,15 +215,19 @@ async def delete_chat(session: AsyncSession, chat_id: str) -> bool:  # 删除会
         chat = await get_chat(session, chat_id)  # 查询目标会话
         if chat is None:
             return False
+        from backend.app.models.subagent import SubagentTask
+        children = list((await session.execute(select(SubagentTask.child_chat_id).where(SubagentTask.parent_chat_id == chat_id))).scalars())
+        await session.execute(delete(SubagentTask).where(SubagentTask.parent_chat_id == chat_id))
+        chat_ids = [chat_id, *children]
         # 先删除子记录，避免留下不属于任何会话的消息。
-        await session.execute(delete(ChatFile).where(ChatFile.chat_id == chat_id))
-        await session.execute(delete(ChatKnowledgeBase).where(ChatKnowledgeBase.chat_id == chat_id))
-        message_ids = select(Message.id).where(Message.chat_id == chat_id)  # 当前会话中的消息 ID
+        await session.execute(delete(ChatFile).where(ChatFile.chat_id.in_(chat_ids)))
+        await session.execute(delete(ChatKnowledgeBase).where(ChatKnowledgeBase.chat_id.in_(chat_ids)))
+        message_ids = select(Message.id).where(Message.chat_id.in_(chat_ids))
         await session.execute(delete(MessageFile).where(MessageFile.message_id.in_(message_ids)))  # 只删除关联，保留原文件
         await session.execute(
-            delete(Message).where(Message.chat_id == chat_id)
+            delete(Message).where(Message.chat_id.in_(chat_ids))
         )
-        await session.delete(chat)  # 删除会话记录
+        await session.execute(delete(Chat).where(Chat.id.in_(chat_ids)))
         await session.commit()  # 在同一个事务中提交两项删除
         return True
 
@@ -238,8 +243,8 @@ async def rename_chat(session: AsyncSession, chat_id: str, title: str) -> Chat |
         chat = await get_chat(session, chat_id)  # 查询目标会话
         if chat is None:
             return None
-        chat.title = title
-        chat.updated_at = int(time.time())
+        await session.execute(update(Chat).where(Chat.id == chat_id).values(
+            title=title, title_status='manual', updated_at=int(time.time())))
         await session.commit()
     except Exception:
         await session.rollback()

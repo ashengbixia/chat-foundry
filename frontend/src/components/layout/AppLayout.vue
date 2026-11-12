@@ -1,10 +1,16 @@
 <script setup lang="ts">
-import { ref, watch } from 'vue'
+import { onMounted, ref, watch } from 'vue'
 import AppIcon from '../AppIcon.vue'
 
-const props = defineProps<{ filesOpen: boolean; currentChatId?: string | null; dropDisabled?: boolean }>() // 文件拖放与聊天共用忙碌状态
+const props = defineProps<{ filesOpen: boolean; currentChatId?: string | null; newChatRevision?: number; dropDisabled?: boolean }>() // 文件拖放与聊天共用忙碌状态
 const emit = defineEmits<{ closeFiles: []; openSettings: []; openKnowledge: []; droppedFiles: [files: File[]]; attachSaved: [fileId: string] }>()
 const sidebarOpen = ref(false) // 窄屏下是否展开侧栏
+const sidebarCollapsed = ref(false)
+onMounted(() => { try { sidebarCollapsed.value = localStorage.getItem('chatfoundry:sidebar-collapsed') === 'true' } catch { /* 禁止存储时仍可正常切换 */ } })
+function toggleSidebar() {
+  sidebarCollapsed.value = !sidebarCollapsed.value
+  try { localStorage.setItem('chatfoundry:sidebar-collapsed', String(sidebarCollapsed.value)) } catch { /* 布局偏好保存失败不影响操作 */ }
+}
 const dragDepth = ref(0)
 function isFileDrag(event: DragEvent) { return Array.from(event.dataTransfer?.types ?? []).some((type) => type === 'Files' || type === 'application/x-chatfoundry-file') }
 function dragEnter(event: DragEvent) {
@@ -27,16 +33,17 @@ function drop(event: DragEvent) { // 拦截文件导航，历史资料只传ID�
   if (fileId) emit('attachSaved', fileId)
   else if (event.dataTransfer.files.length) emit('droppedFiles', Array.from(event.dataTransfer.files))
 }
-watch(() => props.currentChatId, () => { sidebarOpen.value = false }) // 成功新建或切换会话后收起窄屏导航
+watch(() => [props.currentChatId, props.newChatRevision], () => { sidebarOpen.value = false }) // 空白页重复点新建，也应收起手机导航
 </script>
 
 <template>
   <div class="app-layout" @keydown.esc="sidebarOpen = false; emit('closeFiles')" @dragend="dragDepth = 0">
     <button v-if="sidebarOpen" class="sidebar-mask" type="button" aria-label="关闭侧栏" @click="sidebarOpen = false"></button>
-    <aside id="chat-sidebar" class="sidebar" :class="{ 'is-open': sidebarOpen }" aria-label="会话导航">
+    <aside id="chat-sidebar" class="sidebar" :class="{ 'is-open': sidebarOpen, 'is-collapsed': sidebarCollapsed }" aria-label="会话导航">
       <div class="brand">
         <span class="brand-symbol"><AppIcon name="spark" :size="21" /></span>
         <strong>ChatFoundry<small>你的思考工作空间</small></strong>
+        <button class="icon-button desktop-sidebar-toggle" type="button" aria-label="收起侧边栏" title="收起侧边栏" aria-controls="chat-sidebar" :aria-expanded="!sidebarCollapsed" @click="toggleSidebar"><AppIcon name="panel" /></button>
         <button class="icon-button mobile-button" type="button" aria-label="关闭侧栏" @click="sidebarOpen = false"><AppIcon name="close" /></button>
       </div>
       <div class="sidebar-content">
@@ -56,6 +63,7 @@ watch(() => props.currentChatId, () => { sidebarOpen.value = false }) // 成功�
     </aside>
     <main class="workspace">
       <header class="chat-header">
+        <button v-if="sidebarCollapsed" class="icon-button desktop-sidebar-toggle" type="button" aria-label="展开侧边栏" title="展开侧边栏" aria-controls="chat-sidebar" :aria-expanded="!sidebarCollapsed" @click="toggleSidebar"><AppIcon name="panel" /></button>
         <button class="icon-button mobile-button" type="button" aria-label="展开侧栏" aria-controls="chat-sidebar" :aria-expanded="sidebarOpen" @click="sidebarOpen = true"><AppIcon name="panel" /></button>
         <slot name="header"></slot>
       </header>
@@ -92,6 +100,9 @@ watch(() => props.currentChatId, () => { sidebarOpen.value = false }) // 成功�
 .brand > strong { font-size: 15px; letter-spacing: -.4px; font-weight: 650; }
 .brand small { display: block; font-size: 9px; font-weight: 400; letter-spacing: .04em; color: #989eaa; margin-top: 4px; }
 .brand .mobile-button { margin-left: auto; }
+.brand .desktop-sidebar-toggle { margin-left: auto; flex-shrink: 0; }
+.desktop-sidebar-toggle:hover { background: #e9e9e9; }
+@media (min-width: 901px) { .sidebar.is-collapsed { width: 0; overflow: hidden; visibility: hidden; border-right: 0; } }
 .sidebar-content { flex: 1; min-height: 0; overflow-y: auto; padding: 0 13px; }
 .knowledge-nav { display: flex; align-items: center; gap: 10px; width: 100%; margin-bottom: 16px; padding: 12px; border: 1px solid #e4e9e6; border-radius: 10px; background: #fff; text-align: left; color: #617768; font-size: 13px; }.knowledge-nav span { flex: 1; }.knowledge-nav small { display: block; margin-top: 4px; font-size: 10px; color: #91a096; }.knowledge-nav:hover { background: #f0f6f2; }
 .sidebar-footer { padding: 12px 16px 18px; border-top: 1px solid #e9ebee; }
@@ -118,6 +129,7 @@ watch(() => props.currentChatId, () => { sidebarOpen.value = false }) // 成功�
 .files-content { flex: 1; min-height: 0; overflow-y: auto; padding: 0 18px 20px; overflow-wrap: anywhere; }
 .mobile-button, .sidebar-mask { display: none; }
 @media (max-width: 900px) {
+  .desktop-sidebar-toggle { display: none; }
   .mobile-button { display: inline-flex; }
   .sidebar { position: fixed; inset: 0 auto 0 0; z-index: 30; transform: translateX(-100%); visibility: hidden; }
   .sidebar.is-open { transform: translateX(0); visibility: visible; }

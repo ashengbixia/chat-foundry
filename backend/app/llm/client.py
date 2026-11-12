@@ -136,6 +136,9 @@ async def stream_model_events(messages: list[dict[str, Any]], tools: list[dict[s
                 if reason is not None:
                     finish_reason = reason
                 delta = choice.get("delta") or {}  # 模型本次返回的增量内容
+                reasoning = delta.get('reasoning_content') or delta.get('reasoning') or delta.get('thinking')
+                if isinstance(reasoning, str) and reasoning:
+                    yield {'type': 'reasoning_delta', 'text': reasoning}
                 content = delta.get("content")  # 本次正文片段
                 if isinstance(content, str) and content:
                     received_text = received_text or bool(content.strip())

@@ -26,7 +26,8 @@ export function getToolCalls(output: unknown): DisplayToolCall[] { // 按 call_i
   }
   return output.filter(isToolCall).map((call) => {
     const result = results.get(call.call_id) ?? null // 没有结果时不能误显示为执行完成
-    return { callId: call.call_id, name: call.name, arguments: call.arguments, result, failed: hasToolError(result) }
+    const saved = output.find(item => isToolResult(item) && item.call_id === call.call_id) as (ToolResultRecord & { duration_ms?: number }) | undefined
+    return { callId: call.call_id, name: call.name, arguments: call.arguments, result, failed: hasToolError(result), ...(typeof call.display_name === 'string' && call.display_name ? { displayName: call.display_name } : {}), ...(typeof saved?.duration_ms === 'number' ? { durationMs: saved.duration_ms } : {}) }
   })
 }
 export function formatToolValue(value: string): string { // JSON 缩进展示，普通文本保持原样
@@ -37,11 +38,53 @@ export function formatToolValue(value: string): string { // JSON 缩进展示，
   }
 }
 export function getToolStatus(call: DisplayToolCall, status: DisplayMessage['status']): string { // 没有结果时结合消息状态判断，避免一直显示正在调用
-  if (call.result !== null) return call.failed ? '返回错误' : '已返回结果'
+  if (call.result !== null) {
+    if (call.failed) return '返回错误'
+    try {
+      const result = JSON.parse(call.result)
+      if (result?.status === 'already_read') return '已读过'
+      if (result?.status === 'navigation_only') return '仅取得入口链接'
+      if (result?.outcome === 'insufficient_evidence') return '执行结束 · 资料不足'
+      if (result?.stop_searching) return '结果重复，已停止搜索'
+      if (result?.quality === 'low_relevance') return '结果相关性低'
+    } catch { /* 普通文本结果沿用通用状态 */ }
+    return '已返回结果'
+  }
   if (status === 'generating') return '正在调用'
   if (status === 'cancelled') return '已停止，未收到结果'
   if (status === 'failed') return '调用中断，未收到结果'
   return '未记录结果'
+}
+
+export interface SearchPreview { query: string; provider: string; results: { title: string; url: string; snippet: string; host: string }[]; notice: string }
+export function getSearchPreview(result: string | null): SearchPreview | null {
+  if (!result) return null
+  try {
+    const data = JSON.parse(result)
+    if (!isRecord(data) || !Array.isArray(data.results) || typeof data.query !== 'string' || !['ok', 'no_results'].includes(String(data.status))) return null
+    const results: SearchPreview['results'] = []
+    for (const item of data.results.slice(0, 10)) {
+      if (!isRecord(item) || typeof item.title !== 'string' || typeof item.url !== 'string' || /[\x00-\x20\x7f]/.test(item.url)) continue
+      try {
+        const url = new URL(item.url)
+        if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password || !['', '80', '443'].includes(url.port)) continue
+        results.push({ title: item.title, url: url.href, snippet: typeof item.snippet === 'string' ? item.snippet : '', host: url.hostname })
+      } catch { /* 旧记录中的无效地址不生成可点击链接 */ }
+    }
+    const providers: Record<string, string> = { bing: 'Bing', duckduckgo: 'DuckDuckGo', tavily: 'Tavily', brave: 'Brave' }
+    return { query: data.query, provider: typeof data.provider === 'string' ? providers[data.provider] ?? data.provider : '', results, notice: typeof data.notice === 'string' ? data.notice : '' }
+  } catch { return null }
+}
+
+export function getNavigationPreview(result: string | null) {
+  if (!result) return null
+  try {
+    const data = JSON.parse(result)
+    if (!isRecord(data) || data.status !== 'navigation_only' || !Array.isArray(data.links)) return null
+    // 沿用候选链接的URL校验，只展示实际返回的入口。
+    const preview = getSearchPreview(JSON.stringify({ status: 'ok', query: '', results: data.links, notice: data.notice }))
+    return preview ? { links: preview.results, notice: preview.notice } : null
+  } catch { return null }
 }
 
 export function getSummaryCoverage(result: string | null): string {

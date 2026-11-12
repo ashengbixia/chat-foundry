@@ -19,6 +19,21 @@ from backend.app.files import service
 from backend.tests.index_fixture import mock_file_vectors
 
 class AccountTests(unittest.IsolatedAsyncioTestCase):  # 用真实Cookie和临时库验证关键权限，不调用真实模型
+    async def test_legacy_short_password_can_login_but_new_passwords_still_require_eight(self):
+        from backend.app.auth import hash_password
+        async with self.sessions() as session:
+            session.add(User(id='legacy-admin', username='legacyadmin', name='管理员', role='admin', password_hash=hash_password('old123')))
+            await session.commit()
+        wrong = await self.admin.post('/api/auth/login', json={'username': 'legacyadmin', 'password': 'wrong'})
+        self.assertEqual(wrong.status_code, 401)
+        logged_in = await self.admin.post('/api/auth/login', json={'username': 'legacyadmin', 'password': 'old123'})
+        self.assertEqual(logged_in.status_code, 200)
+        self.assertEqual(logged_in.json()['role'], 'admin')
+        signup = await self.other.post('/api/auth/signup', json={'username': 'newuser', 'password': 'short'})
+        self.assertEqual(signup.status_code, 422)
+        changed = await self.admin.post('/api/auth/password', json={'current_password': 'old123', 'new_password': 'short'})
+        self.assertEqual(changed.status_code, 422)
+
     async def asyncSetUp(self):
         _attempts.clear()
         self.directory = tempfile.TemporaryDirectory()

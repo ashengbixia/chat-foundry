@@ -1,6 +1,7 @@
 from pathlib import Path
 
 from pydantic import Field, SecretStr
+from typing import Literal
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 class Settings(BaseSettings):  # 优先读取环境变量，本机开发时也可读取 backend/.env
@@ -25,6 +26,12 @@ class Settings(BaseSettings):  # 优先读取环境变量，本机开发时也�
     embedding_device: str = Field(default="cpu", min_length=1)  # 初版默认使用CPU
     embedding_query_prefix: str = "为这个句子生成表示以用于检索相关文章："  # 当前BGE模型的查询提示，更换模型时按需调整或清空
     retrieval_max_distance: float = Field(default=0.75, ge=0, le=2)  # 超出距离的纯语义候选不作为资料返回
+    web_search_enabled: bool = True
+    web_browser_enabled: bool = True  # 静态正文为空时尝试独立Chromium环境
+    subagents_enabled: bool = True
+    subagent_timeout: int = Field(default=300, ge=10, le=1800)
+    web_search_provider: Literal['duckduckgo', 'bing', 'tavily', 'brave'] = 'bing'
+    web_search_api_key: SecretStr = Field(default='', repr=False)  # 与模型服务Key完全分开
     auth_cookie_secure: bool = False  # 本机HTTP开发为false，HTTPS部署应设为true
     auth_session_days: int = Field(default=7, ge=1, le=30)  # 登录会话最长有效天数
     model_config_encryption_key: SecretStr = Field(default="", repr=False)  # 可选Fernet主密钥；未配置时在本机私密目录生成

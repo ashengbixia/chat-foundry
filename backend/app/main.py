@@ -17,6 +17,8 @@ from backend.app.rag.embedding import prepare_embedding_model
 from backend.app.rag.vector_store import prune_empty_collections
 from backend.app.auth import PrivateResponseHeaders, get_current_user
 from backend.app.files.cleanup import cleanup_worker
+from backend.app.chat.titles import recover_interrupted_titles, close_title_tasks
+from backend.app.chat.subagents import recover_tasks, close_tasks
 import anyio
 
 logger = logging.getLogger(__name__)  # 当前模块日志
@@ -28,6 +30,8 @@ async def lifespan(app: FastAPI):  # 管理应用启动和关闭
         async with SessionLocal() as session:  # 启动恢复使用独立数据库会话
             recovered_count = await recover_interrupted_messages(session)  # 处理上次遗留的生成中消息
             recovered_indexes = await recover_interrupted_indexes(session)
+            await recover_interrupted_titles(session)
+            await recover_tasks(session)
         if recovered_count > 0:
             logger.warning("已将 %s 条中断的助手消息标记为失败", recovered_count)
         if recovered_indexes > 0:
@@ -44,6 +48,8 @@ async def lifespan(app: FastAPI):  # 管理应用启动和关闭
             finally:
                 tasks.cancel_scope.cancel()
     finally:
+        await close_tasks()
+        await close_title_tasks()
         await engine.dispose()  # 退出时释放数据库连接
 
 from backend.app.api.chats import router as chats_router

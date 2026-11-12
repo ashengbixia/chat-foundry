@@ -124,14 +124,14 @@ class BudgetServiceTests(unittest.IsolatedAsyncioTestCase):  # 真实数据库�
             self.history = (await session.execute(select(Message).order_by(Message.sequence))).scalars().all()
             self.all_messages = build_model_messages(self.history)
             self.latest_messages = build_model_messages(self.history[-1:])
-        self.tools = get_available_tools(set())
+        self.tools = [tool for tool in get_available_tools(set()) if tool['function']['name'] == 'get_current_time']
 
     async def asyncTearDown(self):
         await self.engine.dispose()
 
     async def run_chat(self, budget, stream, tool_result=None):
         settings = SimpleNamespace(llm_model="test", llm_context_window=budget + 48, llm_max_output_tokens=32, llm_context_margin=16)
-        with patch.object(service, "settings", settings), patch.object(service, "stream_model_events", stream), patch.object(service, "logger", Mock()):
+        with patch.object(service, "settings", settings), patch.object(service, "stream_model_events", stream), patch.object(service, 'get_available_tools', return_value=self.tools), patch.object(service, "logger", Mock()):
             if tool_result is None:
                 async with self.sessions() as session:
                     return [event async for event in service.stream_chat_history_events(session, "chat")]
@@ -144,8 +144,8 @@ class BudgetServiceTests(unittest.IsolatedAsyncioTestCase):  # 真实数据库�
         async def stream(messages, tools):
             requests.append(copy.deepcopy(messages))
             yield {"type": "text_delta", "text": "回答"}
-        await self.run_chat(estimate_input_tokens(self.latest_messages, self.tools), stream)
-        self.assertEqual(requests, [self.latest_messages])
+        await self.run_chat(estimate_input_tokens(self.latest_messages, self.tools) + 1200, stream)
+        self.assertEqual([[message for message in request if not message.get('content', '').startswith('本轮实际能力状态')] for request in requests], [self.latest_messages])
         async with self.sessions() as session:
             records = (await session.execute(select(Message).order_by(Message.sequence))).scalars().all()
             self.assertEqual(len(records), 4)
@@ -161,10 +161,10 @@ class BudgetServiceTests(unittest.IsolatedAsyncioTestCase):  # 真实数据库�
                 yield {"type": "tool_call_delta", "tool_calls": [{"index": 0, "id": "c1", "function": {"name": "get_current_time", "arguments": "{}"}}]}
             else:
                 yield {"type": "text_delta", "text": "回答"}
-        await self.run_chat(estimate_input_tokens(self.all_messages, self.tools), stream, json.dumps({"result": "x" * 3000}))
+        await self.run_chat(estimate_input_tokens(self.all_messages, self.tools) + 1200, stream, json.dumps({"result": "x" * 3000}))
         self.assertEqual(len(requests), 2)
         self.assertEqual(len([message for message in requests[0] if message["role"] == "user"]), 2)
-        self.assertEqual([message["role"] for message in requests[1]], ["system", "user", "assistant", "tool"])
+        self.assertEqual([message["role"] for message in requests[1] if message['role'] != 'system'], ["user", "assistant", "tool"])
         self.assertEqual(requests[1][-2]["tool_calls"][0]["id"], requests[1][-1]["tool_call_id"])
 
     async def test_current_tool_result_over_budget_stops_next_model_request(self):
@@ -172,14 +172,15 @@ class BudgetServiceTests(unittest.IsolatedAsyncioTestCase):  # 真实数据库�
         async def stream(messages, tools):
             requests.append(copy.deepcopy(messages))
             yield {"type": "tool_call_delta", "tool_calls": [{"index": 0, "id": "c1", "function": {"name": "get_current_time", "arguments": "{}"}}]}
-        events = await self.run_chat(estimate_input_tokens(self.latest_messages, self.tools), stream, json.dumps({"result": "x" * 10000}))
+        events = await self.run_chat(estimate_input_tokens(self.latest_messages, self.tools) + 1200, stream, json.dumps({"result": "x" * 10000}))
         self.assertEqual(len(requests), 1)
         self.assertTrue(events[-1].startswith("event: error"))
         self.assertIn("输入预算", events[-1])
         async with self.sessions() as session:
             latest = (await session.execute(select(Message).order_by(Message.sequence.desc()).limit(1))).scalar_one()
             self.assertEqual(latest.status, "failed")
-            self.assertEqual([item["type"] for item in latest.output], ["function_call", "function_call_output"])
+            self.assertEqual([item["type"] for item in latest.output[:2]], ["function_call", "function_call_output"])
+            self.assertTrue(latest.content)
 
     async def test_oversized_current_question_never_calls_model(self):
         stream = Mock()

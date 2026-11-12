@@ -42,6 +42,11 @@ async function openSource(source: CitationSource) { // 快照立即展示，当�
   await nextTick()
   if (request.signal.aborted) return
   dialog.value?.showModal()
+  if (source.sourceType === 'web') {
+    checking.value = false
+    notice.value = '以下是读取网页时保存的正文快照，网页当前内容可能已经变化。'
+    return
+  }
   try {
     const file = await getFile(source.fileId, request.signal)
     if (request.signal.aborted) return
@@ -101,12 +106,14 @@ function closeSource() { // 关闭弹窗时停止请求，快照仍保存在消�
     </details>
     <dialog v-if="selected" ref="dialog" class="source-dialog" aria-label="引用来源" @cancel.prevent="closeSource" @close="closeSource" @pointerdown="backdrop.pointerdown" @click="backdrop.click">
       <header><div><small>来源 [{{ selected.id }}]</small><h3>{{ selected.filename }}</h3></div><button type="button" aria-label="关闭引用来源" @click="closeSource">×</button></header>
-      <p class="source-position">原文字符 {{ selected.startOffset }}～{{ selected.endOffset }} · 回答生成时的快照</p>
+      <p class="source-position">{{ selected.sourceType === 'web' ? '提取正文字符' : '原文字符' }} {{ selected.startOffset }}～{{ selected.endOffset }} · 回答生成时的快照</p>
+      <p v-if="selected.sourceType === 'web'" class="source-position">读取时间：{{ selected.retrievedAt ? new Date(selected.retrievedAt * 1000).toLocaleString() : '未记录' }}<br /><a :href="selected.url" target="_blank" rel="noopener noreferrer" class="web-source-link">{{ selected.url }} ↗</a></p>
       <p v-if="selected.historical" class="source-notice">这是此前工具返回的原文快照，本轮未重新读取。{{ selected.originCreatedAt ? `原回答时间：${new Date(selected.originCreatedAt * 1000).toLocaleString()}` : '' }}</p>
       <p v-if="checking" class="source-notice" role="status">正在检查原文件状态…</p>
       <p v-if="notice" class="source-notice" role="status">{{ notice }}</p>
+      <p v-if="selected.sourceType === 'web' && selected.truncated" class="source-notice">这是部分提取正文，可在对话中继续读取后文。</p>
       <pre class="source-snapshot">{{ selected.content }}</pre>
-      <button v-if="!deleted && !fullText" type="button" :disabled="checking || loading" @click="available ? openFullText() : openSource(selected)">{{ loading ? '正在读取…' : available ? '查看全文并定位' : '重新检查原文件' }}</button>
+      <button v-if="selected.sourceType !== 'web' && !deleted && !fullText" type="button" :disabled="checking || loading" @click="available ? openFullText() : openSource(selected)">{{ loading ? '正在读取…' : available ? '查看全文并定位' : '重新检查原文件' }}</button>
       <div v-if="fullText" class="source-fulltext" tabindex="0" aria-label="原文件全文及引用位置"><span>{{ fullText.before }}</span><mark ref="quoteElement">{{ fullText.quote }}</mark><span>{{ fullText.after }}</span></div>
     </dialog>
   </div>
@@ -125,6 +132,7 @@ function closeSource() { // 关闭弹窗时停止请求，快照仍保存在消�
 .source-dialog button { padding: 7px 12px; border: 1px solid #dce8df; border-radius: 7px; background: #f5f9f6; color: #52725c; font-size: 12px; }
 .source-dialog header button { border: 0; background: transparent; font-size: 22px; }
 .source-notice { font-size: 12px; color: #947343; }
+.web-source-link { display: inline-block; margin-top: 8px; color: #52725c; overflow-wrap: anywhere; }
 .source-dialog .source-snapshot, .source-fulltext { padding: 14px; background: #f6f8f6; border-radius: 9px; white-space: pre-wrap; overflow-wrap: anywhere; font: 13px/1.9 'Microsoft YaHei', sans-serif; }
 .source-fulltext { max-height: 42vh; overflow-y: auto; margin-top: 16px; }
 .source-fulltext mark { background: #e2efb7; color: inherit; }

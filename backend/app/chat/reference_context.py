@@ -5,9 +5,8 @@ from backend.app.models.file import File
 from backend.app.core.config import settings
 from backend.app.llm.budget import estimate_input_tokens, get_input_budget
 from backend.app.tools.files import read_uploaded_file
-from backend.app.tools.summaries import summarize_uploaded_files
 from backend.app.repositories.resources import describe_resources
-from backend.app.chat.history_sources import collect_history_sources, history_source_catalog, read_history_sources
+from backend.app.chat.history_sources import collect_history_sources, read_history_sources
 
 
 def is_reference_question(question: str) -> bool:
@@ -31,7 +30,7 @@ def resolve_reference_scope(question, allowed_ids, catalog, history):
         if not broad:
             for message in reversed(history or []):
                 if message.role == 'assistant' and message.status == 'completed':
-                    focused = {item['file_id'] for item in collect_history_sources([message]).values()} & allowed_ids
+                    focused = {item.get('file_id') for item in collect_history_sources([message]).values()} & allowed_ids
                     if len(focused) == 1:
                         targets = focused
                     break
@@ -42,14 +41,17 @@ def resolve_reference_scope(question, allowed_ids, catalog, history):
 async def prepare_auto_reference(session, question, allowed_ids, messages, tools, connection, check_access, history_sources=None, history=None):
     if not is_reference_question(question):
         return []
+    if re.search(r'https?://', question, re.I):
+        return []  # 新链接交给网页工具，不自动用旧资料快照冒充当前网页
     if not allowed_ids:
-        if not history_sources:
-            return []
-        terms = {question[index:index + 2] for index in range(len(question) - 1) if not question[index:index + 2].isspace()}
-        ranked = sorted(history_sources, key=lambda key: sum(term in (history_sources[key]['filename'] + history_sources[key]['content']) for term in terms), reverse=True)
-        arguments = {'source_ids': ranked[:4]}
-        return [('read_history_sources', arguments, read_history_sources(arguments['source_ids'], history_sources))]
+        return []  # 历史只提供目录，由模型结合最近意图按需选择，不自动灌入旧正文。
     catalog = await describe_resources(session, allowed_ids)
+    users = [item for item in (history or []) if item.role == 'user']
+    attached_now = bool(users and getattr(users[-1], 'attachments', []))
+    explicit = bool(re.search(r'附件|文件|资料|知识库|文档|手册|刚才|上面|这份|这段|继续', question))
+    named = any(item['filename'].rsplit('.', 1)[0] in question for item in catalog)
+    if not (attached_now or explicit or named):
+        return []  # 当前资料可用不等于每个新话题都需要检索，模型仍可按需调用。
     targets, query = resolve_reference_scope(question, allowed_ids, catalog, history)
     rows = (await session.execute(select(File.id, File.status, func.length(File.text_content).label("chars")).where(File.id.in_(sorted(targets))))).all()
     budget = get_input_budget(settings.llm_context_window, settings.llm_max_output_tokens, settings.llm_context_margin)
@@ -74,22 +76,3 @@ async def prepare_auto_reference(session, question, allowed_ids, messages, tools
         return [("summarize_uploaded_files", arguments, None)]
     arguments = {"query": query[:1000], **({"file_ids": sorted(targets)} if targets != allowed_ids else {})}
     return [("search_uploaded_files", arguments, None)]
-
-
-async def execute_reference_tool(name, arguments, session, allowed_ids, history_sources, connection, check_access):
-    parameters = json.loads(arguments)
-    if not isinstance(parameters, dict):
-        raise ValueError("工具参数必须是JSON对象")
-    fields = {"list_available_files": {"offset", "limit"}, "read_history_sources": {"source_ids"}, "summarize_uploaded_files": {"file_ids", "focus"}}[name]
-    if set(parameters) - fields:
-        raise ValueError("资料工具参数不合法")
-    if name == "read_history_sources":
-        return read_history_sources(parameters.get("source_ids"), history_sources)
-    if name == "summarize_uploaded_files":
-        return await summarize_uploaded_files(session, allowed_ids, connection, **parameters, check_access=check_access)
-    offset, limit = parameters.get("offset", 0), parameters.get("limit", 20)
-    if type(offset) is not int or offset < 0 or type(limit) is not int or not 1 <= limit <= 50:
-        raise ValueError("清单offset必须为非负整数，limit必须为1至50的整数")
-    files = await describe_resources(session, allowed_ids)
-    history = history_source_catalog(history_sources)
-    return {"files": files[offset:offset + limit], "total_files": len(files), "has_more": offset + limit < len(files), "history_sources": history[offset:offset + limit], "total_history_sources": len(history), "history_has_more": offset + limit < len(history), "notice": "files是当前可读取原文，history_sources仅代表以前返回过的快照；两者不能混为一谈。"}

@@ -1,6 +1,6 @@
 import unittest  # 使用内存数据库验证记录实际保存情况
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
-from backend.app.core.database import Base
+from backend.app.core.database import create_tables
 from backend.app.models.chat import Chat, Message
 from backend.app.repositories.chat import cancel_message
 
@@ -8,8 +8,7 @@ class CancelRecordsTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.engine = create_async_engine("sqlite+aiosqlite:///:memory:")  # 不连接真实 app.db
         self.sessions = async_sessionmaker(self.engine, expire_on_commit=False)
-        async with self.engine.begin() as connection:
-            await connection.run_sync(Base.metadata.create_all)
+        await create_tables(self.engine)
         async with self.sessions() as session:
             session.add(Chat(id="chat", title="取消记录测试", updated_at=1))
             await session.flush()

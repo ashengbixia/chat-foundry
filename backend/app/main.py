@@ -46,7 +46,10 @@ async def lifespan(app: FastAPI):  # 管理应用启动和关闭
             await anyio.to_thread.run_sync(prune_empty_collections)  # 回收旧空集合及上次因文件占用未删掉的索引目录
         except Exception:
             logger.exception("回收空向量索引失败，后端继续启动")
-        await prepare_embedding_model()  # 启动时在线程中尝试下载并加载本地模型，失败会记录日志并继续启动
+        if settings.embedding_preload:
+            await prepare_embedding_model()
+        else:
+            logger.info('已关闭向量模型启动预加载，首次索引或检索时加载')
         async with anyio.create_task_group() as tasks:
             tasks.start_soon(cleanup_worker, SessionLocal)
             try:

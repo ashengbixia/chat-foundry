@@ -365,4 +365,6 @@ Ollama预设自动填入 `http://127.0.0.1:11434/v1`、选择无需Key，并至�
 当前运行协调适用于单后端进程，不声称具备多worker分布式调度。新增迁移 `f7c2e5a0b498`，旧会话kind默认为conversation；停止后端执行 `python -m backend.app.core.db_setup --upgrade` 后重启。开发检查使用隔离数据库、模拟模型和界面预览，不自动升级实际用户库。
 # 多用户生产部署
 
+Windows Server 2022原生部署及服务器本机HTTPS测试见 [Windows部署说明](deploy/windows/README.md)，无需Docker，前端可在开发电脑构建后上传。
+
 本地仍按原来的 PyCharm `uvicorn --reload` 与 `npm run dev` 开发。单机多人部署、HTTPS、注册开关、内网模型授权、限额和备份恢复见 [deploy/README.md](deploy/README.md)。生产使用独立配置与持久卷，不要直接将开发启动命令暴露到公网。

@@ -27,3 +27,5 @@ dist/
 # 编辑器本机配置及日志
 .idea/
 *.log
+/release/
+/deploy/windows/bin/

@@ -1,4 +1,5 @@
 from pathlib import Path
+import os
 
 from pydantic import Field, SecretStr
 from typing import Literal
@@ -21,7 +22,7 @@ class Settings(BaseSettings):  # 优先读取环境变量，本机开发时也�
     total_storage_bytes: int = Field(default=10737418240, ge=1)
     user_file_count: int = Field(default=200, ge=1)
     model_config = SettingsConfigDict(
-        env_file=Path(__file__).resolve().parents[2] / ".env",
+        env_file=os.environ.get('CHATFOUNDRY_ENV_FILE') or Path(__file__).resolve().parents[2] / ".env",
         env_file_encoding="utf-8",
         extra="ignore",
         hide_input_in_errors=True,
@@ -40,6 +41,7 @@ class Settings(BaseSettings):  # 优先读取环境变量，本机开发时也�
     chat_response_max_tool_call_iterations: int = Field(default=1024, ge=-1)  # 0禁用模型工具迭代，-1不限制；自动资料准备另计。
     embedding_model: str = Field(default="BAAI/bge-small-zh-v1.5", min_length=1)  # 向量模型名称，也可以填写本地模型目录
     embedding_device: str = Field(default="cpu", min_length=1)  # 初版默认使用CPU
+    embedding_preload: bool = True  # 小内存部署可关闭启动预加载；首次索引/检索仍会加载同一个模型
     embedding_query_prefix: str = "为这个句子生成表示以用于检索相关文章："  # 当前BGE模型的查询提示，更换模型时按需调整或清空
     retrieval_max_distance: float = Field(default=0.75, ge=0, le=2)  # 超出距离的纯语义候选不作为资料返回
     web_search_enabled: bool = True

@@ -1,5 +1,7 @@
 import asyncio
 import threading
+import tempfile
+from pathlib import Path
 import unittest
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
@@ -9,6 +11,11 @@ from backend.app.rag import embedding
 
 class StartupEmbeddingTests(unittest.IsolatedAsyncioTestCase):  # 验证真实启动流程，替换数据库和模型加载，避免访问本机数据与网络
     async def asyncSetUp(self):
+        self.directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.directory.cleanup)
+        directory_patch = patch.object(main, 'DATA_DIR', Path(self.directory.name))
+        directory_patch.start()
+        self.addCleanup(directory_patch.stop)
         self.session = AsyncMock()
         self.factory = Mock(return_value=self.session)
         self.dispose = AsyncMock()
@@ -40,6 +47,14 @@ class StartupEmbeddingTests(unittest.IsolatedAsyncioTestCase):  # 验证真实�
             response = await client.get("/health")
             self.assertEqual(response.status_code, 200)
             self.assertEqual(response.json(), {"status": "ok"})
+
+    async def test_lazy_startup_serves_health_then_loads_on_first_embedding(self):
+        with patch.object(main.settings, 'embedding_preload', False):
+            async with main.lifespan(main.app):
+                await self.health()
+                self.loader.assert_not_called()
+                self.assertEqual(await embedding.embed_texts(['首次检索']), [[1.0, 0.0]])
+                self.loader.assert_called_once()
 
     async def test_database_recovery_then_prepare_before_serving_and_reuse_model(self):
         order = []

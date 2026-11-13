@@ -14,7 +14,7 @@ parser.renderer.rules.text = (tokens, index, _options, env) => { // 仅正文文
     if (tokens[offset]?.type === 'link_close') linkDepth--
   }
   if (linkDepth > 0 || !env?.citationIds) return content
-  return content.replace(/\[(?:引用\s*)?(\d+)\]|〔(?:引用\s*)?(\d+)〕|【引用\s*(\d+)】/g, (label, square, chinese, wide) => {
+  return content.replace(/\[(?:引用\s*|citation_id\s*[:：]\s*)?(\d+)\]|〔(?:引用\s*|citation_id\s*[:：]\s*)?(\d+)〕|【(?:引用\s*|citation_id\s*[:：]\s*)(\d+)】/gi, (label, square, chinese, wide) => {
     const id = Number(square ?? chinese ?? wide)
     return env.citationIds.has(id) ? `<button type="button" class="citation-link" data-citation-id="${id}" aria-label="查看来源 ${id}">[${id}]</button>` : label
   })

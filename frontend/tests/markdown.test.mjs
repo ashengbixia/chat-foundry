@@ -37,3 +37,11 @@ test('历史快照的中文引用别名使用本轮真实来源，未知编号�
   assert.ok(html.includes('<code>〔引用4〕</code>'))
   assert.ok(html.includes('〔原回答引用4〕'))
 })
+
+test('子任务citation_id别名只链接真实编号并保留代码', () => {
+  const html = renderMarkdown('资料〔citation_id: 1〕 [citation_id:2] 未知〔citation_id:99〕 `〔citation_id: 1〕`', [1, 2])
+  assert.equal((html.match(/data-citation-id="1"/g) || []).length, 1)
+  assert.equal((html.match(/data-citation-id="2"/g) || []).length, 1)
+  assert.ok(!html.includes('data-citation-id="99"'))
+  assert.ok(html.includes('<code>〔citation_id: 1〕</code>'))
+})

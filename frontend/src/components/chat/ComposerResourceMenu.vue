@@ -95,7 +95,7 @@ function keydown(event: KeyboardEvent) {
       <template v-if="page === 'main'">
         <button type="button" @click="close(); emit('upload')"><AppIcon name="attach" /><span>上传文件</span><small>TXT</small></button>
         <button type="button" @click="openWeb"><AppIcon name="globe" /><span>引用网页</span></button>
-        <button type="button" :disabled="webSearchDisabled" :aria-pressed="!!webSearchEnabled" @click="toggleWebSearch"><AppIcon name="globe" /><span>联网搜索</span><AppIcon v-if="webSearchEnabled" name="check" :size="16" /><small v-else>开启</small></button>
+        <button type="button" role="switch" :disabled="webSearchDisabled" :aria-checked="!!webSearchEnabled" :aria-label="webSearchEnabled ? '联网搜索已开启，点击关闭' : '联网搜索未开启，点击开启'" @click="toggleWebSearch"><AppIcon name="globe" /><span class="search-description">联网搜索<small>允许模型按需搜索</small></span><small>{{ webSearchEnabled ? '已开启' : '未开启' }}</small><span class="resource-switch" :class="{ active: webSearchEnabled }" aria-hidden="true"></span></button>
         <div class="menu-separator"></div>
         <button type="button" @click="navigate('files')"><AppIcon name="file" /><span>添加附件</span><AppIcon name="chevron" :size="15" /></button>
         <button type="button" :disabled="knowledgeDisabled" @click="navigate('knowledge')"><AppIcon name="database" /><span>引用知识库</span><AppIcon name="chevron" :size="15" /></button>
@@ -141,6 +141,10 @@ function keydown(event: KeyboardEvent) {
 .resource-popup button:disabled { opacity: .5; }.resource-popup button.selected { opacity: 1; background: #f6f6f6; color: #858585; }
 .resource-popup svg { flex-shrink: 0; }.resource-popup button > span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .resource-popup small { color: #a0a0a0; font-size: 11px; }.resource-base small { display: block; margin-top: 3px; }
+.search-description small { display: block; margin-top: 2px; font-size: 10px; }
+.resource-popup button > .resource-switch { flex: 0 0 28px; height: 16px; border-radius: 10px; background: #d9ddda; transition: background .15s; }
+.resource-switch::after { content: ''; display: block; width: 12px; height: 12px; margin: 2px; border-radius: 50%; background: #fff; transition: transform .15s; }
+.resource-switch.active { background: #527761 !important; }.resource-switch.active::after { transform: translateX(12px); }
 .menu-separator { height: 1px; margin: 5px 8px; background: #efefef; }.resource-popup button.secondary { font-size: 12px; color: #888; }
 .resource-heading { font-weight: 500; }.resource-search { display: flex; gap: 10px; align-items: center; margin: 5px 10px 8px; color: #888; }
 .resource-search input { width: 100%; min-width: 0; padding: 7px 0; border: 0; outline: 0; background: transparent; font-size: 14px; color: #333; }.resource-search input::placeholder { color: #aaa; }

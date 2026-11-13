@@ -2,6 +2,19 @@ import json
 import re
 from backend.app.chat.source_types import is_web_source
 
+
+def missing_source_footer(text, numbers):
+    """只列出实际读取的来源，不把未标注的每句话自动判为有依据。"""
+    numbers = sorted(set(numbers))
+    if not text.strip() or not numbers:
+        return ''
+    parts = re.split(r'(```[\s\S]*?```|`[^`\n]+`)', text)
+    cited = {int(number) for part in parts[::2] for number in re.findall(r'\[(\d+)\]', part)}
+    cited.update(int(number) for part in parts[::2] for number in re.findall(r'[〔【\[](?:citation_id\s*[:：]\s*|引用\s*)(\d+)[〕】\]]', part, flags=re.I))
+    if cited.intersection(numbers):
+        return ''
+    return '\n\n本轮已读取来源：' + ' '.join(f'[{number}]' for number in numbers)
+
 def add_citation_ids(name: str, result: str, sources: dict, allowed_file_ids: set[str]) -> str:  # 只给本轮实际返回、且在允许范围内的附件正文编号
     if name not in ("search_uploaded_files", "read_uploaded_file", "read_history_sources", "summarize_uploaded_files", "read_webpage", 'delegate_task', 'get_subagent_task'):
         return result

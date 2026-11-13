@@ -37,6 +37,7 @@ class ChildScope:
     tools: frozenset[str]
     urls: frozenset[str]
     sessions: object
+    web_origins: frozenset[str] = frozenset()
 
 
 def _semaphore(key, count):
@@ -129,6 +130,7 @@ async def task_result(sessions, parent_chat_id, task_id):
 async def delegate(context, task, task_context='', background=False, file_ids=None, history_source_ids=None, tool_names=None):
     from backend.app.tools.runtime import registry
     from backend.app.tools.local.read_webpage import approved_urls, normalize_url
+    from backend.app.tools.web_scope import within_requested_site, origins_from_urls
     if context.is_subagent or not context.session_factory or not context.parent_message_id:
         raise ValueError('仅主运行可以委派子任务')
     task = task.strip()
@@ -150,13 +152,13 @@ async def delegate(context, task, task_context='', background=False, file_ids=No
     for url in re.findall(r'https?://[^\s<>"\x27]+', task + '\n' + task_context):
         try:
             normalized = str(normalize_url(url.rstrip(').,，。；;')))
-            if normalized not in allowed_urls:
-                raise ValueError('委派中的网址必须来自用户提供、真实搜索结果或已读页面')
-            urls.add(normalized)
+            if normalized in allowed_urls or within_requested_site(context, normalized, allowed_urls):
+                urls.add(normalized)
+            # 未验证的网址可以作为研究线索，但不能由任务参数直接授予访问范围。
         except ValueError:
-            raise ValueError('委派中的网址未获得父会话授权') from None
+            continue
     scope = {'files': sorted(selected), 'history_sources': {key: context.history_sources[key] for key in source_ids},
-             'tools': sorted(tools), 'urls': sorted(urls), 'web_search_enabled': context.web_search_enabled}
+             'tools': sorted(tools), 'urls': sorted(urls), 'web_origins': sorted(context.web_origins | origins_from_urls(allowed_urls)), 'web_search_enabled': context.web_search_enabled}
     request_key = hashlib.sha256(json.dumps([task, task_context, background, scope], sort_keys=True, ensure_ascii=False).encode()).hexdigest()
     lock = _locks.setdefault('submission', asyncio.Lock())  # 短事务串行登记，账号额度跨父会话一致。
     async with lock:
@@ -232,7 +234,7 @@ async def _run(sessions, task_id, connection):
                     await session.commit()
                     if not changed.rowcount:
                         return
-                scope = ChildScope(task_id, parent_id, set(data['files']), data['history_sources'], frozenset(data['tools']), frozenset(data['urls']), sessions)
+                scope = ChildScope(task_id, parent_id, set(data['files']), data['history_sources'], frozenset(data['tools']), frozenset(data['urls']), sessions, frozenset(data.get('web_origins', [])))
                 with anyio.fail_after(settings.subagent_timeout):
                     async with sessions() as session:
                         async for _ in stream_chat_history_events(session, child_id, connection, data['web_search_enabled'], run_scope=scope):

@@ -31,6 +31,7 @@ class ToolContext:
     session_factory: object = None
     allowed_tools: frozenset[str] | None = None
     approved_urls: frozenset[str] | None = None
+    web_origins: frozenset[str] = frozenset()  # 由真实用户请求确定，子任务只能继承。
 
     async def refresh_access(self):
         if self.check_access is not None:

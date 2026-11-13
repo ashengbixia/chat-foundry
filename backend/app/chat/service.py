@@ -10,8 +10,8 @@ from backend.app.core.config import settings
 from backend.app.repositories.chat import create_message, update_message,list_recent_messages
 from backend.app.chat.context import build_model_messages
 from backend.app.chat.tool_context import prepare_model_request, remember_visible_web_ranges
-from backend.app.chat.research import failure_info, failure_report
-from backend.app.chat.citations import add_citation_ids
+from backend.app.chat.research import failure_info, failure_report, FinalizationError
+from backend.app.chat.citations import add_citation_ids, missing_source_footer
 from backend.app.llm.budget import InputBudgetError
 from backend.app.chat.events import format_sse
 from backend.app.llm.client import ModelStreamError, stream_reply, stream_model_events
@@ -143,6 +143,11 @@ async def stream_chat_history_events(
         tool_context = ToolContext(session=session, allowed_file_ids=set(allowed_file_ids), history_sources=history_sources, connection=connection, check_access=current_scope, resource_tools=True, chat_id=chat_id, history=history, web_search_enabled=web_search_enabled)
         tool_context.session_factory = sessions
         tool_context.is_subagent = run_scope is not None
+        from backend.app.tools.web_scope import requested_origins
+        tool_context.web_origins = run_scope.web_origins if run_scope else requested_origins(history)
+        if tool_context.web_origins:
+            messages[0]['content'] += '\n用户明确指定的资料站点：' + ', '.join(sorted(tool_context.web_origins)) + '。允许直接读取这些站点不带查询参数的公开文档路径，也可委派；猜测路径不等于读取成功，404或跳转须以真实响应为准。先尝试目标文档，找不到时沿真实目录链接定位，不要仅停留在首页。'
+        messages[0]['content'] += '\n没有给出资料站点地址时，先搜索定位真实来源，或按名称委派给子任务自行定位，不预设网站入口。任务中模型提出的网址只是候选，不代表官方身份、已获访问范围或已经读取。找到真实链接后可在该站内浏览不带查询参数的公开文档路径。'
         if run_scope:
             tool_context.allowed_tools = run_scope.tools
             tool_context.approved_urls = run_scope.urls
@@ -207,7 +212,7 @@ async def stream_chat_history_events(
             reasoning_output = None
             capability_message['content'] = '本轮实际能力状态（以此及工具清单为准，不推测环境变化）：' + json.dumps({
                 'search': 'enabled' if tool_context.web_search_enabled and getattr(settings, 'web_search_enabled', True) else 'chat_disabled' if not tool_context.web_search_enabled else 'server_disabled',
-                'search_attempts_remaining': max(0, 3 - tool_context.state.get('search_web', {}).get('attempts', 0)),
+                'search_attempts_remaining': 0 if tool_context.state.get('search_web', {}).get('exhausted') else max(0, 3 - tool_context.state.get('search_web', {}).get('attempts', 0)),
                 'tool_calls_remaining': max(0, 12 - tool_attempts),
                 'rounds_remaining': 4 - request_index}, ensure_ascii=False) + '。额度耗尽不再尝试该工具。只读取与当前问题有关的资料；短追问根据最近意图理解；足够回答就停止调用。'
             capability_message['content'] += '当前日期（UTC）' + time.strftime('%Y-%m-%d', time.gmtime()) + '；搜索时不要无故加入过期年份。'
@@ -220,6 +225,8 @@ async def stream_chat_history_events(
             metadata['budget_estimator'] = 'utf8_bytes_upper_bound'
             if finish_only:
                 metadata['finish_only_reason'] = finish_reason or 'tool_limit'
+                if raw_tool_results:
+                    metadata['synthesis_mode'] = 'independent_readonly'
             if len(trimmed) < len(messages):
                 logger.info("本次模型输入裁剪了 %s 条旧消息，数据库历史保持不变", len(messages) - len(trimmed))
             messages = trimmed
@@ -262,7 +269,12 @@ async def stream_chat_history_events(
             if not tool_calls:
                 break  # 模型没有继续调用工具，结束生成流程
             if tools is None:
-                raise ModelStreamError("模型在仅汇总阶段仍返回工具调用，本轮已停止")
+                # 工具前的半句属于过程说明，不能当作最终研究结论保存。
+                if round_output is not None:
+                    round_output['phase'] = 'commentary'
+                    del text_parts[-len(round_text_parts):]
+                    yield format_sse('commentary', {'text': round_text})
+                raise FinalizationError("模型在仅汇总阶段仍返回工具调用，本轮已停止")
             if round_output is not None:
                 round_output['phase'] = 'commentary'
                 del text_parts[-len(round_text_parts):]
@@ -329,6 +341,11 @@ async def stream_chat_history_events(
                 await checkpoint(True)
                 yield format_sse("tool_result", {"call_id": call["id"], "output": result, 'duration_ms': call_record['duration_ms']})
         # ④ 模型正常结束，保存完整回答。
+        footer = missing_source_footer(''.join(text_parts), citation_sources.values())
+        if footer:
+            text_parts.append(footer)
+            output.append({'type': 'message', 'role': 'assistant', 'content': [{'type': 'output_text', 'text': footer}]})
+            yield format_sse('text_delta', {'text': footer})
         full_text = "".join(text_parts)
         metadata['duration_ms'] = round((time.time() - started) * 1000)
         output.append(metadata)
@@ -363,6 +380,7 @@ async def stream_chat_history_events(
         if not ''.join(text_parts).strip() and phase != 'database_save':
             report = failure_report(raw_tool_results, metadata['error_info'])
             if report:
+                report += missing_source_footer(report, citation_sources.values())
                 text_parts.append(report)
                 output.append({'type': 'message', 'role': 'assistant', 'content': [{'type': 'output_text', 'text': report}]})
                 yield format_sse('text_delta', {'text': report})

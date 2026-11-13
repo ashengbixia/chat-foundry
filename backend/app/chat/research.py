@@ -7,6 +7,10 @@ from backend.app.llm.budget import InputBudgetError
 from backend.app.llm.client import ModelStreamError
 
 
+class FinalizationError(ModelStreamError):
+    """服务已收起工具，供应商仍返回调用；不再执行或自动重试。"""
+
+
 def assess_result(message):
     if message is None:
         return {'outcome': 'failed', 'source_count': 0, 'limitations': '子运行未正常完成'}
@@ -27,7 +31,7 @@ def assess_result(message):
                 pass
     if message.status != 'completed':
         return {'outcome': 'failed', 'source_count': len(sources), 'limitations': '子运行未正常完成，已有资料仍保留在子历史中'}
-    negative = re.search(r'[^\n。]*(?:未能找到|未找到|无法核实|没有找到|未取得足够|没有可核实|无法按要求[^\n。]*(?:整理|核实))[^\n。]*', message.content[:700])
+    negative = re.search(r'[^\n。]*(?:未能找到|未找到|无法核实|没有找到|未取得足够|没有可核实|证据不(?:足|充分)|信息有限|不足以|无法(?:给出|证实|确认)|(?:没有|未能|未)读(?:取)?到|无法按要求[^\n。]*(?:整理|核实))[^\n。]*', message.content[:1200])
     insufficient = researched and (not sources or negative is not None)
     return {'outcome': 'insufficient_evidence' if insufficient else 'answered', 'source_count': len(sources),
             'limitations': negative.group(0).strip('*# ')[:240] if negative else '尚未取得可引用的原文依据' if insufficient else ''}
@@ -48,6 +52,9 @@ def failure_info(error, phase):
         status = error.response.status_code
         info.update(phase='model_request', code=f'model_http_{status}', retryable=status == 429 or status >= 500)
         message = f'模型服务返回HTTP {status}，本轮未完整完成'
+    elif isinstance(error, FinalizationError):
+        info.update(phase='final_synthesis', code='model_ignored_final_phase')
+        message = str(error)
     elif isinstance(error, ModelStreamError):
         info.update(phase='model_response', code='model_stream_incomplete', retryable=True)
         message = str(error)
@@ -82,14 +89,21 @@ def failure_report(raw_results, error_info):
     for index, item in enumerate(tasks[:4], 1):
         status = labels.get(item.get('outcome'), '仍在运行' if item.get('status') in ('queued', 'running') else '未完整完成')
         lines.append(f"- 子任务 {index}：{status}。")
-        if item.get('summary'):
+        if item.get('source_count'):
+            lines.append(f"  已取得 {item['source_count']} 份来源，原文仍保留在工具记录中。")
+        if item.get('summary') and item.get('outcome') != 'failed':
             lines.append('  已返回的子任务摘要：' + item['summary'][:600])
+        elif item.get('error'):
+            lines.append('  原因：' + item['error'][:180])
         if item.get('limitations'):
             lines.append('  ' + item['limitations'][:220])
     if not tasks:
         candidates = sum(len(item.get('results', [])) for item in data)
         sources = sum(len(item.get('chunks', [])) for item in data)
         lines.append(f'已取得 {sources} 段原文及 {candidates} 条搜索候选；候选摘要尚不等于已核实的结论。')
-    reason = '输入预算不足' if error_info['code'] == 'input_budget_exceeded' else '模型请求或执行未正常结束'
+        errors = list(dict.fromkeys(item['error'] for item in data if isinstance(item.get('error'), str)))
+        for error in errors[:3]:
+            lines.append('- 读取未完成：' + error[:180])
+    reason = '输入预算不足' if error_info['code'] == 'input_budget_exceeded' else '模型在汇总阶段仍请求工具，已停止追加调用' if error_info['code'] == 'model_ignored_final_phase' else '模型请求或执行未正常结束'
     lines.extend(['', f'由于{reason}，没有继续补搜或补造结论。完整过程与已返回来源保留在工具记录中。'])
     return '\n'.join(lines)

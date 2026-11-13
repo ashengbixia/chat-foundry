@@ -70,8 +70,9 @@ class ToolChatTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(closed, [0])
 
     async def test_budget_failure_after_tools_saves_useful_body_and_error_stage(self):
-        self.model([[{'type': 'reasoning_delta', 'text': '长思考' * 16000}, tool()], [text('不应请求第二次模型')]])
-        events = await self.run_chat()
+        self.model([[tool()], [text('不应请求第二次模型')]])
+        with patch.object(service, 'execute_tool', AsyncMock(return_value=json.dumps({'result': 'x' * 100000}))):
+            events = await self.run_chat()
         saved = self.update.call_args.kwargs
         self.assertEqual(saved['status'], 'failed')
         self.assertIn('已保留取得的结果', saved['content'])
@@ -79,6 +80,19 @@ class ToolChatTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(metadata['error_info']['code'], 'input_budget_exceeded')
         self.assertTrue(any('event: text_delta' in event for event in events))
         self.assertTrue(events[-1].startswith('event: error'))
+
+    async def test_final_phase_tool_request_keeps_partial_as_commentary_and_saves_report(self):
+        rounds = [[tool(call_id=f'time-{index}')] for index in range(4)]
+        rounds.append([text('我尝试打开一个尚未核实的地址（'), tool(call_id='forbidden')])
+        requests, _ = self.model(rounds)
+        await self.run_chat()
+        self.assertIsNone(requests[-1][1])
+        saved = self.update.call_args.kwargs
+        self.assertEqual(saved['status'], 'failed')
+        self.assertNotIn('我尝试打开', saved['content'])
+        self.assertIn('已保留取得的结果', saved['content'])
+        metadata = next(item for item in saved['output'] if item['type'] == 'turn_metadata')
+        self.assertEqual(metadata['error_info']['code'], 'model_ignored_final_phase')
 
     async def test_new_async_tool_works_without_chat_specific_branch(self):
         class EchoArguments(ToolArguments):
@@ -206,7 +220,8 @@ class ToolChatTests(unittest.IsolatedAsyncioTestCase):
             await self.run_chat()
         self.assertEqual({item["function"]["name"] for item in requests[0][1]}, {"get_current_time", "read_webpage"})
         self.assertEqual(sum(item["role"] == "user" for item in requests[0][0]), 1)
-        self.assertIn("权限", json.loads(requests[1][0][-1]["content"])["error"])
+        self.assertIn("权限", requests[1][0][-1]["content"])
+        self.assertIsNone(requests[1][1])
 
     async def test_next_turn_restores_saved_tool_history(self):  # 使用上一轮实际保存的 output 构造下一轮输入
         self.model([[tool()], [text("当前是北京时间。")]])

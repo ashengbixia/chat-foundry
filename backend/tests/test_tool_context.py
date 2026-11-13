@@ -13,7 +13,7 @@ class CharacterTokenizer:
         return {"offset_mapping": [(index, index + 1) for index in range(len(text))]}
 
 class ToolContextTests(unittest.TestCase):
-    def test_final_phase_preserves_required_reasoning_and_omits_tool_definitions(self):
+    def test_final_phase_uses_independent_evidence_context_and_keeps_original_chain_unchanged(self):
         reasoning = '模型服务要求原样回传的思考' * 100
         raw = json.dumps({'task_id': 't', 'status': 'completed', 'outcome': 'answered', 'summary': '结论', 'chunks': []})
         messages = [{'role': 'user', 'content': '比较两个任务'},
@@ -24,7 +24,9 @@ class ToolContextTests(unittest.TestCase):
         self.assertIsNone(offered)
         self.assertTrue(final)
         self.assertEqual(reason, 'input_budget')
-        self.assertEqual(next(item['reasoning_content'] for item in projected if 'reasoning_content' in item), reasoning)
+        self.assertEqual(messages[1]['reasoning_content'], reasoning)
+        self.assertFalse(any('reasoning_content' in item or 'tool_calls' in item or item.get('role') == 'tool' for item in projected))
+        self.assertIn('结论', projected[-1]['content'])
         self.assertLessEqual(estimate_input_tokens(projected), 10900)
         with self.assertRaises(InputBudgetError):
             prepare_model_request(messages, {'t': raw}, tools, 1000, 200, 100)

@@ -91,6 +91,8 @@ async def stream_model_events(messages: list[dict[str, Any]], tools: list[dict[s
     if tools:
         payload["tools"] = tools  # 本次请求允许模型使用的工具
         payload["tool_choice"] = "auto"  # 允许模型选择调用工具或直接回答
+    else:
+        payload['tool_choice'] = 'none'  # 显式禁止调用，不能依赖供应商的默认行为。
     ensure_input_budget(messages, tools, settings.llm_context_window, settings.llm_max_output_tokens, settings.llm_context_margin)  # 所有流式入口都必须通过检查
 
     async with httpx.AsyncClient(

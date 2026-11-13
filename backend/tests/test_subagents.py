@@ -53,6 +53,36 @@ class SubagentTests(unittest.IsolatedAsyncioTestCase):
         async with self.sessions() as session:
             return [event async for event in service.stream_chat_history_events(session, 'parent', self.connection)]
 
+    async def test_explicit_sites_are_inherited_by_both_children_without_search_roundtrips(self):
+        async with self.sessions() as session:
+            question = (await session.execute(select(Message).where(Message.chat_id == 'parent', Message.role == 'user'))).scalar_one()
+            question.content = '请用两个子智能体查阅 https://docs.alpha.example/ 和 https://docs.beta.example/ 的文档并比较。'
+            await session.commit()
+        urls = ['https://docs.alpha.example/guide/start.html', 'https://docs.beta.example/tutorial/intro']
+        async def model(messages, tools=None, connection=None):
+            if '你是执行明确委派任务的子智能体' in messages[0]['content']:
+                if messages[-1]['role'] == 'tool':
+                    yield {'type': 'text_delta', 'text': '已读取指定的官方教程目录。'}
+                else:
+                    question = next(item['content'] for item in messages if item['role'] == 'user')
+                    yield call('read_webpage', {'url': next(url for url in urls if url in question)}, call_id='read')
+            elif messages[-1]['role'] == 'tool':
+                results = [json.loads(item['content']) for item in messages if item['role'] == 'tool']
+                self.assertEqual(len(results), 2)
+                self.assertTrue(all(item['status'] == 'completed' and item['source_count'] == 1 for item in results))
+                yield {'type': 'text_delta', 'text': '两份官方教程目录均已读取，可按目录比较学习主题。'}
+            else:
+                for index, url in enumerate(urls):
+                    yield call('delegate_task', {'task': '读取官方教程 ' + url, 'tool_names': ['read_webpage']}, index, f'delegate-{index}')
+        async def fetch(url):
+            return {'url': url, 'title': '官方教程', 'text': '变量、控制流和函数。', 'retrieved_at': 1}
+        with patch.object(service, 'stream_model_events', model), patch.object(read_webpage, 'fetch_page', fetch):
+            events = await self.run_parent()
+        self.assertTrue(events[-1].startswith('event: done'), events[-1])
+        async with self.sessions() as session:
+            answer = (await session.execute(select(Message).where(Message.chat_id == 'parent', Message.role == 'assistant'))).scalar_one()
+            self.assertIn('[1] [2]', answer.content)
+
     async def test_two_foreground_delegations_run_concurrently_keep_history_and_remap_sources(self):
         started, both = set(), asyncio.Event()
         async def model(messages, tools=None, connection=None):
@@ -167,8 +197,16 @@ class SubagentTests(unittest.IsolatedAsyncioTestCase):
         context = ToolContext(chat_id='parent', parent_message_id=assistant.id, session_factory=self.sessions)
         with self.assertRaisesRegex(ValueError, '文件'):
             await subagents.delegate(context, '读取秘密', file_ids=['secret'])
-        with self.assertRaisesRegex(ValueError, '父会话授权'):
-            await subagents.delegate(context, '读取 https://unapproved.example/')
+        with patch.object(subagents, '_launch'):
+            result = await subagents.delegate(context, '研究 https://unapproved.example/ 是否为目标资料来源', background=True)
+        async with self.sessions() as session:
+            task = await session.get(SubagentTask, result['task_id'])
+            self.assertEqual(task.scope['urls'], [])
+            self.assertEqual(task.scope['web_origins'], [])  # 候选线索不会变成站点授权。
+            child = (await session.execute(select(Message).where(Message.chat_id == task.child_chat_id))).scalar_one()
+            child_context = ToolContext(is_subagent=True, history=[child])
+            with self.assertRaisesRegex(ValueError, '不能自行拼接'):
+                await execute_tool('read_webpage', '{"url":"https://unapproved.example/"}', context=child_context)
         with self.assertRaises(ValueError):
             await subagents.task_result(self.sessions, 'other', 'missing')
 

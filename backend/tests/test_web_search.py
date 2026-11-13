@@ -105,7 +105,7 @@ class WebSearchTests(unittest.IsolatedAsyncioTestCase):
     async def test_platform_homepages_do_not_match_topic_and_repeated_results_stop(self):
         found = [{'title': '哔哩哔哩 bilibili 首页', 'url': 'https://www.bilibili.com/', 'snippet': '关于我们 下载客户端'}]
         self.assertEqual(web_search.assess_search_results('bilibili 电影推荐', found), 'low_relevance')
-        self.assertEqual(web_search.assess_search_results('bilibili 电影推荐', [{**found[0], 'title': '哔哩哔哩电影频道'}]), 'topic_matched')
+        self.assertEqual(web_search.assess_search_results('bilibili 电影推荐', [{**found[0], 'url': 'https://www.bilibili.com/movie', 'title': '哔哩哔哩电影频道'}]), 'topic_matched')
         context = ToolContext(web_search_enabled=True)
         with patch.object(web_search, 'search_provider', AsyncMock(return_value=found)) as provider:
             await execute_tool('search_web', '{"query":"bilibili 电影推荐"}', context=context)

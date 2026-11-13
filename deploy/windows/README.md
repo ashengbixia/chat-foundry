@@ -1,8 +1,10 @@
 # Windows Server 2022 原生部署
 
-适合目前这台4核/4GB、无公网IP的服务器。先在服务器自己的浏览器访问 `https://localhost`，不安装Docker，不安装服务器端Node，不开放网络端口。前端在开发电脑构建并打包；服务器用Python运行后端、Caddy提供HTTPS与静态页面、WinSW管理两个Windows服务。本文所有服务器命令均在**管理员PowerShell**中运行。
+本文介绍Windows Server 2022的原生部署方式，无需Docker。前端在开发电脑构建并打包，服务器用Python运行后端、Caddy提供HTTPS与静态页面、WinSW管理后台服务。默认先通过服务器本机的 `https://localhost` 验证部署，再按需启用内网或公网访问。本文所有服务器安装与服务管理命令均在**管理员PowerShell**中运行，明确标注的预览命令除外。
 
-现有可用内存约0.2GB时先不要安装和启动。查看任务管理器，关闭确认不需要的软件，确认系统页面文件启用；配置脚本在可用内存低于768MB或运行目录所在磁盘可用空间不足6GB时会停止。此检查只是安装下限，不保证检索负载足够，首次加载向量模型仍可能增加数百MB乃至更多内存。页面文件能缓解提交内存不足，不能替代物理内存，也不会让检索更快。先测试单用户，不在这台机器运行Ollama或其他聊天大模型。
+安装前检查可用内存和磁盘空间。配置脚本在可用内存低于768MB或运行目录所在磁盘可用空间不足6GB时会停止；此检查只是安装下限，不保证实际检索负载所需的容量。首次加载向量模型会增加内存占用，应按文档大小和并发量实测。资源紧张时可关闭不需要的软件、降低并发，并检查系统页面文件；页面文件不能替代物理内存。本文默认聊天通过外部模型API提供，本地运行聊天大模型需另行评估资源。
+
+文中的 `C:\ChatFoundry`、`C:\ChatFoundryRuntime` 和 `C:\Python310` 是示例安装路径，域名与内网IP也是示例，部署时请替换为自己的实际配置。
 
 ## 1. 开发电脑生成发布包
 
@@ -44,6 +46,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\deploy\windows\Configu
 | 可轮转服务日志 | `logs` |
 | Windows服务配置和包装器 | `services` |
 | Caddy/WinSW工具 | `bin` |
+| 网关域名、监听地址、证书模式 | `gateway.json` |
 
 配置脚本自动生成随机初始化口令，不在终端打印。用管理员记事本打开 `C:\ChatFoundryRuntime\server.env` 查看 `BOOTSTRAP_TOKEN`。模型地址、模型名和Key先留空，创建管理员后在网页里配置个人模型服务。生产配置与开发用的 `backend/.env` 分离，服务器不会误用开发配置。
 
@@ -122,7 +125,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\deploy\windows\Configu
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\deploy\windows\Manage-Services.ps1 -Action Start
 ```
 
-服务名和代码路径不变时不需要重新Install；修改环境配置后Restart即可，每次后端进程启动都会重读独立环境文件。修改服务可执行路径或切换运行目录时，停止并Uninstall旧服务，再用新配置Install；Uninstall保留源代码和用户数据。
+服务名和代码路径不变时不需要重新Install；修改环境配置后Restart即可，每次后端进程启动都会重读独立环境文件。网关设置保存到 `gateway.json`，再次运行Configure时，未明确传入的参数沿用已有配置，不会把公网域名恢复为localhost。旧版没有gateway.json时会识别原脚本生成的Caddyfile，保留原主机名与监听地址；无法识别的自定义配置会停止并提示，不静默覆盖。修改服务可执行路径或切换运行目录时，停止并Uninstall旧服务，再用新配置Install；Uninstall保留源代码和用户数据。
 
 恢复只允许写入**不存在的新目录**：
 
@@ -142,10 +145,66 @@ icacls.exe C:\ChatFoundryRuntime\restored-data /grant '*S-1-5-19:(OI)(CI)M' /T
 
 目前默认只允许服务器本机访问，你的电脑直接打开服务器IP不会连上，这是预期行为。确定通过同一VPC、VPN或公网代理访问后，再调整入口；这一步不会凭空为服务器增加公网IP。
 
-同一内网/VPN测试时，先停止服务，再执行配置脚本并指定真实内网IP与监听地址，例如：
+同一内网/VPN测试时，先停止服务，再执行配置脚本并指定真实内网IP与监听地址。以下 `192.168.1.100` 仅为示例，必须替换为服务器实际内网IP：
 
 ```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\deploy\windows\Configure.ps1 -SiteHost 10.1.0.13 -ListenAddress 0.0.0.0
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\deploy\windows\Configure.ps1 -SiteHost 192.168.1.100 -ListenAddress 0.0.0.0
 ```
 
-然后只向指定客户端IP/网段开放Windows防火墙与云安全组的443端口，客户端导入这台服务的CA公开证书，再访问 `https://10.1.0.13`。后端8000始终不对外开放。配置改动后Restart服务；如果改过内网监听配置，今后重新运行Configure时继续传相同的SiteHost/ListenAddress，避免恢复成本机默认。
+如果此前已启用公网模式，切回内网时额外传 `-TlsMode Internal`。然后只向指定客户端IP/网段开放Windows防火墙与云安全组的443端口，客户端导入服务的CA公开证书，再访问实际内网地址（示例：`https://192.168.1.100`）。后端8000始终不对外开放。配置改动后Restart服务；以后更新时不必重复传SiteHost/ListenAddress，脚本会沿用保存的值。
+
+## 公网域名 HTTPS
+
+代码提供入口配置，不会购买公网IP、修改DNS、自动放行安全组或代办备案。此模式适用于公网流量直接转发到Caddy，由Caddy终止HTTPS；前置负载均衡已经终止HTTPS的场景需要另行匹配代理方案。
+
+### 配置前先确认
+
+1. 服务器具备公网IP，或已有将公网TCP 80/443转发到这台服务器的入口。只有 `10.x.x.x` 内网IP不够。
+2. 域名A记录解析到该公网入口。没有可用IPv6链路时不要设置AAAA记录；当前监听选项为IPv4。
+3. Windows防火墙、云安全组和任何中间转发均允许TCP 80/443；其他站点未占用这两个端口。后端8000不开放。
+4. 按服务器所在地和实际服务要求完成相应域名实名、备案等流程。
+
+### 从已部署的本机版本切换
+
+先更新 `deploy/windows` 中的脚本（包括新增的 `Gateway.ps1`），在管理员PowerShell里进入项目根目录。把下面的示例域名换成自己的域名；不需要重新安装Python依赖，也不需要重新注册已有服务：
+
+```powershell
+Set-Location C:\ChatFoundry
+$ms = '.\deploy\windows\Manage-Services.ps1'
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File $ms -Action Stop
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\deploy\windows\Configure.ps1 -TlsMode Public -SiteHost chat.example.com
+# 必须确认配置脚本成功，再启动服务。
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File $ms -Action Start
+```
+
+首次切换到Public且没有明确指定ListenAddress时，自动使用 `0.0.0.0`。公网模式仅接受DNS域名，拒绝localhost、IP和本地域名。可选参数 `-AcmeEmail admin@example.com` 提供证书联系邮箱，不是网站用户注册邮箱；不填也可以申请证书。生产Cookie仍为Secure，后端继续只监听127.0.0.1并信任本机Caddy。
+
+生成的配置不再使用 `tls internal`，Caddy启动后会自动申请公开可信证书，并将HTTP重定向至HTTPS，后续自动续期。访问 `https://你的域名`，用户不需要导入本地CA。首次签发取决于域名解析和公网可达性，配置校验成功不等于证书已经签发。
+
+查看状态与签发日志：
+
+```powershell
+Get-Service ChatFoundryBackend, ChatFoundryGateway
+Invoke-RestMethod http://127.0.0.1:8000/health
+Get-Content C:\ChatFoundryRuntime\logs\ChatFoundryGateway.err.log -Tail 80
+```
+
+若公网网页不通但本机后端健康，依次核对DNS、公网入口、80/443占用与防火墙，以及网关日志中的ACME错误。不要反复更改域名或清空证书目录尝试签发，避免触发证书机构限额。
+
+### 预览与更新保留
+
+`-Preview` 仅显示候选Caddy配置，不安装依赖、不写配置、不停启服务；可在正式切换前预览，无需管理员权限：
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\deploy\windows\Configure.ps1 -Preview -TlsMode Public -SiteHost chat.example.com
+```
+
+正式配置写入 `C:\ChatFoundryRuntime\gateway.json`，现有Caddyfile会备份为 `Caddyfile.before-configure`。Caddy已安装时先校验候选文件，失败保留原Caddyfile和网关设置。以后更新代码时，停止服务后直接运行Configure（按需加InstallDependencies）即可沿用保存的域名、监听地址和证书模式。不要覆盖或删除整个运行目录；备份时还要单独保管server.env、gateway.json和caddy证书目录，数据备份命令本身只备份DATA_DIR。
+
+若要恢复为仅本机访问，停止服务后明确执行：
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\deploy\windows\Configure.ps1 -TlsMode Internal -SiteHost localhost -ListenAddress 127.0.0.1
+```
+
+确认成功后启动服务，并按本机部署章节信任本地CA。服务不会自动增删Windows防火墙规则。

@@ -4,7 +4,7 @@
 
 ## 环境与依赖安装
 
-当前后端开发环境为 Python 3.10.20。建议使用独立的 Python 3.10 虚拟环境，不要复用装有其他项目依赖的大环境。
+后端使用 Python 3.10。建议为项目创建独立的虚拟环境，避免与其他项目依赖冲突。
 前端需要 Node.js `^22.18.0 || >=24.12.0`，与 `frontend/package.json` 中的要求一致；可选择满足要求的 Node 22 或 Node 24 版本。
 
 以下命令使用 Windows CMD，从下载后的项目根目录执行，不要求文件夹名称与 GitHub 仓库名一致。
@@ -16,7 +16,7 @@ python -m venv .venv
 .venv\Scripts\python.exe -m pip install -r backend\requirements.txt
 ```
 
-先确认这里的 `python` 是准备使用的 Python 3.10。清单固定了当前项目使用的直接依赖及配置读取依赖，间接依赖由 pip 解析，不是当前 Conda 环境的全部包列表。
+先确认这里的 `python` 是准备使用的 Python 3.10。清单固定了项目使用的直接依赖，间接依赖由 pip 解析。
 
 ### 安装前端依赖
 

@@ -4,12 +4,13 @@ param(
     [string]$PythonExe,
     [string]$SiteHost = 'localhost',
     [ValidateSet('127.0.0.1', '0.0.0.0')][string]$ListenAddress = '127.0.0.1',
+    [ValidateSet('Internal', 'Public')][string]$TlsMode = 'Internal',
+    [AllowEmptyString()][string]$AcmeEmail = '',
+    [switch]$Preview,
     [switch]$InstallDependencies,
     [switch]$SkipResourceCheck
 )
 $ErrorActionPreference = 'Stop'
-$identity = [Security.Principal.WindowsIdentity]::GetCurrent()
-if (-not ([Security.Principal.WindowsPrincipal]$identity).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) { throw 'Run configuration in an elevated PowerShell to protect runtime secrets.' }
 $repo = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
 if ($RuntimeDirectory -notmatch '^[A-Za-z]:[\\/]') { throw 'RuntimeDirectory must be a local absolute drive path.' }
 $runtime = [IO.Path]::GetFullPath($RuntimeDirectory).TrimEnd('\', '/')
@@ -20,7 +21,16 @@ if ($runtime -eq [IO.Path]::GetPathRoot($runtime).TrimEnd('\') -or $runtime.Equa
 foreach ($reserved in @($env:windir, $env:ProgramFiles, ${env:ProgramFiles(x86)})) {
     if ($reserved -and ($runtime.Equals($reserved, [StringComparison]::OrdinalIgnoreCase) -or $runtime.StartsWith($reserved + '\', [StringComparison]::OrdinalIgnoreCase))) { throw 'Do not use a system directory for runtime data.' }
 }
-if ($SiteHost -notmatch '^[A-Za-z0-9][A-Za-z0-9.-]*$') { throw 'SiteHost must be localhost, an IPv4 address, or a DNS hostname (without a scheme, port, or path).' }
+. (Join-Path $PSScriptRoot 'Gateway.ps1')
+$gateway = Resolve-GatewaySettings -RuntimeDirectory $runtime -Overrides $PSBoundParameters
+$caddy = Get-GatewayCaddyfile -Settings $gateway -WebRoot (Join-Path $repo 'frontend\dist')
+if ($Preview) {
+    Write-Host "Gateway: https://$($gateway.site_host); bind=$($gateway.listen_address); TLS=$($gateway.tls_mode)"
+    Write-Output $caddy
+    return
+}
+$identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+if (-not ([Security.Principal.WindowsPrincipal]$identity).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) { throw 'Run configuration in an elevated PowerShell to protect runtime secrets.' }
 foreach ($name in @('ChatFoundryBackend', 'ChatFoundryGateway')) {
     $service = Get-Service -Name $name -ErrorAction SilentlyContinue
     if ($service -and $service.Status -ne 'Stopped') { throw "Stop $name before reconfiguring." }
@@ -72,42 +82,31 @@ if ($InstallDependencies) {
 & $venvPython (Join-Path $PSScriptRoot 'runtime.py') --env-file $envPath check
 if ($LASTEXITCODE -ne 0) { throw 'Configuration or dependencies are not ready. Install dependencies before continuing.' }
 
-$webRoot = (Join-Path $repo 'frontend\dist').Replace('\', '/')
-$caddy = @"
-{
-    admin off
-    skip_install_trust
-}
-https://$SiteHost {
-    bind $ListenAddress
-    tls internal
-    header {
-        X-Content-Type-Options nosniff
-        Referrer-Policy same-origin
-        X-Frame-Options DENY
-        -Server
-    }
-    request_body {
-        max_size 8MB
-    }
-    handle /api/* {
-        reverse_proxy 127.0.0.1:8000 {
-            flush_interval -1
-            header_up X-Forwarded-For {remote_host}
-            header_up X-Forwarded-Proto {scheme}
+# Validate before replacing the previous gateway configuration.
+$caddyPath = Join-Path $runtime 'Caddyfile'
+$caddyExe = Join-Path $runtime 'bin\caddy.exe'
+$candidate = Join-Path $runtime ('Caddyfile-' + [Guid]::NewGuid().ToString('N') + '.tmp')
+[IO.File]::WriteAllText($candidate, $caddy, $utf8)
+try {
+    if (Test-Path -LiteralPath $caddyExe) {
+        $previousData = $env:XDG_DATA_HOME
+        $previousConfig = $env:XDG_CONFIG_HOME
+        try {
+            $env:XDG_DATA_HOME = Join-Path $runtime 'caddy\data'
+            $env:XDG_CONFIG_HOME = Join-Path $runtime 'caddy\config'
+            & $caddyExe validate --config $candidate --adapter caddyfile
+            if ($LASTEXITCODE -ne 0) { throw 'Caddy validation failed; previous gateway configuration was preserved.' }
+        } finally {
+            $env:XDG_DATA_HOME = $previousData
+            $env:XDG_CONFIG_HOME = $previousConfig
         }
+    } else { Write-Host 'Caddy is not installed yet. Configuration will be validated during service installation.' }
+    if (Test-Path -LiteralPath $caddyPath) {
+        Copy-Item -LiteralPath $caddyPath -Destination ($caddyPath + '.before-configure') -Force
     }
-    handle /health {
-        reverse_proxy 127.0.0.1:8000
-    }
-    handle {
-        root * "$webRoot"
-        try_files {path} /index.html
-        file_server
-    }
-}
-"@
-[IO.File]::WriteAllText((Join-Path $runtime 'Caddyfile'), $caddy, $utf8)
+    [IO.File]::WriteAllText($caddyPath, $caddy, $utf8)
+    [IO.File]::WriteAllText((Join-Path $runtime 'gateway.json'), ($gateway | ConvertTo-Json), $utf8)
+} finally { Remove-Item -LiteralPath $candidate -Force -ErrorAction SilentlyContinue }
 function Escape-Xml([string]$Value) { return [Security.SecurityElement]::Escape($Value) }
 function Write-Service([string]$Id, [string]$Executable, [string]$Arguments, [string]$ExtraEnvironment) {
     $xml = @"
@@ -136,5 +135,9 @@ $runner = Join-Path $PSScriptRoot 'runtime.py'
 Write-Service 'ChatFoundryBackend' $venvPython ('"' + $runner + '" --env-file "' + $envPath + '" serve') ''
 $extra = '<env name="XDG_DATA_HOME" value="' + (Escape-Xml (Join-Path $runtime 'caddy\data')) + '" /><env name="XDG_CONFIG_HOME" value="' + (Escape-Xml (Join-Path $runtime 'caddy\config')) + '" />'
 Write-Service 'ChatFoundryGateway' (Join-Path $runtime 'bin\caddy.exe') ('run --config "' + (Join-Path $runtime 'Caddyfile') + '" --adapter caddyfile') $extra
-Write-Host "Configured https://$SiteHost, listening on $ListenAddress. No firewall rule or Windows service has been installed."
+Write-Host "Configured https://$($gateway.site_host), listening on $($gateway.listen_address), TLS=$($gateway.tls_mode). Settings saved to gateway.json."
+if ($gateway.tls_mode -eq 'Public') {
+    Write-Host 'Public TLS: configure DNS and a reachable public endpoint; allow TCP 80/443 through cloud and Windows firewalls. Caddy obtains/renews certificates automatically.'
+} else { Write-Host 'Internal TLS: trust this deployment local CA on each accessing client.' }
+Write-Host 'No firewall rule or Windows service has been installed.'
 Write-Host "Next: place caddy.exe and WinSW-x64.exe in $runtime\bin, then run Manage-Services.ps1 -Action Install."

@@ -11,7 +11,7 @@ def load_environment(path: Path):
     load_dotenv(path, override=True, interpolate=False)
     os.environ['CHATFOUNDRY_ENV_FILE'] = str(path)
     os.environ['APP_ENV'] = 'production'
-    # DLL/BLAS线程数由服务器配置控制，避免4核机器上过量创建线程。
+    # DLL/BLAS线程数由服务器配置控制，避免资源受限环境中过量创建线程。
     os.environ.setdefault('OMP_NUM_THREADS', '1')
     os.environ.setdefault('MKL_NUM_THREADS', '1')
     os.environ.setdefault('TOKENIZERS_PARALLELISM', 'false')

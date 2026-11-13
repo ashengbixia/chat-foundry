@@ -47,12 +47,13 @@ class BrowserReaderTests(unittest.IsolatedAsyncioTestCase):
                 200, headers={'content-type': 'text/html'}, stream=Stream())), **kwargs)
         document = {'url': 'https://example.com/', 'title': '动态文章', 'text': '加载后的正文', 'retrieved_at': 100}
         with patch.object(webpage, 'resolve_public_ip', AsyncMock(return_value='93.184.216.34')), \
+             patch.object(webpage.settings, 'web_loader_engine', 'auto'), \
              patch.object(webpage.httpx, 'AsyncClient', factory), \
              patch.object(browser_reader, 'render_page', AsyncMock(return_value=document)) as render:
             self.assertEqual(await webpage.fetch_page('https://example.com/'), document)
         render.assert_awaited_once_with('https://example.com/')
 
     async def test_disabled_browser_explains_configuration(self):
-        with patch.object(browser_reader.settings, 'web_browser_enabled', False):
+        with patch.object(browser_reader.settings, 'web_browser_enabled', False), patch.object(browser_reader.settings, 'web_loader_engine', 'safe_web'):
             with self.assertRaisesRegex(ValueError, 'WEB_BROWSER_ENABLED'):
                 await browser_reader.render_page('https://example.com/')

@@ -7,6 +7,8 @@ export const useAuthStore = defineStore('auth', () => { // 登录身份以服务
   const user = ref<UserInfo | null>(null)
   const loading = ref(true)
   const setupRequired = ref(false)
+  const registrationEnabled = ref(true)
+  const bootstrapRequired = ref(false)
   const error = ref('')
   let revision = 0 // 多个失效通知同时到达时，只接受最新一次身份检查
   function notifyTabs() { // 只通知其他标签页身份变化，不保存密码、Token或个人资料
@@ -18,10 +20,13 @@ export const useAuthStore = defineStore('auth', () => { // 登录身份以服务
     error.value = ''
     try {
       const account = await api.getCurrentUser()
-      const setup = account ? false : (await api.getAuthConfig()).setup_required
+      const config = await api.getAuthConfig()
+      const setup = config?.setup_required ?? false
       if (current !== revision) return
       user.value = account
       setupRequired.value = setup
+      registrationEnabled.value = config?.registration_enabled ?? true
+      bootstrapRequired.value = config?.bootstrap_required ?? false
     } catch (cause) {
       if (current === revision) error.value = cause instanceof Error ? cause.message : '检查登录状态失败'
     } finally { if (current === revision) loading.value = false }
@@ -34,8 +39,8 @@ export const useAuthStore = defineStore('auth', () => { // 登录身份以服务
     error.value = ''
     notifyTabs()
   }
-  async function register(username: string, password: string, requestAdmin: boolean) {
-    const account = await api.signup(username, password, setupRequired.value, requestAdmin)
+  async function register(username: string, password: string, requestAdmin: boolean, bootstrapToken = '') {
+    const account = await api.signup(username, password, setupRequired.value, requestAdmin, bootstrapToken)
     revision++
     setupRequired.value = false
     user.value = account
@@ -51,5 +56,5 @@ export const useAuthStore = defineStore('auth', () => { // 登录身份以服务
     error.value = ''
     notifyTabs()
   }
-  return { user, loading, setupRequired, error, initialize, signIn, register, signOut }
+  return { registrationEnabled, bootstrapRequired, user, loading, setupRequired, error, initialize, signIn, register, signOut }
 })

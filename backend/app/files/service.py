@@ -1,3 +1,4 @@
+from backend.app.core.config import settings
 import logging
 import hashlib
 import uuid
@@ -5,7 +6,7 @@ from pathlib import Path, PurePosixPath
 import anyio  # 异步读写磁盘文件，取消时保护清理过程
 from fastapi import HTTPException, UploadFile
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, update, delete
+from sqlalchemy import select, update, delete, func
 from backend.app.core.database import DATA_DIR
 from backend.app.models.file import File
 from backend.app.repositories.file import create_file, delete_file_rows, prepare_file_deletion, update_file
@@ -61,6 +62,12 @@ async def finalize_upload(session, file_id, text, size):  # SQLite写锁内确�
                 logger.exception("重复上传的临时文件清理将由后台重试：%s", file_id)
             await session.refresh(existing)  # 清理失败会回滚事务，返回前重新加载被过期的字段
             return existing
+        used, count = (await session.execute(select(func.coalesce(func.sum(File.size), 0), func.count()).where(File.user_id == current.user_id, File.status == 'completed'))).one()
+        total = (await session.execute(select(func.coalesce(func.sum(File.size), 0)).where(File.status == 'completed'))).scalar_one()
+        if used + size > settings.user_storage_bytes or count >= settings.user_file_count:
+            raise HTTPException(413, '个人文件存储额度已用完，请删除不需要的文件')
+        if total + size > settings.total_storage_bytes:
+            raise HTTPException(507, '服务器文件存储额度已用完，请联系管理员')
         current.content_hash = digest
         await update_file(session, file_id, size, text_content=text, commit=False)
         await session.commit()

@@ -78,6 +78,10 @@ async def stream_chat_history_events(
     last_checkpoint = 0.0
     phase = 'prepare_context'
     finish_only = False
+    iteration_limit = getattr(settings, 'chat_response_max_tool_call_iterations', 1024)
+    iteration_limit = None if iteration_limit == -1 else iteration_limit
+    tool_iterations = 0
+    model_requests = 0
     async def checkpoint(force=False):
         nonlocal last_checkpoint
         if run_scope and assistant_message_id and (force or time.monotonic() - last_checkpoint >= 1):
@@ -145,9 +149,9 @@ async def stream_chat_history_events(
         tool_context.is_subagent = run_scope is not None
         from backend.app.tools.web_scope import requested_origins
         tool_context.web_origins = run_scope.web_origins if run_scope else requested_origins(history)
-        if tool_context.web_origins:
+        if tool_context.web_origins and getattr(settings, 'web_url_policy', 'public') == 'sources':
             messages[0]['content'] += '\n用户明确指定的资料站点：' + ', '.join(sorted(tool_context.web_origins)) + '。允许直接读取这些站点不带查询参数的公开文档路径，也可委派；猜测路径不等于读取成功，404或跳转须以真实响应为准。先尝试目标文档，找不到时沿真实目录链接定位，不要仅停留在首页。'
-        messages[0]['content'] += '\n没有给出资料站点地址时，先搜索定位真实来源，或按名称委派给子任务自行定位，不预设网站入口。任务中模型提出的网址只是候选，不代表官方身份、已获访问范围或已经读取。找到真实链接后可在该站内浏览不带查询参数的公开文档路径。'
+        messages[0]['content'] += '\n联网工具按需使用，不强制每轮搜索。可以搜索定位资料，也可直接读取公开网址；提出的网址不代表已经读取或已核实官方身份，必须以实际响应为准。不预设网站入口。需要多个事实时，围绕尚缺的信息继续查阅相关页面，不用相似字段替代尚未核实的信息。'
         if run_scope:
             tool_context.allowed_tools = run_scope.tools
             tool_context.approved_urls = run_scope.urls
@@ -177,6 +181,7 @@ async def stream_chat_history_events(
         automatic = [item for item in automatic if item[0] in allowed_auto]
         for name, arguments, _ in automatic:
             tool_attempts += 1
+            metadata['tool_call_count'] = tool_attempts
             auto_started = time.time()
             call_id = f"auto-{uuid.uuid4().hex}"
             arguments = json.dumps(arguments, ensure_ascii=False)
@@ -204,7 +209,7 @@ async def stream_chat_history_events(
         # ③ 读取正文或工具调用；执行工具后带着结果再次请求模型。
         capability_message = {'role': 'system', 'content': ''}
         messages.insert(1, capability_message)
-        for request_index in range(5):  # 最多请求模型 5 次，最后一次不再提供工具
+        while True:  # 每批工具调用算一次迭代；达到上限后仍留一次最终回答。
             allowed_file_ids = await current_scope()
             tool_calls = {}  # 按 index 分开拼接本次请求中的工具调用
             round_text_parts = []  # 本次模型请求产生的正文
@@ -212,27 +217,27 @@ async def stream_chat_history_events(
             reasoning_output = None
             capability_message['content'] = '本轮实际能力状态（以此及工具清单为准，不推测环境变化）：' + json.dumps({
                 'search': 'enabled' if tool_context.web_search_enabled and getattr(settings, 'web_search_enabled', True) else 'chat_disabled' if not tool_context.web_search_enabled else 'server_disabled',
-                'search_attempts_remaining': 0 if tool_context.state.get('search_web', {}).get('exhausted') else max(0, 3 - tool_context.state.get('search_web', {}).get('attempts', 0)),
-                'tool_calls_remaining': max(0, 12 - tool_attempts),
-                'rounds_remaining': 4 - request_index}, ensure_ascii=False) + '。额度耗尽不再尝试该工具。只读取与当前问题有关的资料；短追问根据最近意图理解；足够回答就停止调用。'
+                'tool_iterations_remaining': None if iteration_limit is None else max(0, iteration_limit - tool_iterations)}, ensure_ascii=False) + '。上限耗尽时汇总已有资料。只读取与当前问题有关的资料；短追问根据最近意图理解；足够回答就停止调用。'
             capability_message['content'] += '当前日期（UTC）' + time.strftime('%Y-%m-%d', time.gmtime()) + '；搜索时不要无故加入过期年份。'
             phase = 'input_budget'
             available_tools = get_available_tools(allowed_file_ids, context=tool_context)
-            tools = available_tools if request_index < 4 and tool_attempts < 12 and not finish_only else None
+            tools = available_tools if (iteration_limit is None or tool_iterations < iteration_limit) and not finish_only else None
             trimmed, tools, finish_only, finish_reason = prepare_model_request(
                 messages, raw_tool_results, tools, settings.llm_context_window,
                 settings.llm_max_output_tokens, settings.llm_context_margin, finish_only)
             metadata['budget_estimator'] = 'utf8_bytes_upper_bound'
             if finish_only:
-                metadata['finish_only_reason'] = finish_reason or 'tool_limit'
+                metadata['finish_only_reason'] = finish_reason or 'tool_iteration_limit'
                 if raw_tool_results:
-                    metadata['synthesis_mode'] = 'independent_readonly'
+                    metadata['synthesis_mode'] = 'continuation' if any(item.get('role') == 'tool' for item in trimmed) else 'independent_readonly'
             if len(trimmed) < len(messages):
                 logger.info("本次模型输入裁剪了 %s 条旧消息，数据库历史保持不变", len(messages) - len(trimmed))
             messages = trimmed
             remember_visible_web_ranges(messages, raw_tool_results, tool_context)
-            if request_index == 0:
+            if model_requests == 0:
                 metadata['available_tools'] = [tool['function']['name'] for tool in tools or []]
+            model_requests += 1
+            metadata.update(model_request_count=model_requests, tool_call_iterations=tool_iterations, max_tool_call_iterations=iteration_limit)
             phase = 'model_request'
             events = stream_model_events(messages, tools, connection) if connection is not None else stream_model_events(messages, tools)
             async with aclosing(events) as stream:
@@ -283,6 +288,8 @@ async def stream_chat_history_events(
             for call in calls:
                 if not call["id"] or not call["function"]["name"]:
                     raise ValueError("模型返回的工具调用缺少 ID 或名称")
+            tool_iterations += 1
+            metadata['tool_call_iterations'] = tool_iterations
             messages.append({"role": "assistant", "content": round_text or None, "tool_calls": calls,
                              **({'reasoning_content': reasoning_output['text']} if reasoning_output else {})})
             # 委派批次使用独立上下文和Session；父Session不参与并发校验或子任务执行。
@@ -305,7 +312,7 @@ async def stream_chat_history_events(
                             return json.dumps({'error': str(error)}, ensure_ascii=False)
                         finally:
                             delegated_finished[call['id']] = time.time()
-                for call in calls[:max(0, 12 - tool_attempts)]:
+                for call in calls:
                     if call['function']['name'] == 'delegate_task':
                         delegated_started[call['id']] = time.time()
                         delegated[call['id']] = asyncio.create_task(execute_delegation(call))
@@ -321,9 +328,8 @@ async def stream_chat_history_events(
                 yield format_sse("tool_call", {"call_id": call["id"], "name": name, "arguments": arguments, "display_name": get_tool_label(name)})
                 await asyncio.sleep(0)  # 已发送调用通知后，允许取消发生在实际执行之前
                 try:
-                    if tool_attempts >= 12:
-                        raise ValueError('本轮工具调用额度已用完，请基于已取得的资料回答，不再追加调用')
                     tool_attempts += 1
+                    metadata['tool_call_count'] = tool_attempts
                     allowed_file_ids = await current_scope()
                     tool_context.call_id = call['id']
                     result = await delegated[call['id']] if call['id'] in delegated else await execute_tool(name, arguments, context=tool_context)

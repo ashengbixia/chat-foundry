@@ -46,11 +46,15 @@ class ResearchFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result['source_count'], 2)
         self.assertIn('不足以', result['limitations'])
 
-    async def test_homepage_and_different_domain_do_not_meet_explicit_site_query(self):
+    async def test_search_preserves_site_query_and_does_not_claim_candidates_are_verified(self):
         found = [{'url': 'https://docs.sample.example/', 'title': '文档首页', 'snippet': 'guides and tutorials'},
                  {'url': 'https://mirror.example/guide', 'title': '教程镜像', 'snippet': 'tutorial'}]
-        self.assertEqual(search_web.assess_search_results('docs.sample.example tutorial guide', found), 'low_relevance')
-        self.assertEqual(search_web.provider_query('docs.python.org/3/tutorial/index.html The Python Tutorial'), 'Python Tutorial')
+        query = 'site:docs.sample.example tutorial guide'
+        with patch.object(search_web, 'search_provider', AsyncMock(return_value=found)) as provider:
+            result = json.loads(await execute_tool('search_web', json.dumps({'query': query}), context=ToolContext(web_search_enabled=True)))
+        self.assertEqual(provider.await_args.args[0], query)
+        self.assertEqual(result['results'], found)
+        self.assertNotIn('quality', result)
         footer = missing_source_footer('已读取两篇资料，但尚不能核实全部结论。', [2, 1])
         self.assertIn('[1] [2]', footer)
         self.assertEqual(missing_source_footer('有依据[1]', [1]), '')

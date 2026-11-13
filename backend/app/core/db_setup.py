@@ -89,7 +89,9 @@ def main():  # 直接运行模块时提供升级入口
     parser.add_argument("--upgrade", action="store_true", help="停止后端后使用；先备份，再升级旧数据库")
     arguments = parser.parse_args()
     try:
-        result = prepare_database(upgrade=arguments.upgrade)
+        from backend.app.core.instance import InstanceLock
+        with InstanceLock(DATABASE_FILE.parent):
+            result = prepare_database(upgrade=arguments.upgrade)
     except Exception as error:
         parser.exit(1, f"{error}\n")
     print(f"数据库检查完成：{result['status']}，版本：{result['revision']}")

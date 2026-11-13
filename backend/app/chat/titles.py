@@ -69,7 +69,8 @@ async def generate_title(question, answer, connection):
     headers = {'Content-Type': 'application/json'}
     if key:
         headers['Authorization'] = f'Bearer {key}'
-    async with httpx.AsyncClient(timeout=min(connection.timeout, 20)) as client:
+    from backend.app.llm.http import model_client
+    async with model_client(connection, timeout=min(connection.timeout, 20)) as client:
         response = await client.post(connection.base_url.rstrip('/') + '/chat/completions', headers=headers,
                                      json={'model': connection.model, 'messages': messages, 'stream': False, 'max_tokens': max_tokens})
         response.raise_for_status()

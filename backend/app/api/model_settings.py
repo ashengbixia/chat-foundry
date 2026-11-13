@@ -1,3 +1,4 @@
+from backend.app.llm.http import model_client, ModelAccessError
 import json
 import httpx
 import anyio
@@ -77,7 +78,7 @@ def public_config(row: UserModelSetting | None) -> dict:  # 永不返回密钥�
     configured = bool(row.encrypted_api_key) if row.key_source == "personal" else bool(settings.llm_api_key.get_secret_value()) if row.key_source == "environment" else False
     return {"provider": row.provider, "base_url": row.base_url, "model": row.model, "timeout": row.timeout, "key_source": row.key_source, "key_configured": configured}
 
-def resolve_connection(data: ModelServiceInput, old: UserModelSetting | None) -> ModelConnection:
+def resolve_connection(data: ModelServiceInput, old: UserModelSetting | None, user_id: str | None = None) -> ModelConnection:
     try:
         if data.key_source == "environment":
             if data.provider != "server" or not settings.llm_base_url or data.base_url != normalize_url(settings.llm_base_url):
@@ -93,7 +94,7 @@ def resolve_connection(data: ModelServiceInput, old: UserModelSetting | None) ->
                 key = decrypt_api_key(old.encrypted_api_key)
         else:
             key = ""
-        return ModelConnection(data.base_url, data.model, data.timeout, SecretStr(key), data.key_source == "none")
+        return ModelConnection(data.base_url, data.model, data.timeout, SecretStr(key), data.key_source == "none", user_id)
     except ValueError as error:
         raise HTTPException(400, str(error)) from None
 
@@ -102,9 +103,9 @@ async def get_user_model_connection(user: User = Depends(get_current_user), sess
     if row is None:
         if not settings.llm_base_url or not settings.llm_model or not settings.llm_api_key.get_secret_value():
             raise HTTPException(400, "请先在设置的模型服务中配置地址、模型和Key")
-        return ModelConnection(settings.llm_base_url.rstrip("/"), settings.llm_model, settings.llm_timeout, settings.llm_api_key)
+        return ModelConnection(settings.llm_base_url.rstrip("/"), settings.llm_model, settings.llm_timeout, settings.llm_api_key, user_id=user.id)
     data = ModelServiceInput(provider=row.provider, base_url=row.base_url, model=row.model, timeout=row.timeout, key_source=row.key_source)
-    return resolve_connection(data, row)
+    return resolve_connection(data, row, user.id)
 
 @router.get("")
 async def get_model_settings(user: User = Depends(get_current_user), session: AsyncSession = Depends(get_db)):
@@ -119,7 +120,7 @@ async def save_model_settings(data: ModelServiceInput, user: User = Depends(get_
         raise HTTPException(400, "请填写模型名称")
     await session.execute(update(User).where(User.id == user.id).values(name=User.name))  # 保存、恢复和快捷选择共用写锁
     row = await session.get(UserModelSetting, user.id)
-    connection = resolve_connection(data, row)
+    connection = resolve_connection(data, row, user.id)
     encrypted = None
     if data.key_source == "personal":
         try:
@@ -169,7 +170,7 @@ async def request_provider(connection: ModelConnection, models: bool) -> dict:  
         headers["Authorization"] = f"Bearer {key}"
     payload = None if models else {"model": connection.model, "messages": [{"role": "user", "content": "Reply only OK, without explanation. /no_think"}], "max_tokens": 512, "stream": False}  # 给思考型模型预留空间，支持/no_think的模型可直接短答
     try:
-        async with httpx.AsyncClient(timeout=min(connection.timeout, 20 if models else 120), follow_redirects=False) as client:
+        async with model_client(connection, timeout=min(connection.timeout, 20 if models else 120), follow_redirects=False) as client:
             async with client.stream("GET" if models else "POST", connection.base_url + ("/models" if models else "/chat/completions"), headers=headers, json=payload) as response:
                 if response.status_code >= 300:
                     messages = {401: "API Key未通过认证，请重新填写有效Key；需要认证的服务不能选择无需Key", 403: "模型服务拒绝访问，请检查账号权限或模型授权", 404: "此服务未提供模型列表接口，可手动填写模型ID" if models else "没有找到聊天接口或所选模型，请检查基础地址与模型ID", 429: "模型服务请求过于频繁或额度不足，请检查配额后稍后重试"}
@@ -184,6 +185,10 @@ async def request_provider(connection: ModelConnection, models: bool) -> dict:  
         if not isinstance(result, dict):
             raise ValueError()
         return result
+    except ModelAccessError as error:
+        raise HTTPException(403, str(error)) from None
+    except httpx.PoolTimeout:
+        raise HTTPException(429, '模型请求排队超时，请稍后重试') from None
     except httpx.TimeoutException:
         raise HTTPException(504, "连接检查超时，请检查服务是否可访问") from None
     except httpx.RequestError:
@@ -201,7 +206,7 @@ async def get_ollama_capabilities(connection: ModelConnection, models: list[str]
         headers["Authorization"] = f"Bearer {key}"
     capabilities = {}
     semaphore = anyio.Semaphore(4)
-    async with httpx.AsyncClient(timeout=min(connection.timeout, 3), follow_redirects=False) as client:
+    async with model_client(connection, timeout=min(connection.timeout, 3), follow_redirects=False) as client:
         async def inspect(model):
             async with semaphore:
                 try:
@@ -227,7 +232,7 @@ async def get_ollama_capabilities(connection: ModelConnection, models: list[str]
 
 @router.post("/models")
 async def discover_models(data: ModelServiceInput, user: User = Depends(get_current_user), session: AsyncSession = Depends(get_db)):
-    connection = resolve_connection(data, await session.get(UserModelSetting, user.id))
+    connection = resolve_connection(data, await session.get(UserModelSetting, user.id), user.id)
     result = await request_provider(connection, True)
     if not isinstance(result.get("data"), list):
         raise HTTPException(400, "此服务未返回兼容的模型列表，请手动填写模型名称")
@@ -247,7 +252,7 @@ async def discover_models(data: ModelServiceInput, user: User = Depends(get_curr
 async def test_model_service(data: ModelServiceInput, user: User = Depends(get_current_user), session: AsyncSession = Depends(get_db)):
     if not data.model:
         raise HTTPException(400, "请先填写模型名称")
-    result = await request_provider(resolve_connection(data, await session.get(UserModelSetting, user.id)), False)
+    result = await request_provider(resolve_connection(data, await session.get(UserModelSetting, user.id), user.id), False)
     choices = result.get("choices")
     if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict) or not isinstance(choices[0].get("message"), dict):
         raise HTTPException(400, "模型服务未返回有效聊天消息，请检查接口和模型类型")

@@ -1,4 +1,5 @@
 import time
+import hmac
 import anyio
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator
@@ -10,6 +11,7 @@ from backend.app.core.database import get_db
 from backend.app.models.user import User, UserSession
 from backend.app.models.chat import Chat
 from backend.app.models.file import File
+from backend.app.core.config import settings
 
 router = APIRouter(prefix="/api/auth", tags=["账号管理"])
 
@@ -36,6 +38,7 @@ class Signup(Credentials):
     password: SecretStr = Field(min_length=8, max_length=128)
     setup: bool = False  # 首次初始化单独确认，普通注册不能意外变成初始管理员
     request_admin: bool = False  # 只提交申请，不直接授予权限
+    bootstrap_token: SecretStr = Field(default_factory=lambda: SecretStr(''), max_length=256)
 
 class Profile(BaseModel):
     name: str = Field(min_length=1, max_length=80)
@@ -50,13 +53,19 @@ class RoleChange(BaseModel):
 @router.get("/config")
 async def auth_config(session: AsyncSession = Depends(get_db)):  # 登录页只需要知道是否尚未初始化
     count = (await session.execute(select(func.count()).select_from(User))).scalar_one()
-    return {"setup_required": count == 0}
+    return {"setup_required": count == 0, "registration_enabled": settings.registration_enabled, "bootstrap_required": settings.app_env == 'production' and count == 0}
 
 @router.post("/signup", response_model=UserResponse, status_code=201, dependencies=[Depends(limit_auth_attempts)])
 async def signup(data: Signup, response: Response, session: AsyncSession = Depends(get_db)):
     password_hash = await anyio.to_thread.run_sync(hash_password, data.password.get_secret_value())
     await session.execute(text("BEGIN IMMEDIATE"))  # 串行核对第一个账号，避免并发注册产生多个初始管理员
     count = (await session.execute(select(func.count()).select_from(User))).scalar_one()
+    if count and not settings.registration_enabled:
+        raise HTTPException(403, '公开注册已关闭，请联系管理员创建账号')
+    if not count and settings.app_env == 'production':
+        expected = settings.bootstrap_token.get_secret_value()
+        if not expected or not hmac.compare_digest(expected.encode(), data.bootstrap_token.get_secret_value().encode()):
+            raise HTTPException(403, '请填写部署管理员设置的初始化口令')
     if (count == 0) != data.setup:
         raise HTTPException(409, "初始化状态已变化，请刷新页面后重试")
     if (await session.execute(select(User.id).where(User.username == data.username))).scalar_one_or_none():
@@ -125,6 +134,19 @@ async def request_admin(user: User = Depends(get_current_user), session: AsyncSe
 @router.get("/users", response_model=list[UserResponse], dependencies=[Depends(get_admin)])
 async def list_users(session: AsyncSession = Depends(get_db)):
     return (await session.execute(select(User).order_by(User.created_at, User.id))).scalars().all()
+
+@router.post('/users', response_model=UserResponse, status_code=201)
+async def create_user(data: Signup, admin: User = Depends(get_admin), session: AsyncSession = Depends(get_db)):
+    password_hash = await anyio.to_thread.run_sync(hash_password, data.password.get_secret_value())
+    locked = await session.execute(update(User).where(User.id == admin.id, User.role == 'admin').values(name=User.name))
+    if not locked.rowcount:
+        raise HTTPException(403, '管理员权限已变化')
+    if (await session.execute(select(User.id).where(User.username == data.username))).scalar_one_or_none():
+        raise HTTPException(409, '该用户名已注册')
+    user = User(username=data.username, name=data.username, password_hash=password_hash, role='user', admin_requested=False)
+    session.add(user)
+    await session.commit()
+    return user
 
 @router.patch("/users/{user_id}", response_model=UserResponse)
 async def set_role(user_id: str, data: RoleChange, admin: User = Depends(get_admin), session: AsyncSession = Depends(get_db)):

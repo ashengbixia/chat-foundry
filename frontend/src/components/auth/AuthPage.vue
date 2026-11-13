@@ -8,6 +8,7 @@ const isSignup = computed(() => auth.setupRequired || registering.value)
 const username = ref('')
 const password = ref('')
 const confirmPassword = ref('')
+const bootstrapToken = ref('')
 const requestAdmin = ref(false) // 申请只进入审核，不会自行提升权限
 const submitting = ref(false)
 const error = ref('')
@@ -17,7 +18,7 @@ async function submit() {
   if (isSignup.value && password.value !== confirmPassword.value) { error.value = '两次输入的密码不一致'; return }
   submitting.value = true
   try {
-    if (isSignup.value) await auth.register(username.value.trim(), password.value, requestAdmin.value)
+    if (isSignup.value) await auth.register(username.value.trim(), password.value, requestAdmin.value, bootstrapToken.value)
     else await auth.signIn(username.value.trim(), password.value)
     password.value = ''
     confirmPassword.value = ''
@@ -36,6 +37,7 @@ function switchMode() { registering.value = !registering.value; password.value =
       <h1 id="auth-title">{{ auth.setupRequired ? '建立你的工作空间' : isSignup ? '创建账号' : '欢迎回来' }}</h1>
       <p>{{ auth.setupRequired ? '设置初始管理员账号。已有会话和资料会归入这个账号。' : isSignup ? '注册后即可使用，聊天和资料仅属于你。' : '登录，继续你的对话与探索。' }}</p>
       <form @submit.prevent="submit">
+        <label v-if="auth.setupRequired && auth.bootstrapRequired">初始化口令<input v-model="bootstrapToken" type="password" autocomplete="off" maxlength="256" required :disabled="submitting" placeholder="由部署管理员提供" /></label>
         <label>用户名<input v-model="username" type="text" :maxlength="isSignup ? 80 : 254" pattern="\S+" autocomplete="username" placeholder="输入用户名" required :disabled="submitting" /></label>
         <label>密码<input v-model="password" type="password" :minlength="isSignup ? 8 : 1" maxlength="128" :autocomplete="isSignup ? 'new-password' : 'current-password'" required :disabled="submitting" :placeholder="isSignup ? '至少8个字符' : '请输入密码'" /></label>
         <label v-if="isSignup">确认密码<input v-model="confirmPassword" type="password" minlength="8" maxlength="128" autocomplete="new-password" required :disabled="submitting" /></label>
@@ -43,7 +45,7 @@ function switchMode() { registering.value = !registering.value; password.value =
         <p v-if="error" class="error" role="alert">{{ error }}</p>
         <button type="submit" :disabled="submitting">{{ submitting ? '正在处理…' : auth.setupRequired ? '创建管理员并开始使用' : isSignup ? '注册并进入' : '登录' }}</button>
       </form>
-      <button v-if="!auth.setupRequired" type="button" class="switch-mode" :disabled="submitting" @click="switchMode">{{ isSignup ? '已有账号？去登录' : '还没有账号？注册' }}</button>
+      <button v-if="!auth.setupRequired && auth.registrationEnabled" type="button" class="switch-mode" :disabled="submitting" @click="switchMode">{{ isSignup ? '已有账号？去登录' : '还没有账号？注册' }}</button>
     </section>
     <footer>让复杂的事情，变得清楚一点。</footer>
   </main>

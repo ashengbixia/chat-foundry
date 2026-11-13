@@ -2,7 +2,7 @@
 import { nextTick, onMounted, onUnmounted, ref } from 'vue'
 import { useAuthStore } from '../../stores/auth'
 import { useChatStore } from '../../stores/chat'
-import { changePassword, getCurrentUser, listUsers, requestAdmin, setUserRole, updateProfile } from '../../api/auth'
+import { changePassword, createUser, getCurrentUser, listUsers, requestAdmin, setUserRole, updateProfile } from '../../api/auth'
 import type { UserInfo } from '../../api/auth'
 import { createDialogBackdrop } from '../../utils/dialog'
 
@@ -17,6 +17,9 @@ const currentPassword = ref('')
 const newPassword = ref('')
 const confirmPassword = ref('')
 const members = ref<UserInfo[]>([])
+const newUsername = ref('')
+const initialPassword = ref('')
+async function addMember() { await act(async () => { const record = await createUser(newUsername.value.trim(), initialPassword.value); members.value.push(record); newUsername.value = initialPassword.value = '' }, '普通账号已创建') }
 const busy = ref(false)
 const error = ref('')
 const notice = ref('')
@@ -31,7 +34,7 @@ async function openAccount(next: 'profile' | 'members') {
   closed = false
   tab.value = next
   name.value = auth.user?.name ?? ''
-  currentPassword.value = newPassword.value = confirmPassword.value = ''
+  currentPassword.value = newPassword.value = confirmPassword.value = initialPassword.value = ''
   error.value = notice.value = ''
   await nextTick()
   dialog.value?.showModal()
@@ -48,7 +51,7 @@ async function act(action: () => Promise<void>, message = '') { // 统一串行�
 async function saveName() { await act(async () => { const account = await updateProfile(name.value.trim()); if (auth.user?.id === accountId) auth.user = account }, '名称已更新') }
 async function savePassword() {
   if (newPassword.value !== confirmPassword.value) { error.value = '两次输入的新密码不一致'; return }
-  await act(async () => { await changePassword(currentPassword.value, newPassword.value); currentPassword.value = newPassword.value = confirmPassword.value = '' }, '密码已更新，其他设备的旧登录已失效')
+  await act(async () => { await changePassword(currentPassword.value, newPassword.value); currentPassword.value = newPassword.value = confirmPassword.value = initialPassword.value = '' }, '密码已更新，其他设备的旧登录已失效')
 }
 async function applyAdmin() { await act(async () => { const account = await requestAdmin(); if (auth.user?.id === accountId) auth.user = account }, '申请已提交，等待管理员批准') }
 async function refreshAccount() { await act(async () => { const account = await getCurrentUser(); if (auth.user?.id === accountId) auth.user = account }, '账号状态已刷新') }
@@ -58,13 +61,13 @@ async function updateRole(member: UserInfo, role: UserInfo['role']) {
 }
 async function signOut() {
   closed = false // 即使此前关闭过弹窗，退出失败也要在菜单里显示错误
-  chat.stopReply() // 退出前中止当前浏览器正在进行的回答
+  chat.stopAllReplies() // 退出前中止当前浏览器所有会话的回答
   await act(async () => { await auth.signOut() })
 }
 function closeAccount() {
   closed = true
   dialog.value?.close()
-  currentPassword.value = newPassword.value = confirmPassword.value = ''
+  currentPassword.value = newPassword.value = confirmPassword.value = initialPassword.value = ''
 }
 </script>
 
@@ -91,6 +94,7 @@ function closeAccount() {
       </template>
       <template v-else>
         <p class="muted">管理员只能管理账号权限，不能通过此入口查看他人的私人会话和资料。</p>
+        <form @submit.prevent="addMember"><h3>创建普通账号</h3><label>用户名<input v-model="newUsername" required maxlength="80" pattern="\S+" autocomplete="off" :disabled="busy" /></label><label>初始密码<input v-model="initialPassword" type="password" required minlength="8" maxlength="128" autocomplete="new-password" :disabled="busy" /></label><button type="submit" :disabled="busy">创建账号</button></form>
         <p v-if="busy" role="status">正在处理…</p>
         <ul class="member-list"><li v-for="member in members" :key="member.id"><div><strong>{{ member.name }}</strong><small>{{ member.username }}</small><small>{{ member.role === 'admin' ? '管理员' : member.role === 'disabled' ? '已停用' : '普通用户' }}{{ member.admin_requested ? ' · 申请管理员中' : '' }}</small></div><div v-if="member.id !== auth.user.id" class="member-actions"><button v-if="member.admin_requested && member.role !== 'disabled'" type="button" :disabled="busy" @click="updateRole(member, 'admin')">批准</button><button v-if="member.admin_requested || member.role !== 'user'" type="button" :disabled="busy" @click="updateRole(member, 'user')">{{ member.admin_requested ? '拒绝申请' : '设为普通用户' }}</button><button v-if="member.role !== 'disabled'" type="button" :disabled="busy" @click="updateRole(member, 'disabled')">停用</button></div><small v-else class="muted">当前账号</small></li></ul>
       </template>

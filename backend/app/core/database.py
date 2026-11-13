@@ -2,10 +2,12 @@ from pathlib import Path
 
 from sqlalchemy.ext.asyncio import async_sessionmaker,create_async_engine
 from sqlalchemy.orm import DeclarativeBase
+from sqlalchemy import event
+from backend.app.core.config import settings
 
 
 # 数据目录固定在 backend/data，不随启动目录改变。
-DATA_DIR = Path(__file__).resolve().parents[2] / "data"
+DATA_DIR = settings.data_dir.expanduser().resolve()
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 
 DATABASE_FILE = DATA_DIR / "app.db"
@@ -15,6 +17,14 @@ DATABASE_URL = f"sqlite+aiosqlite:///{DATABASE_FILE.as_posix()}"
 
 # 数据库引擎：管理底层连接，导入时通常还不会真正连接。
 engine = create_async_engine(DATABASE_URL)
+
+@event.listens_for(engine.sync_engine, 'connect')
+def configure_sqlite(connection, _record):
+    cursor = connection.cursor()
+    cursor.execute('PRAGMA busy_timeout=15000')
+    cursor.execute('PRAGMA journal_mode=WAL')
+    cursor.execute('PRAGMA foreign_keys=ON')
+    cursor.close()
 
 
 # 会话工厂：每次调用它，创建一个独立的数据库操作会话。

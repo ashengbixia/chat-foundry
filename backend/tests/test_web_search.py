@@ -14,7 +14,7 @@ from backend.tests.test_webpage import ChunkStream
 
 class WebSearchTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
-        self.config = SimpleNamespace(web_search_enabled=True, web_search_provider='bing', web_search_api_key=SecretStr(''))
+        self.config = SimpleNamespace(web_search_enabled=True, web_search_provider='bing', web_search_api_key=SecretStr(''), web_search_result_count=3, web_search_max_attempts=None)
         self.change = patch.object(web_search, 'settings', self.config)
         self.change.start()
         self.addCleanup(self.change.stop)
@@ -80,6 +80,7 @@ class WebSearchTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(requests[1].headers['Host'], 'cn.bing.com')
 
     async def test_cache_limits_and_search_to_read_chain(self):
+        self.config.web_search_max_attempts = 3  # 可选管理员限额，不是默认策略。
         found = [{'title': 'Docs', 'url': 'https://example.com/article', 'snippet': 'Search snippet'}]
         context = ToolContext(web_search_enabled=True, history=[SimpleNamespace(role='user', content='请联网搜索官方文档')])
         with patch.object(web_search, 'search_provider', AsyncMock(side_effect=[found, [{**found[0], 'url': 'https://example.com/second'}], [{**found[0], 'url': 'https://example.com/third'}]])) as provider:
@@ -94,7 +95,7 @@ class WebSearchTests(unittest.IsolatedAsyncioTestCase):
         message = SimpleNamespace(role='assistant', status='completed', output=[{'type': 'function_call', 'call_id': 's', 'name': 'search_web'}, {'type': 'function_call_output', 'call_id': 's', 'output': first}])
         self.assertEqual(collect_history_sources([message]), {})
         document = {'title': 'Docs', 'url': found[0]['url'], 'text': 'Actual page content', 'retrieved_at': 100}
-        with patch.object(webpage, 'fetch_page', AsyncMock(return_value=document)):
+        with patch.object(webpage.settings, 'web_url_policy', 'sources'), patch.object(webpage, 'fetch_page', AsyncMock(return_value=document)):
             raw = await execute_tool('read_webpage', '{"url":"https://example.com/article"}', context=context)
             next_turn = ToolContext(history=[message])
             await execute_tool('read_webpage', '{"url":"https://example.com/article"}', context=next_turn)
@@ -102,19 +103,17 @@ class WebSearchTests(unittest.IsolatedAsyncioTestCase):
                 await execute_tool('read_webpage', '{"url":"https://example.com/article?leak=secret"}', context=next_turn)
         self.assertEqual(json.loads(add_citation_ids('read_webpage', raw, {}, set()))['chunks'][0]['citation_id'], 1)
 
-    async def test_platform_homepages_do_not_match_topic_and_repeated_results_stop(self):
-        found = [{'title': '哔哩哔哩 bilibili 首页', 'url': 'https://www.bilibili.com/', 'snippet': '关于我们 下载客户端'}]
-        self.assertEqual(web_search.assess_search_results('bilibili 电影推荐', found), 'low_relevance')
-        self.assertEqual(web_search.assess_search_results('bilibili 电影推荐', [{**found[0], 'url': 'https://www.bilibili.com/movie', 'title': '哔哩哔哩电影频道'}]), 'topic_matched')
+    async def test_repeated_results_do_not_block_new_queries_and_default_count_is_three(self):
+        found = [{'title': str(index), 'url': f'https://example.com/{index}', 'snippet': '摘要'} for index in range(5)]
         context = ToolContext(web_search_enabled=True)
         with patch.object(web_search, 'search_provider', AsyncMock(return_value=found)) as provider:
-            await execute_tool('search_web', '{"query":"bilibili 电影推荐"}', context=context)
-            result = json.loads(await execute_tool('search_web', '{"query":"B站 电影有哪些"}', context=context))
-            self.assertTrue(result['stop_searching'])
+            for query in ('主题', 'site:example.com 主题', '主题 日期', '主题 官方说明'):
+                result = json.loads(await execute_tool('search_web', json.dumps({'query': query, 'count': 20}), context=context))
+            self.assertEqual(len(result['results']), 3)
             self.assertEqual(result['new_results'], 0)
-            with self.assertRaisesRegex(ValueError, '重复'):
-                await execute_tool('search_web', '{"query":"哔哩哔哩 电影"}', context=context)
-        self.assertEqual(provider.await_count, 2)
+            self.assertIsNone(result['attempts_remaining'])
+        self.assertEqual(provider.await_count, 4)
+        self.assertEqual(provider.await_args_list[1].args, ('site:example.com 主题', 3))
 
     async def test_disabled_and_malformed_results_are_explicit(self):
         self.config.web_search_enabled = False

@@ -2,7 +2,7 @@ import unittest
 from unittest.mock import AsyncMock, patch
 from backend.app.chat.reference_context import prepare_auto_reference
 from backend.app.chat.history_sources import read_history_sources
-from backend.app.tools.local import read_webpage as webpage, search_web as web_search
+from backend.app.tools.local import read_webpage as webpage
 from backend.app.tools.runtime import ToolContext
 
 
@@ -42,4 +42,3 @@ class ReadingPolicyTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn('回答二', text)
         self.assertIn('分享中的助手', text)
         self.assertNotIn('外站过程', text)
-        self.assertEqual(web_search.assess_search_results('best websites to learn Python', [{'title': 'Best dictionary', 'url': 'https://dictionary.example', 'snippet': 'best definition'}]), 'low_relevance')

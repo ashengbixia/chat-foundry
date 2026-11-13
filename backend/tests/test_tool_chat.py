@@ -85,7 +85,8 @@ class ToolChatTests(unittest.IsolatedAsyncioTestCase):
         rounds = [[tool(call_id=f'time-{index}')] for index in range(4)]
         rounds.append([text('我尝试打开一个尚未核实的地址（'), tool(call_id='forbidden')])
         requests, _ = self.model(rounds)
-        await self.run_chat()
+        with patch.object(service.settings, 'chat_response_max_tool_call_iterations', 4, create=True):
+            await self.run_chat()
         self.assertIsNone(requests[-1][1])
         saved = self.update.call_args.kwargs
         self.assertEqual(saved['status'], 'failed')
@@ -220,7 +221,7 @@ class ToolChatTests(unittest.IsolatedAsyncioTestCase):
             await self.run_chat()
         self.assertEqual({item["function"]["name"] for item in requests[0][1]}, {"get_current_time", "read_webpage"})
         self.assertEqual(sum(item["role"] == "user" for item in requests[0][0]), 1)
-        self.assertIn("权限", requests[1][0][-1]["content"])
+        self.assertIn("权限", json.dumps(requests[1][0], ensure_ascii=False))
         self.assertIsNone(requests[1][1])
 
     async def test_next_turn_restores_saved_tool_history(self):  # 使用上一轮实际保存的 output 构造下一轮输入
@@ -254,20 +255,31 @@ class ToolChatTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_last_request_has_no_tools(self):
         requests, _ = self.model([[tool(call_id=f"call-{index}")] for index in range(4)] + [[text("最终回答")]])
-        await self.run_chat()
+        with patch.object(service.settings, 'chat_response_max_tool_call_iterations', 4, create=True):
+            await self.run_chat()
         self.assertEqual(len(requests), 5)
         self.assertIsNone(requests[-1][1])
         self.assertEqual(self.update.call_args.kwargs["status"], "completed")
 
     async def test_repeated_calls_stop_at_limit(self):
         requests, _ = self.model([[tool(call_id=f"call-{index}")] for index in range(5)])
-        with patch.object(service, "execute_tool", return_value="{}") as execute:
+        with patch.object(service.settings, 'chat_response_max_tool_call_iterations', 4, create=True), patch.object(service, "execute_tool", return_value="{}") as execute:
             events = await self.run_chat()
         self.assertEqual(len(requests), 5)
         self.assertEqual(execute.call_count, 4)
         self.assertEqual(self.update.call_args.kwargs["status"], "failed")
         self.assertTrue(events[-1].startswith("event: error"))
         self.assertFalse(any(event.startswith("event: done") for event in events))
+
+    async def test_default_loop_can_continue_beyond_five_requests_and_twelve_calls(self):
+        rounds = [[tool(index=index, call_id=f'call-0-{index}') for index in range(14)]]
+        rounds += [[tool(call_id=f'call-{index}')] for index in range(1, 6)]
+        requests, _ = self.model(rounds + [[text('完成所有步骤')]])
+        with patch.object(service, 'execute_tool', AsyncMock(return_value='{}')) as execute:
+            events = await self.run_chat()
+        self.assertEqual(len(requests), 7)
+        self.assertEqual(execute.await_count, 19)
+        self.assertTrue(events[-1].startswith('event: done'))
 
     async def test_missing_call_id_does_not_execute(self):
         self.model([[tool(call_id="")]])

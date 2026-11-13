@@ -26,6 +26,19 @@ def response(data, content_type='text/html; charset=utf-8', **headers):
 
 
 class WebpageTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        strict = patch.object(webpage.settings, 'web_url_policy', 'sources')
+        strict.start()
+        self.addCleanup(strict.stop)
+
+    async def test_public_mode_reads_unlisted_public_url_and_default_returns_full_document(self):
+        context = ToolContext(history=[SimpleNamespace(role='user', content='请查询公开资料')])
+        document = {'url': 'https://new.example/doc', 'title': '资料', 'text': '正文' * 4000, 'retrieved_at': 1}
+        with patch.object(webpage.settings, 'web_url_policy', 'public'), patch.object(webpage.settings, 'web_fetch_max_content_length', None), patch.object(webpage, 'fetch_page', AsyncMock(return_value=document)):
+            data = json.loads(await execute_tool('read_webpage', '{"url":"https://new.example/doc"}', context=context))
+        self.assertEqual(data['chunks'][0]['content'], document['text'])
+        self.assertFalse(data['has_more'])
+
     async def test_navigation_only_keeps_real_links_without_citations_and_allows_followup(self):
         from backend.app.tools import browser_reader
         links = ''.join(f'<a href="/channel/{i}">频道{i}</a>' for i in range(6))

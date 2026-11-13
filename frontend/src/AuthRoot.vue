@@ -11,7 +11,7 @@ const pinia = getActivePinia()! // 退出后移除上一个账号的聊天仓库
 watch(() => auth.user?.id, (next, previous) => {
   if (!previous || previous === next) return
   const chat = useChatStore()
-  chat.stopReply()
+  chat.stopAllReplies()
   chat.$dispose()
   delete pinia.state.value.chat
 }, { flush: 'sync' })

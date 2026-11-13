@@ -20,11 +20,17 @@ from backend.app.files.cleanup import cleanup_worker
 from backend.app.chat.titles import recover_interrupted_titles, close_title_tasks
 from backend.app.chat.subagents import recover_tasks, close_tasks
 import anyio
+from backend.app.core.config import settings
+from backend.app.core.database import DATA_DIR
+from backend.app.core.instance import InstanceLock
 
 logger = logging.getLogger(__name__)  # 当前模块日志
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):  # 管理应用启动和关闭
+    if settings.app_env == 'production' and not settings.auth_cookie_secure:
+        raise RuntimeError('生产环境必须启用 AUTH_COOKIE_SECURE，并通过 HTTPS 访问。')
+    instance = InstanceLock(DATA_DIR).acquire()  # 开发reload也只有实际服务进程持锁
     try:
         await init_db()  # 新库初始化，已有库检查版本和结构；需要升级时提示命令
         async with SessionLocal() as session:  # 启动恢复使用独立数据库会话
@@ -48,9 +54,12 @@ async def lifespan(app: FastAPI):  # 管理应用启动和关闭
             finally:
                 tasks.cancel_scope.cancel()
     finally:
-        await close_tasks()
-        await close_title_tasks()
-        await engine.dispose()  # 退出时释放数据库连接
+        try:
+            await close_tasks()
+            await close_title_tasks()
+            await engine.dispose()  # 退出时释放数据库连接
+        finally:
+            instance.release()
 
 from backend.app.api.chats import router as chats_router
 from backend.app.api.files import router as files_router  # 注册文件上传和查询接口
@@ -66,6 +75,17 @@ from backend.app.api.knowledge import router as knowledge_router
 app.include_router(knowledge_router)
 
 app.add_middleware(PrivateResponseHeaders)  # 防止浏览器缓存私人数据，不改变聊天流的取消逻辑
+
+from backend.app.llm.http import ModelAccessError
+from httpx import PoolTimeout
+
+@app.exception_handler(ModelAccessError)
+async def model_access_denied(_request, error):
+    return JSONResponse(status_code=403, content={'detail': str(error)})
+
+@app.exception_handler(PoolTimeout)
+async def model_capacity_exceeded(_request, _error):
+    return JSONResponse(status_code=429, content={'detail': '模型请求排队超时，请稍后重试'}, headers={'Retry-After': '10'})
 
 @app.exception_handler(RequestValidationError)
 async def invalid_request(_request, error: RequestValidationError):  # 参数错误只返回字段位置和说明，避免回显密码或API Key输入

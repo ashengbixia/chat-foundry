@@ -3,7 +3,7 @@ import logging
 import uuid
 import hashlib
 import anyio
-from sqlalchemy import select, update
+from sqlalchemy import select, update, func
 from sqlalchemy.ext.asyncio import AsyncSession
 from backend.app.core.database import SessionLocal
 from backend.app.models.file import File
@@ -34,6 +34,9 @@ async def reserve_file_index(session: AsyncSession, file_id: str, rebuild_chunks
             raise IndexBusyError("文件文字尚未处理成功，不能建立索引")
         if record.index_busy:
             raise IndexBusyError("文件正在等待或建立索引，请稍后再操作")
+        queued = (await session.execute(select(func.count()).select_from(File).where(File.index_task_id.is_not(None)))).scalar_one()
+        if queued >= settings.index_queue_limit:
+            raise IndexBusyError('服务器索引队列已满，请稍后重试')
         if rebuild_chunks:
             record.chunk_key = None  # 预约后台重切；请求阶段不再生成另一套字符切片
         task_id = str(uuid.uuid4())
@@ -94,7 +97,13 @@ async def build_chunk_index(file_id: str, task_id: str) -> int:  # 分批读取�
         raise IndexContentError("文件没有可建立索引的切片，请先重新切片")
     return offset
 
-async def index_file(file_id: str, task_id: str):  # 后台任务自行创建会话，不使用上传请求的数据库会话
+_index_slots = asyncio.Semaphore(settings.index_concurrency)
+
+async def index_file(file_id: str, task_id: str):
+    async with _index_slots:
+        await _index_file(file_id, task_id)
+
+async def _index_file(file_id: str, task_id: str):  # 后台任务自行创建会话，不使用上传请求的数据库会话
     try:
         async with SessionLocal() as session:
             result = await session.execute(update(File).where(File.id == file_id, File.status == "completed", File.index_task_id == task_id, File.index_status == "pending").values(index_status="indexing"))

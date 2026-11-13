@@ -111,8 +111,8 @@ async def create_message_endpoint(
     return message
 
 @router.post("/{chat_id}/respond")
-async def respond_endpoint(chat_id: str, session: AsyncSession = Depends(get_db), connection: ModelConnection = Depends(get_user_model_connection)):  # 检查并占用生成资格，再返回回答流
-    if not acquire_generation(chat_id):
+async def respond_endpoint(chat_id: str, session: AsyncSession = Depends(get_db), connection: ModelConnection = Depends(get_user_model_connection), user: User = Depends(get_current_user)):  # 检查并占用生成资格，再返回回答流
+    if not acquire_generation(chat_id, user.id):
         raise HTTPException(status_code=409, detail="该会话正在生成或清理中，请稍后重试")
     try:
         chat = await get_chat(session, chat_id)  # 查询目标会话

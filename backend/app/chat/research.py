@@ -5,6 +5,7 @@ import httpx
 from sqlalchemy.exc import SQLAlchemyError
 from backend.app.llm.budget import InputBudgetError
 from backend.app.llm.client import ModelStreamError
+from backend.app.llm.http import ModelAccessError
 
 
 class FinalizationError(ModelStreamError):
@@ -45,6 +46,12 @@ def failure_info(error, phase):
     elif isinstance(error, SQLAlchemyError):
         info.update(phase='database', code='database_error')
         message = '数据库读写未完成，请查看后端日志'
+    elif isinstance(error, ModelAccessError):
+        info.update(phase='model_request', code='model_address_denied')
+        message = str(error)
+    elif isinstance(error, httpx.PoolTimeout):
+        info.update(phase='model_request', code='model_capacity_timeout', retryable=True)
+        message = '模型请求排队超时，请稍后重试'
     elif isinstance(error, httpx.TimeoutException):
         info.update(phase='model_request', code='model_timeout', retryable=True)
         message = '模型请求超时，已保留取得的结果'
@@ -71,12 +78,6 @@ def result_data(raw_results):
                 yield data
         except (ValueError, TypeError):
             continue
-
-
-def exhausted_research(raw_results):
-    tasks = {data['task_id']: data for data in result_data(raw_results) if data.get('task_id')}
-    return bool(tasks) and all(task.get('status') not in ('queued', 'running', 'cancelling') and
-        (task.get('outcome') in ('failed', 'insufficient_evidence') or task.get('status') != 'completed') for task in tasks.values())
 
 
 def failure_report(raw_results, error_info):

@@ -145,7 +145,8 @@ class BudgetServiceTests(unittest.IsolatedAsyncioTestCase):  # 真实数据库�
             requests.append(copy.deepcopy(messages))
             yield {"type": "text_delta", "text": "回答"}
         await self.run_chat(estimate_input_tokens(self.latest_messages, self.tools) + 1200, stream)
-        self.assertEqual([[message for message in request if not message.get('content', '').startswith('本轮实际能力状态')] for request in requests], [self.latest_messages])
+        self.assertEqual([[message for message in request if message['role'] != 'system'] for request in requests], [[self.latest_messages[-1]]])
+        self.assertTrue(requests[0][0]['content'].startswith(self.latest_messages[0]['content']))
         async with self.sessions() as session:
             records = (await session.execute(select(Message).order_by(Message.sequence))).scalars().all()
             self.assertEqual(len(records), 4)

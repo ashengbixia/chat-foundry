@@ -3,7 +3,7 @@ import type { Chat } from '../../api/chats'
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import AppIcon from '../AppIcon.vue'
 
-const props = defineProps<{ chats: Chat[]; currentChatId: string | null; loading: boolean; creating: boolean; deletingChatId: string | null; renamingChatId: string | null; actionDisabled: boolean; openDisabled: boolean }>() // 接收会话列表、当前会话和按钮状态
+const props = defineProps<{ chats: Chat[]; currentChatId: string | null; loading: boolean; creating: boolean; deletingChatId: string | null; renamingChatId: string | null; actionDisabled: boolean; openDisabled: boolean; generatingChatIds?: string[] }>() // 当前页面生成不锁住其他会话
 const emit = defineEmits<{ create: []; open: [chat: Chat]; remove: [chat: Chat]; rename: [chat: Chat]; download: [chat: Chat] }>() // 只通知父组件操作意图，不在此处请求后端
 const expandedChatId = ref<string | null>(null) // 同时只展开一条会话的操作
 const historyRoot = ref<HTMLElement | null>(null)
@@ -26,6 +26,7 @@ function toggle(event: MouseEvent, chat: Chat) {
 }
 function runAction(action: 'rename' | 'remove' | 'download', chat: Chat) {
   if (props.actionDisabled) return
+  if (action === 'remove' && props.generatingChatIds?.includes(chat.id)) return
   close()
   if (action === 'rename') emit('rename', chat)
   else if (action === 'download') emit('download', chat)
@@ -41,7 +42,7 @@ function runAction(action: 'rename' | 'remove' | 'download', chat: Chat) {
     <p v-else-if="chats.length === 0" class="empty-history">还没有对话<br /><span>从一个问题开始，灵感会留在这里。</span></p>
     <ul v-else class="chat-list">
       <li v-for="chat in chats" :key="chat.id" class="chat-row" :class="{ current: currentChatId === chat.id }">
-        <button class="chat-link" type="button" :disabled="openDisabled" :title="chat.title" :aria-current="currentChatId === chat.id ? 'true' : undefined" @click="emit('open', chat)"><AppIcon name="chat" :size="16" /><span>{{ chat.title }}</span></button>
+        <button class="chat-link" type="button" :disabled="openDisabled" :title="chat.title" :aria-current="currentChatId === chat.id ? 'true' : undefined" @click="emit('open', chat)"><AppIcon name="chat" :size="16" /><span>{{ chat.title }}</span><small v-if="generatingChatIds?.includes(chat.id)" class="chat-generating" role="status" aria-label="正在生成" title="正在生成，可切换查看"></small></button>
         <button class="icon-button chat-more" type="button" :disabled="actionDisabled" :aria-label="`管理会话 ${chat.title}`" :aria-expanded="expandedChatId === chat.id" @click="toggle($event, chat)"><AppIcon name="more" :size="17" /></button>
       </li>
     </ul>
@@ -51,12 +52,13 @@ function runAction(action: 'rename' | 'remove' | 'download', chat: Chat) {
       <button type="button" role="menuitem" :disabled="actionDisabled" @click="runAction('download', expandedChat)"><AppIcon name="download" :size="17" />下载对话</button>
       <button type="button" role="menuitem" :disabled="actionDisabled" @click="runAction('rename', expandedChat)"><AppIcon name="edit" :size="17" />重命名</button>
       <div class="action-separator"></div>
-      <button class="danger" type="button" role="menuitem" :disabled="actionDisabled" @click="runAction('remove', expandedChat)"><AppIcon name="trash" :size="17" />删除</button>
+      <button class="danger" type="button" role="menuitem" :disabled="actionDisabled || generatingChatIds?.includes(expandedChat.id)" @click="runAction('remove', expandedChat)"><AppIcon name="trash" :size="17" />删除</button>
     </div>
   </Teleport>
 </template>
 
 <style scoped>
+.chat-generating { flex: 0 0 6px; width: 6px; height: 6px; border-radius: 50%; background: #527761; }
 .new-chat { display: flex; align-items: center; gap: 10px; width: 100%; padding: 12px; border: 1px solid #e0e3e6; border-radius: 11px; background: #fff; font-size: 13px; font-weight: 600; box-shadow: 0 2px 3px #172b3a03; }
 .new-chat:hover:not(:disabled) { border-color: #bbcfc6; background: #fafcfb; }
 .new-chat > span { margin-left: auto; font-size: 10px; color: #91969e; font-weight: 400; }

@@ -205,7 +205,7 @@ class SubagentTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(task.scope['web_origins'], [])  # 候选线索不会变成站点授权。
             child = (await session.execute(select(Message).where(Message.chat_id == task.child_chat_id))).scalar_one()
             child_context = ToolContext(is_subagent=True, history=[child])
-            with self.assertRaisesRegex(ValueError, '不能自行拼接'):
+            with patch.object(read_webpage.settings, 'web_url_policy', 'sources'), self.assertRaisesRegex(ValueError, '不能自行拼接'):
                 await execute_tool('read_webpage', '{"url":"https://unapproved.example/"}', context=child_context)
         with self.assertRaises(ValueError):
             await subagents.task_result(self.sessions, 'other', 'missing')

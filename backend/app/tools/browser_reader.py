@@ -154,6 +154,7 @@ def _run(url):
 
 
 async def render_page(url):
-    if not settings.web_browser_enabled:
-        raise ValueError('该页面需要JavaScript加载，服务器未开启浏览器读取（WEB_BROWSER_ENABLED）')
+    from backend.app.tools.local.read_webpage import loader_engine
+    if loader_engine() == 'safe_web':
+        raise ValueError('浏览器读取未开启，请配置WEB_LOADER_ENGINE=playwright或auto；兼容旧配置WEB_BROWSER_ENABLED')
     return await anyio.to_thread.run_sync(_run, str(normalize_url(url)), limiter=_slots)

@@ -19,12 +19,14 @@ export async function getCurrentUser(): Promise<UserInfo | null> { // 未登录�
   if (!response.ok) throw await createApiError(response, '检查登录状态失败')
   return await response.json()
 }
-export const getAuthConfig = () => authRequest<{ setup_required: boolean }>('/config')
+export const getAuthConfig = () => authRequest<{ setup_required: boolean; registration_enabled?: boolean; bootstrap_required?: boolean }>('/config')
 export const login = (username: string, password: string) => authRequest<UserInfo>('/login', 'POST', { username, password })
-export const signup = (username: string, password: string, setup: boolean, request_admin: boolean) => authRequest<UserInfo>('/signup', 'POST', { username, password, setup, request_admin })
+export const signup = (username: string, password: string, setup: boolean, request_admin: boolean, bootstrap_token = '') => authRequest<UserInfo>('/signup', 'POST', { username, password, setup, request_admin, bootstrap_token })
 export const logout = () => authRequest<void>('/logout', 'POST')
 export const updateProfile = (name: string) => authRequest<UserInfo>('/profile', 'PATCH', { name })
 export const changePassword = (current_password: string, new_password: string) => authRequest<void>('/password', 'POST', { current_password, new_password })
 export const requestAdmin = () => authRequest<UserInfo>('/request-admin', 'POST')
 export const listUsers = () => authRequest<UserInfo[]>('/users')
 export const setUserRole = (id: string, role: UserInfo['role']) => authRequest<UserInfo>(`/users/${encodeURIComponent(id)}`, 'PATCH', { role })
+
+export const createUser = (username: string, password: string) => authRequest<UserInfo>('/users', 'POST', { username, password })

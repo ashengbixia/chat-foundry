@@ -19,6 +19,38 @@ from backend.app.files import service
 from backend.tests.index_fixture import mock_file_vectors
 
 class AccountTests(unittest.IsolatedAsyncioTestCase):  # 用真实Cookie和临时库验证关键权限，不调用真实模型
+    async def test_storage_quota_concurrent_upload_dedup_and_cleanup(self):
+        import asyncio
+        from backend.app.core.config import settings
+        await self.signup(self.admin, first=True)
+        with patch.object(settings, 'user_storage_bytes', 3):
+            async def upload(body):
+                return await self.admin.post('/api/files', files={'file': ('quota.txt', body, 'text/plain')})
+            results = await asyncio.gather(upload(b'aa'), upload(b'bb'))
+            self.assertEqual(sorted(item.status_code for item in results), [201, 413])
+            success = next(item for item in results if item.status_code == 201).json()
+            body = b'aa' if results[0].status_code == 201 else b'bb'
+            self.assertEqual((await upload(body)).json()['id'], success['id'])
+            self.assertEqual((await self.admin.delete('/api/files/' + success['id'])).status_code, 204)
+            self.assertEqual((await upload(b'ccc')).status_code, 201)
+
+    async def test_deployment_bootstrap_and_closed_registration_admin_create(self):
+        from backend.app.core.config import settings
+        from pydantic import SecretStr
+        with patch.object(settings, 'app_env', 'production'), patch.object(settings, 'bootstrap_token', SecretStr('test-bootstrap')), patch.object(settings, 'registration_enabled', False):
+            data = {'username': 'admin', 'password': 'test-password', 'setup': True}
+            denied = await self.admin.post('/api/auth/signup', json=data)
+            self.assertEqual(denied.status_code, 403)
+            first = await self.admin.post('/api/auth/signup', json={**data, 'bootstrap_token': 'test-bootstrap'})
+            self.assertEqual(first.status_code, 201)
+            ordinary = {'username': 'member', 'password': 'test-password'}
+            self.assertEqual((await self.other.post('/api/auth/signup', json=ordinary)).status_code, 403)
+            self.assertEqual((await self.other.post('/api/auth/users', json=ordinary)).status_code, 401)
+            created = await self.admin.post('/api/auth/users', json={**ordinary, 'request_admin': True})
+            self.assertEqual(created.status_code, 201)
+            self.assertEqual(created.json()['role'], 'user')
+            self.assertFalse(created.json()['admin_requested'])
+            self.assertEqual((await self.other.post('/api/auth/login', json=ordinary)).status_code, 200)
     async def test_legacy_short_password_can_login_but_new_passwords_still_require_eight(self):
         from backend.app.auth import hash_password
         async with self.sessions() as session:

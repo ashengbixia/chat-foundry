@@ -5,13 +5,15 @@ import { createTypeScriptLoader } from './helpers/loadTypeScript.mjs'
 
 test('登录状态从服务器恢复，初始化后普通注册，退出清除身份', async () => {
   const user = { id: 'u1', name: '用户', username: 'testuser', role: 'user', admin_requested: true }
-  const api = { getCurrentUser: async () => null, getAuthConfig: async () => ({ setup_required: true }), signup: async (...args) => { assert.deepEqual(args, ['testuser', 'test-password', true, true]); return user }, logout: async () => {} }
+  const api = { getCurrentUser: async () => null, getAuthConfig: async () => ({ setup_required: true, registration_enabled: false, bootstrap_required: true }), signup: async (...args) => { assert.deepEqual(args, ['testuser', 'test-password', true, true, 'test-bootstrap']); return user }, logout: async () => {} }
   const { useAuthStore } = createTypeScriptLoader({ '../api/auth': api })('src/stores/auth.ts')
   setActivePinia(createPinia())
   const store = useAuthStore()
   await store.initialize()
   assert.equal(store.setupRequired, true)
-  await store.register('testuser', 'test-password', true)
+  assert.equal(store.registrationEnabled, false)
+  assert.equal(store.bootstrapRequired, true)
+  await store.register('testuser', 'test-password', true, 'test-bootstrap')
   assert.equal(store.user.id, 'u1')
   assert.equal(store.setupRequired, false)
   await store.signOut()

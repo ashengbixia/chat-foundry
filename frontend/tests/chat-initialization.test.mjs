@@ -211,7 +211,7 @@ test('新建入口只清空当前草稿和分页，不创建或删除历史会�
   assert.equal(store.hasOlderMessages, false)
   assert.equal(store.nextBeforeSequence, null)
   assert.deepEqual(calls, [])
-  store.sendingMessage = true
+  store.creatingChat = true
   store.inputText = '正在发送'
   assert.equal(store.startBlankChat(), false)
   assert.equal(store.inputText, '正在发送')
@@ -223,7 +223,7 @@ test('点击新建清除上次会话记录并返回空白页，重复点击仍�
   const method = tree.statements.find(node => ts.isFunctionDeclaration(node) && node.name?.text === 'startNewChat')
   const code = ts.transpileModule(method.getText(tree), { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText
   const events = [], pending = { value: [{ id: 'old-kb' }] }, revision = { value: 0 }, latest = { value: true }
-  const start = new Function('startBlankChat', 'clearLastChatId', 'focusComposer', 'pendingKnowledge', 'newChatRevision', 'showLatest', `const interactionBusy = { value: false }, accountId = 'u1'; let autoFollowMessages = false; ${code}; return startNewChat`)(() => { events.push('blank'); return true }, id => events.push(['clear', id]), () => events.push('focus'), pending, revision, latest)
+  const start = new Function('startBlankChat', 'clearLastChatId', 'focusComposer', 'pendingKnowledge', 'newChatRevision', 'showLatest', `const sidebarBusy = { value: false }, accountId = 'u1'; let autoFollowMessages = false; ${code}; return startNewChat`)(() => { events.push('blank'); return true }, id => events.push(['clear', id]), () => events.push('focus'), pending, revision, latest)
   await start()
   await start()
   assert.deepEqual(events, ['blank', ['clear', 'u1'], 'focus', 'blank', ['clear', 'u1'], 'focus'])

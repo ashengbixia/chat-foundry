@@ -64,7 +64,7 @@ class LlmStreamTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([event async for event in llm.stream_model_events([], [])], [{"type": "text_delta", "text": "正文"}])
         self.assertNotIn("tools", requests[0])
 
-    async def test_synthesis_sends_text_evidence_without_resuming_tool_protocol(self):
+    async def test_synthesis_disables_tools_and_preserves_required_call_history(self):
         from backend.app.chat.tool_context import prepare_model_request
         raw = json.dumps({'task_id': 'child', 'status': 'failed', 'outcome': 'failed', 'summary': '本轮研究未能完整完成，嵌套报告',
                           'chunks': [{'citation_id': 1, 'content': '实际已读取的官方原文', 'start_offset': 0, 'end_offset': 12}]}, ensure_ascii=False)
@@ -75,9 +75,9 @@ class LlmStreamTests(unittest.IsolatedAsyncioTestCase):
         requests, _ = self.mock_model([chunk({'content': '可根据已读原文比较[1]'}, 'stop'), 'data: [DONE]'])
         self.assertTrue([event async for event in llm.stream_model_events(prepared, tools)])
         self.assertEqual(requests[0]['tool_choice'], 'none')
-        self.assertTrue(all(item['role'] != 'tool' and 'tool_calls' not in item and 'reasoning_content' not in item for item in requests[0]['messages']))
-        self.assertIn('实际已读取的官方原文', requests[0]['messages'][-1]['content'])
-        self.assertNotIn('嵌套报告', requests[0]['messages'][-1]['content'])
+        self.assertEqual(requests[0]['messages'][1]['reasoning_content'], '原工具链的思考')
+        self.assertIn('实际已读取的官方原文', json.dumps(requests[0]['messages'], ensure_ascii=False))
+        self.assertNotIn('嵌套报告', json.dumps(requests[0]['messages'], ensure_ascii=False))
 
     async def test_early_close_releases_model_stream(self):  # 停止读取后，兼容层也必须关闭内部 HTTP 响应
         _, stream = self.mock_model([chunk({"content": "第一段"}), chunk({"content": "第二段"})])

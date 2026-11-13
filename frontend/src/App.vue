@@ -60,10 +60,11 @@ function jumpToLatest() {
   showLatest.value = false
 }
 const { setWebSearchEnabled, startBlankChat, createNewChat, openChatSession, initializeChat, renameChatSession, deleteChatSession, sendMessage, retryReply, stopReply, loadOlderMessages, addAttachment, removeAttachment, markFileDeleted, removeConversationFile } = chatStore
-const { webSearchEnabled, updatingFeatures, inputText, selectedAttachments, messages, currentChat, chats, errorMessage, sendingMessage, generatingReply, creatingChat, loadingChats, restoringChat, deletingChatId, renamingChatId, pageBusy, inputDisabled, sendDisabled, canRetryReply, hasOlderMessages, loadingOlderMessages } = storeToRefs(chatStore) // 保持响应式连接，不复制出另一份状态
+const { webSearchEnabled, updatingFeatures, inputText, selectedAttachments, messages, currentChat, chats, errorMessage, sendingMessage, generatingReply, generatingChatIds, navigationBusy, creatingChat, loadingChats, restoringChat, deletingChatId, renamingChatId, pageBusy, inputDisabled, sendDisabled, canRetryReply, hasOlderMessages, loadingOlderMessages } = storeToRefs(chatStore) // 保持响应式连接，不复制出另一份状态
 const messageListElement = ref<HTMLElement | null>(null) // 消息区域的页面元素
 const filesOpen = ref(false) // 是否显示文件管理区域，隐藏时保留上传与预览状态
 const interactionBusy = computed(() => pageBusy.value || uploadingAttachments.value || switchingModel.value || switchingKnowledge.value)
+const sidebarBusy = computed(() => navigationBusy.value || uploadingAttachments.value || switchingModel.value || switchingKnowledge.value)
 async function applyKnowledge(items: KnowledgeBase[] | KnowledgeReference[]) {
   if (interactionBusy.value) throw new Error('请等待当前操作完成后再调整知识库')
   if (!currentChat.value) { pendingKnowledge.value = items; notify('已选择知识库，发送第一条消息时保存'); return }
@@ -105,7 +106,7 @@ let pageActive = true
 let preservingScroll = false // 加载旧消息期间暂停自动滚动，避免前插内容后跳到底部
 let autoFollowMessages = true // 是否跟随新消息滚动，向上翻阅时暂停
 watch(generatingReply, (active) => { if (active) autoFollowMessages = true }, { flush: 'sync' }) // 开始生成时立即恢复跟随，赶在消息展示和滚动监听之前
-onUnmounted(() => { pageActive = false; stopReply(); if (toastTimer) clearTimeout(toastTimer) }) // 退出账号时中止流程并清理通知
+onUnmounted(() => { pageActive = false; chatStore.stopAllReplies(); if (toastTimer) clearTimeout(toastTimer) }) // 退出账号时中止所有会话流程
 function updateScrollFollow() { // 根据距离底部的位置判断是否继续自动滚动
   const element = messageListElement.value // 当前消息滚动容器
   if (!element || preservingScroll) return
@@ -139,14 +140,14 @@ async function showOlderMessages() { // 加载旧消息后，用新增高度补�
   }
 }
 async function editChatTitle(chat: Chat) { // 弹窗收集标题，再交给 store 保存
-  if (pageBusy.value) return
+  if (sidebarBusy.value) return
   const input = window.prompt('请输入新的会话标题：', chat.title) // 用户输入的新标题
   if (input === null || input.trim() === chat.title) return
   await renameChatSession(chat.id, input)
 }
 const exportingChat = ref(false)
 async function downloadChat(chat: Chat) {
-  if (interactionBusy.value || exportingChat.value) return
+  if (sidebarBusy.value || exportingChat.value) return
   exportingChat.value = true
   notify('正在准备对话下载…')
   try { await exportChatMarkdown(chat, () => pageActive); if (pageActive) notify('对话已导出为 Markdown') }
@@ -154,7 +155,7 @@ async function downloadChat(chat: Chat) {
   finally { exportingChat.value = false }
 }
 async function removeChat(chat: Chat) { // 确认删除，成功后处理浏览器记录
-  if (pageBusy.value) return
+  if (sidebarBusy.value) return
   const confirmed = window.confirm(`确定删除“${chat.title}”及全部消息吗？此操作不可恢复。`) // 获取删除确认
   if (!confirmed) return
 
@@ -163,7 +164,7 @@ async function removeChat(chat: Chat) { // 确认删除，成功后处理浏览�
   if (deleted && wasCurrent) clearLastChatId(accountId)
 }
 async function openChat(chat: Chat) { // 打开成功后，处理浏览器记录和页面滚动
-  if (interactionBusy.value) return
+  if (sidebarBusy.value) return
   switchingKnowledge.value = true
   try {
     const fresh = await getChat(chat.id) // 删库、改名及其他标签页修改后，不能恢复列表里过期的知识库标签
@@ -190,7 +191,7 @@ onMounted(async () => { // 启动时读取浏览器记录，由 store 恢复数�
   scrollMessagesToBottom()
 })
 async function startNewChat() { // 打开空白输入页，不请求创建接口、不增加空会话
-  if (interactionBusy.value) return
+  if (sidebarBusy.value) return
   if (!startBlankChat()) return
   clearLastChatId(accountId) // 空白页刷新后仍为空白，不恢复刚才离开的会话
   autoFollowMessages = true
@@ -230,8 +231,9 @@ async function sendChatMessage() { // 第一次发送时自动新建会话，保
         :creating="creatingChat"
         :deleting-chat-id="deletingChatId"
         :renaming-chat-id="renamingChatId"
-        :action-disabled="interactionBusy"
-        :open-disabled="interactionBusy"
+        :action-disabled="sidebarBusy"
+        :open-disabled="sidebarBusy"
+        :generating-chat-ids="generatingChatIds"
         @create="startNewChat"
         @open="openChat"
         @remove="removeChat"

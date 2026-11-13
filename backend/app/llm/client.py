@@ -1,3 +1,4 @@
+from backend.app.llm.http import model_client
 import httpx
 from backend.app.core.config import settings
 import json
@@ -39,7 +40,7 @@ async def generate_reply(message: str, connection: ModelConnection | None = None
     }
     ensure_input_budget(payload["messages"], None, settings.llm_context_window, settings.llm_max_output_tokens, settings.llm_context_margin)
 
-    async with httpx.AsyncClient(
+    async with model_client(connection,
         timeout=connection.timeout
     ) as client:
         response = await client.post(
@@ -95,7 +96,7 @@ async def stream_model_events(messages: list[dict[str, Any]], tools: list[dict[s
         payload['tool_choice'] = 'none'  # 显式禁止调用，不能依赖供应商的默认行为。
     ensure_input_budget(messages, tools, settings.llm_context_window, settings.llm_max_output_tokens, settings.llm_context_margin)  # 所有流式入口都必须通过检查
 
-    async with httpx.AsyncClient(
+    async with model_client(connection,
         timeout=connection.timeout
     ) as client:
         async with client.stream(

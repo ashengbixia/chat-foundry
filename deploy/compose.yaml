@@ -1,0 +1,59 @@
+services:
+  backend:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+      target: backend
+    env_file: ${APP_ENV_FILE:-.env}
+    environment:
+      APP_ENV: production
+      DATA_DIR: /data
+      AUTH_COOKIE_SECURE: "true"
+    volumes:
+      - app_data:/data
+      - model_cache:/cache
+    networks:
+      app:
+        ipv4_address: 172.30.204.3
+    restart: unless-stopped
+    init: true
+    stop_grace_period: 45s
+    mem_limit: 4g
+    cpus: 2
+    pids_limit: 256
+    security_opt: [no-new-privileges:true]
+    healthcheck:
+      test: [CMD, python, -c, "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=5)"]
+      interval: 30s
+      start_period: 600s
+      timeout: 10s
+      retries: 3
+  gateway:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+      target: gateway
+    environment:
+      APP_DOMAIN: ${APP_DOMAIN:?请在deploy/.env配置域名}
+    ports: ["80:80", "443:443"]
+    volumes:
+      - caddy_data:/data
+      - caddy_config:/config
+    networks:
+      app:
+        ipv4_address: 172.30.204.2
+    depends_on:
+      backend:
+        condition: service_healthy
+    restart: unless-stopped
+    security_opt: [no-new-privileges:true]
+networks:
+  app:
+    ipam:
+      config:
+        - subnet: 172.30.204.0/24
+volumes:
+  app_data:
+  model_cache:
+  caddy_data:
+  caddy_config:

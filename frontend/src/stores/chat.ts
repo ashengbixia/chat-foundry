@@ -50,9 +50,14 @@ export const useChatStore = defineStore('chat', () => { // 集中保存聊天状
     })()
   }
   const errorMessage = ref('') // 页面错误说明
-  const sendingMessage = ref(false) // 是否正在保存问题或生成回答
-  const generatingReply = ref(false) // 是否正在执行模型流式请求，供停止按钮和页面跟随使用
-  let replyController: AbortController | null = null // 内部请求控制器，不作为可展示或持久化的状态返回
+  const replyStates = reactive(new Map<string, { sending: boolean; generating: boolean }>())
+  const replyControllers = new Map<string, AbortController>()
+  const sendingMessage = computed(() => replyStates.get(currentChat.value?.id ?? '')?.sending ?? false)
+  const generatingReply = computed(() => replyStates.get(currentChat.value?.id ?? '')?.generating ?? false)
+  const generatingChatIds = computed(() => [...replyStates].filter(([, state]) => state.generating).map(([id]) => id))
+  type View = { messages: DisplayMessage[]; input: string; attachments: MessageAttachment[]; error: string; older: boolean; cursor: number | null }
+  const views = new Map<string, View>()
+  onScopeDispose(() => { stopAllReplies(); views.clear() })
   const creatingChat = ref(false) // 是否正在创建会话
   const loadingChats = ref(false) // 是否正在读取会话列表
   const loadingMessages = ref(false) // 是否正在读取消息
@@ -65,6 +70,17 @@ export const useChatStore = defineStore('chat', () => { // 集中保存聊天状
   const removingChatFile = ref(false)
   const operationBusy = computed(() => sendingMessage.value || creatingChat.value || loadingMessages.value || loadingOlderMessages.value || deletingChatId.value !== null || renamingChatId.value !== null || removingChatFile.value || updatingFeatures.value)
   const pageBusy = computed(() => operationBusy.value || restoringChat.value) // 页面是否忙碌，包含启动恢复阶段
+  const navigationBusy = computed(() => creatingChat.value || loadingMessages.value || loadingOlderMessages.value || deletingChatId.value !== null || renamingChatId.value !== null || removingChatFile.value || updatingFeatures.value || restoringChat.value || (sendingMessage.value && !generatingReply.value))
+  function rememberView() {
+    const id = currentChat.value?.id ?? ''
+    views.set(id, { messages: replyStates.has(id) ? messages.value : [], input: inputText.value, attachments: selectedAttachments.value, error: errorMessage.value, older: hasOlderMessages.value, cursor: nextBeforeSequence.value })
+  }
+  function reportReplyError(chatId: string, message: string) {
+    if (disposed) return
+    if (currentChat.value?.id === chatId) errorMessage.value = message
+    const view = views.get(chatId)
+    if (view) view.error = message
+  }
   async function refreshSubagentMessages(chatId: string) {
     if (disposed || currentChat.value?.id !== chatId) return
     if (pageBusy.value) { pendingTaskRefresh.add(chatId); return }
@@ -101,7 +117,8 @@ export const useChatStore = defineStore('chat', () => { // 集中保存聊天状
     }
   }
   function startBlankChat(): boolean { // 只切回本地空白草稿，第一条消息发送时才创建数据库会话
-    if (pageBusy.value) return false
+    if (navigationBusy.value) return false
+    rememberView()
     currentChat.value = null
     messages.value = []
     inputText.value = ''
@@ -135,18 +152,25 @@ export const useChatStore = defineStore('chat', () => { // 集中保存聊天状
     }
   }
   async function openChatSession(chat: Chat): Promise<boolean> { // 读取并切换会话，成功返回 true
-    if (operationBusy.value) return false // 启动恢复也要打开会话，因此不拦截 restoringChat
+    if (creatingChat.value || loadingMessages.value || loadingOlderMessages.value || deletingChatId.value || renamingChatId.value || removingChatFile.value || updatingFeatures.value || (sendingMessage.value && !generatingReply.value)) return false
+    if (currentChat.value?.id === chat.id && replyStates.has(chat.id)) return true
+    if (currentChat.value?.id === chat.id) rememberView()
     loadingMessages.value = true
-    errorMessage.value = ''
     try {
-      const page = await listMessages(chat.id) // 首次打开取最近一批消息
+      const saved = views.get(chat.id)
+      const page = replyStates.has(chat.id) && saved
+        ? { items: saved.messages, has_more: saved.older, next_before_sequence: saved.cursor }
+        : await listMessages(chat.id)
+      if (disposed) return false
+      rememberView()
       currentChat.value = chat
       pendingWebSearch.value = false
       messages.value = page.items
       hasOlderMessages.value = page.has_more
       nextBeforeSequence.value = page.next_before_sequence
-      inputText.value = ''
-      selectedAttachments.value = [] // 成功切换会话后清理原会话的附件草稿
+      inputText.value = saved?.input ?? ''
+      selectedAttachments.value = saved?.attachments ?? []
+      errorMessage.value = saved?.error ?? ''
       if (chat.title_status === 'generating' || (chat.title_status === 'pending' && page.items.some(item => item.role === 'assistant' && item.status === 'completed'))) watchAutoTitle(chat.id)
       return true
     } catch (error) {
@@ -219,7 +243,7 @@ export const useChatStore = defineStore('chat', () => { // 集中保存聊天状
     }
   }
   async function renameChatSession(chatId: string, title: string): Promise<boolean> { // 修改标题并同步会话状态
-    if (pageBusy.value) return false
+    if (navigationBusy.value) return false
     title = title.trim()
     if (!title || title.length > 200) {
       errorMessage.value = '标题必须为 1～200 个字符'
@@ -243,13 +267,15 @@ export const useChatStore = defineStore('chat', () => { // 集中保存聊天状
     }
   }
   async function deleteChatSession(chatId: string): Promise<boolean> { // 删除会话，并清理相关页面数据
-    if (pageBusy.value) return false
+    if (navigationBusy.value) return false
+    if (replyStates.has(chatId)) { errorMessage.value = '请先停止该会话的回答再删除'; return false }
     deletingChatId.value = chatId
     errorMessage.value = ''
     try {
       await deleteChat(chatId)
       titlePolls.get(chatId)?.abort()
       chats.value = chats.value.filter((item) => item.id !== chatId)
+      views.delete(chatId)
       if (currentChat.value?.id === chatId) {
         currentChat.value = null
         messages.value = []
@@ -300,6 +326,10 @@ export const useChatStore = defineStore('chat', () => { // 集中保存聊天状
         if (file.file_id === fileId) file.deleted = true
       }
     }
+    for (const view of views.values()) {
+      view.attachments = view.attachments.filter(file => file.file_id !== fileId)
+      for (const message of view.messages) for (const file of message.attachments ?? []) if (file.file_id === fileId) file.deleted = true
+    }
   }
   async function removeConversationFile(fileId: string) {
     const chat = currentChat.value
@@ -314,11 +344,15 @@ export const useChatStore = defineStore('chat', () => { // 集中保存聊天状
     finally { removingChatFile.value = false }
   }
   function stopReply() { // 中止本次流程；保存问题尚未结束时，阻止后续模型请求启动
-    replyController?.abort()
+    if (currentChat.value) replyControllers.get(currentChat.value.id)?.abort()
   }
-  async function generateAssistantReply(chatId: string, controller: AbortController): Promise<void> { // 发送和重试共用的内部生成流程，不重复保存问题
+  function stopAllReplies() {
+    for (const controller of replyControllers.values()) controller.abort()
+  }
+  async function generateAssistantReply(chatId: string, controller: AbortController, targetMessages: DisplayMessage[]): Promise<void> {
     if (controller.signal.aborted) return
-    generatingReply.value = true
+    const state = replyStates.get(chatId)!
+    state.generating = true
     const draft = reactive<DisplayMessage>({ // 当前回答的页面占位消息
       id: `pending-${crypto.randomUUID()}`,
       role: 'assistant',
@@ -331,7 +365,7 @@ export const useChatStore = defineStore('chat', () => { // 集中保存聊天状
       created_at: Date.now() / 1000,
       model: null,
     })
-    messages.value.push(draft)
+    targetMessages.push(draft)
     try {
       const messageId = await streamChatReply(chatId, (text) => { // 接收并追加本次回答的正文片段
         if (!controller.signal.aborted) draft.content += text
@@ -369,7 +403,7 @@ export const useChatStore = defineStore('chat', () => { // 集中保存聊天状
       }
     } finally {
       draft.updated_at = Date.now() / 1000
-      generatingReply.value = false
+      state.generating = false
     }
   }
   async function sendMessage(): Promise<void> { // 保存新问题，然后生成回答
@@ -381,42 +415,41 @@ export const useChatStore = defineStore('chat', () => { // 集中保存聊天状
       return
     }
     const controller = new AbortController() // 覆盖保存问题和生成回答两阶段的取消标记
-    replyController = controller
-    sendingMessage.value = true
+    replyControllers.set(chat.id, controller)
+    replyStates.set(chat.id, { sending: true, generating: false })
+    const targetMessages = messages.value
     errorMessage.value = ''
     try {
       const fileIds = selectedAttachments.value.map((file) => file.file_id) // 只发送文件 ID，由后端校验并保存关联
       const userMessage = await saveUserMessage(chat.id, text, fileIds)
-      messages.value.push(userMessage)
+      targetMessages.push(userMessage)
       const files = new Map((chat.files ?? []).map(file => [file.file_id, file]))
       for (const file of userMessage.attachments ?? []) files.set(file.file_id, file)
       chat.files = [...files.values()] // 草稿清空后，已发送附件仍在会话资料中
-      inputText.value = ''
-      selectedAttachments.value = [] // 保存成功即清空；生成失败通过重试复用已保存的问题
+      if (currentChat.value?.id === chat.id) { inputText.value = ''; selectedAttachments.value = [] }
       if (controller.signal.aborted) return // 更新已保存的问题，但不再启动模型请求，避免再次提交
-      await generateAssistantReply(chat.id, controller)
+      await generateAssistantReply(chat.id, controller, targetMessages)
     } catch (error) {
-      if (!controller.signal.aborted) errorMessage.value = error instanceof Error ? error.message : '发送或生成失败'
+      if (!controller.signal.aborted) reportReplyError(chat.id, error instanceof Error ? error.message : '发送或生成失败')
     } finally {
-      replyController = null
-      sendingMessage.value = false
+      if (replyControllers.get(chat.id) === controller) { replyControllers.delete(chat.id); replyStates.delete(chat.id) }
     }
   }
   async function retryReply(): Promise<void> { // 根据已保存的问题重试，不再次保存用户消息
     const chat = currentChat.value // 本次重试所属会话
     if (!chat || !canRetryReply.value || pageBusy.value) return
     const controller = new AbortController() // 本次重试的取消控制器
-    replyController = controller
-    sendingMessage.value = true
+    replyControllers.set(chat.id, controller)
+    replyStates.set(chat.id, { sending: true, generating: false })
+    const targetMessages = messages.value
     errorMessage.value = ''
     try {
-      await generateAssistantReply(chat.id, controller)
+      await generateAssistantReply(chat.id, controller, targetMessages)
     } catch (error) {
-      if (!controller.signal.aborted) errorMessage.value = error instanceof Error ? error.message : '重试回答失败'
+      if (!controller.signal.aborted) reportReplyError(chat.id, error instanceof Error ? error.message : '重试回答失败')
     } finally {
-      replyController = null
-      sendingMessage.value = false
+      if (replyControllers.get(chat.id) === controller) { replyControllers.delete(chat.id); replyStates.delete(chat.id) }
     }
   }
-  return { refreshSubagentMessages, inputText, selectedAttachments, messages, currentChat, chats, webSearchEnabled, updatingFeatures, setWebSearchEnabled, errorMessage, sendingMessage, generatingReply, creatingChat, loadingChats, loadingMessages, hasOlderMessages, nextBeforeSequence, loadingOlderMessages, restoringChat, deletingChatId, renamingChatId, operationBusy, pageBusy, inputDisabled, sendDisabled, canRetryReply, loadChats, startBlankChat, createNewChat, openChatSession, initializeChat, loadOlderMessages, renameChatSession, deleteChatSession, sendMessage, retryReply, stopReply, addAttachment, removeAttachment, markFileDeleted, removeConversationFile }
+  return { refreshSubagentMessages, inputText, selectedAttachments, messages, currentChat, chats, webSearchEnabled, updatingFeatures, setWebSearchEnabled, errorMessage, sendingMessage, generatingReply, generatingChatIds, navigationBusy, creatingChat, loadingChats, loadingMessages, hasOlderMessages, nextBeforeSequence, loadingOlderMessages, restoringChat, deletingChatId, renamingChatId, operationBusy, pageBusy, inputDisabled, sendDisabled, canRetryReply, loadChats, startBlankChat, createNewChat, openChatSession, initializeChat, loadOlderMessages, renameChatSession, deleteChatSession, sendMessage, retryReply, stopReply, stopAllReplies, addAttachment, removeAttachment, markFileDeleted, removeConversationFile }
 })

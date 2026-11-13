@@ -110,7 +110,7 @@ test('保存期间停止：保存成功仍更新页面并清空草稿，不再�
   assert.deepEqual(state.store.selectedAttachments, [])
   assert.equal(state.store.inputText, '')
 })
-test('新建和切换成功清理附件，切换失败保留草稿；历史附件正常恢复', async () => {
+test('新建清理附件，切换保存各自草稿，切换失败不丢失草稿；历史附件正常恢复', async () => {
   let failed = true
   const { store } = fixture({ listMessages: async () => { if (failed) throw new Error('消息读取失败'); return { items: [saved], has_more: false, next_before_sequence: null } } })
   store.addAttachment(file('f1'))
@@ -118,7 +118,11 @@ test('新建和切换成功清理附件，切换失败保留草稿；历史附�
   assert.deepEqual(store.selectedAttachments, [attachment])
   failed = false
   await store.openChatSession(chat)
+  assert.deepEqual(store.selectedAttachments, [attachment])
+  await store.openChatSession({ ...chat, id: 'other' })
   assert.deepEqual(store.selectedAttachments, [])
+  await store.openChatSession(chat)
+  assert.deepEqual(store.selectedAttachments, [attachment])
   assert.deepEqual(store.messages[0].attachments, [attachment])
   store.addAttachment(file('f1'))
   await store.createNewChat()
@@ -136,7 +140,7 @@ test('删除其他会话保留附件，删除当前会话清理附件', async ()
 test('后端已删除文件时，即使聊天刚进入忙碌状态，也清理失效的附件草稿', () => {
   const { store } = fixture()
   store.addAttachment(file('f1'))
-  store.sendingMessage = true
+  store.creatingChat = true
   store.messages = [{ ...saved, attachments: [{ ...attachment }] }]
   store.markFileDeleted('f1')
   assert.deepEqual(store.selectedAttachments, [])

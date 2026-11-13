@@ -2,6 +2,8 @@
 
 Windows Server 2022、不使用Docker的部署见 [Windows原生部署](windows/README.md)，支持先在服务器本机通过HTTPS测试。
 
+本页Docker部署要求项目完整源码，可使用Git克隆或下载对应版本的 `Source code` 压缩包。Windows的 `ChatFoundry-*.zip` 部署包只包含后端与已构建前端，不包含Docker构建所需的全部文件，不适用于本页命令。
+
 开发启动完全保留：PyCharm运行 `python -m uvicorn backend.app.main:app --reload`，前端运行 `npm run dev`。开发默认HTTP、本机Ollama可访问；这些生产文件不会自动改变本机配置。开发与生产应使用各自的数据目录。
 
 本方案为单机、单后端进程，使用 SQLite、Chroma 和持久卷。不要设置多个 Uvicorn workers、不要横向扩容；跨进程数据锁会拒绝第二个后端访问同一目录。模型/索引限额在进程内，跨机器部署需要另行引入共享队列和数据库。当前没有生产负载测试结论，建议先小范围试用并观测内存、磁盘、延迟和失败率。

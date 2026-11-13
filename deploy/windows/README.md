@@ -6,7 +6,25 @@
 
 文中的 `C:\ChatFoundry`、`C:\ChatFoundryRuntime` 和 `C:\Python310` 是示例安装路径，域名与内网IP也是示例，部署时请替换为自己的实际配置。
 
-## 1. 开发电脑生成发布包
+## 1. 获取部署文件
+
+### 方式A：下载已构建的Windows发布包（推荐）
+
+打开项目的 [GitHub Releases](https://github.com/ashengbixia/chat-foundry/releases)，下载对应版本的 `ChatFoundry-*.zip` 部署包。它包含 `backend`、`frontend/dist` 和 `deploy/windows`，不包含Python依赖、Caddy、WinSW和用户数据。GitHub自动提供的 `Source code (zip)` / `Source code (tar.gz)` 是源码压缩包，不包含前端构建产物，不能当作这个部署包使用。
+
+将部署包解压到 `C:\ChatFoundry`，确认存在以下文件，然后直接从本文第2节继续；无需安装Node、执行npm或再生成一次发布包：
+
+```text
+C:\ChatFoundry\backend\requirements.txt
+C:\ChatFoundry\frontend\dist\index.html
+C:\ChatFoundry\deploy\windows\Configure.ps1
+```
+
+发布包解压后这三个目录直接位于根下，不要额外套一层目录。本文的Windows部署包不包含Docker构建所需的完整前端源码与Compose文件；Docker部署请下载对应版本的完整源码，并按仓库中的 [Docker部署说明](https://github.com/ashengbixia/chat-foundry/blob/master/deploy/README.md) 执行。
+
+### 方式B：从源码自行构建
+
+仅在需要部署尚未发布的源码版本或自行修改代码时使用此方式。先在开发电脑下载完整源码，安装项目根README指定的Node版本与npm，再执行以下命令；不要在仅包含dist的Windows部署包里运行构建脚本。
 
 在项目根目录PowerShell执行（本机需要原有Node/npm）：
 
@@ -33,7 +51,9 @@ Get-PSDrive C
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\deploy\windows\Configure.ps1 -PythonExe C:\Python310\python.exe -InstallDependencies
 ```
 
-脚本会创建项目内 `.venv`、先安装CPU版PyTorch，再安装后端依赖。下载进度直接显示在当前窗口；实际大小和耗时取决于源与依赖，若失败先修复网络再重新执行。配置已经生成时不会覆盖 `server.env`。版本更新后如需更新依赖，也可停止服务后重新执行此命令。
+脚本会创建项目内 `.venv`、先安装CPU版PyTorch，再安装后端依赖。下载进度直接显示在当前窗口；实际大小和耗时取决于源与依赖，若失败先修复网络再重新执行。配置已经生成时不会覆盖 `server.env`。`-InstallDependencies` 与虚拟环境是否已存在是两个独立判断：只要传入该参数就会执行pip安装流程；依赖已经完整安装且无需更新时，应去掉该参数，只运行配置检查与生成。
+
+依赖下载源由pip配置或安装命令决定；向量模型下载入口可按网络条件在实际 `server.env` 中配置 `HF_ENDPOINT`。选择自己信任的兼容服务，不强制使用第三方镜像。修改模板不会更新已生成的server.env，修改实际配置后需要重启服务。Windows文件扩展名可能默认隐藏，使用记事本保存配置时应保留文件名server.env，不要另存为server.env.txt。
 
 独立运行目录默认 `C:\ChatFoundryRuntime`：
 
@@ -82,7 +102,7 @@ Get-Content C:\ChatFoundryRuntime\logs\ChatFoundryBackend.out.log -Tail 80 -Wait
 
 ## 4. 信任本机HTTPS证书，创建管理员
 
-由于没有公网域名，使用Caddy本地CA签发HTTPS证书，仍保持Secure Cookie与生产网络限制。启动网关后找到本机CA的**公开证书**：
+默认Internal模式使用Caddy本地CA签发HTTPS证书，仍保持Secure Cookie与生产网络限制。启动网关后找到本机CA的**公开证书**；已经按公网章节启用Public模式时无需导入本地CA：
 
 ```powershell
 Get-ChildItem C:\ChatFoundryRuntime\caddy -Filter root.crt -Recurse
@@ -111,18 +131,32 @@ Set-Location C:\ChatFoundry
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\deploy\windows\Manage-Services.ps1 -Action Stop
 # 自行选择有足够空间的备份位置，每次使用新文件名；不要放在data目录内部。
 New-Item -ItemType Directory C:\ChatFoundryBackups -Force
-& .\.venv\Scripts\python.exe .\deploy\windows\runtime.py --env-file C:\ChatFoundryRuntime\server.env backup --output C:\ChatFoundryBackups\before-update.zip
+$backupFile = 'C:\ChatFoundryBackups\' + (Get-Date -Format 'yyyyMMdd-HHmmss') + '.zip'
+& .\.venv\Scripts\python.exe .\deploy\windows\runtime.py --env-file C:\ChatFoundryRuntime\server.env backup --output $backupFile
+if ($LASTEXITCODE -ne 0) { throw 'Backup failed. Do not overwrite the current deployment.' }
 ```
 
-确认备份成功后，再将新发布包内容覆盖到 `C:\ChatFoundry`，保留原 `.venv` 与完整的外部运行目录。包里不包含 `server.env`，不会替换账号和密钥。备份包含个人数据和文件形式主密钥，环境配置中另存的Key须独立安全保管，并将备份复制到其他机器，避免单盘故障。
+确认备份成功后，再将新发布包内容合并覆盖到 `C:\ChatFoundry`，保留原 `.venv` 与完整的外部运行目录。不要先删除整个部署目录，也不要用不含dist的源码压缩包替换部署包。包里不包含 `server.env`，不会替换账号和密钥。备份命令只备份DATA_DIR，其中包含个人数据和文件形式主密钥；还需单独安全备份server.env、gateway.json和caddy目录，并将备份复制到其他机器，避免单盘故障。
 
-更新依赖/服务配置，再检查并升级数据库：
+根据版本说明选择需要的更新步骤：只更新前端时，用完整部署包中的dist替换原dist即可；仅后端业务代码变化不要求重新构建前端。只有依赖清单或依赖版本要求变化时才在Configure命令中加入 `-InstallDependencies`；数据库迁移变化时才需要执行upgrade。以下为需要重新生成部署配置的示例，不会重复安装依赖：
 
 ```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\deploy\windows\Configure.ps1 -PythonExe C:\Python310\python.exe -InstallDependencies
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\deploy\windows\Configure.ps1 -PythonExe C:\Python310\python.exe
+if ($LASTEXITCODE -ne 0) { throw 'Configuration failed. Keep services stopped and inspect the error.' }
+```
+
+若版本说明要求数据库迁移，在启动服务之前执行；迁移失败时保持停机并检查原因：
+
+```powershell
 & .\.venv\Scripts\python.exe .\deploy\windows\runtime.py --env-file C:\ChatFoundryRuntime\server.env upgrade
-# 上一步必须成功，失败时保持停机并检查原因。
+if ($LASTEXITCODE -ne 0) { throw 'Database upgrade failed. Do not start services.' }
+```
+
+确认上述需要的步骤都成功后启动，并重新检查后端健康、前端页面、登录与检索：
+
+```powershell
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\deploy\windows\Manage-Services.ps1 -Action Start
+Invoke-RestMethod http://127.0.0.1:8000/health
 ```
 
 服务名和代码路径不变时不需要重新Install；修改环境配置后Restart即可，每次后端进程启动都会重读独立环境文件。网关设置保存到 `gateway.json`，再次运行Configure时，未明确传入的参数沿用已有配置，不会把公网域名恢复为localhost。旧版没有gateway.json时会识别原脚本生成的Caddyfile，保留原主机名与监听地址；无法识别的自定义配置会停止并提示，不静默覆盖。修改服务可执行路径或切换运行目录时，停止并Uninstall旧服务，再用新配置Install；Uninstall保留源代码和用户数据。
@@ -130,8 +164,10 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\deploy\windows\Manage-
 恢复只允许写入**不存在的新目录**：
 
 ```powershell
-& .\.venv\Scripts\python.exe .\deploy\windows\runtime.py --env-file C:\ChatFoundryRuntime\server.env restore --archive C:\ChatFoundryBackups\before-update.zip --destination C:\ChatFoundryRuntime\restored-data
+& .\.venv\Scripts\python.exe .\deploy\windows\runtime.py --env-file C:\ChatFoundryRuntime\server.env restore --archive C:\ChatFoundryBackups\20260101-120000.zip --destination C:\ChatFoundryRuntime\restored-data
 ```
+
+上面的归档名仅为示例，替换为实际已成功生成的备份文件。
 
 首次从开发电脑带旧数据时，先停止开发后端，用原项目的全量备份工具导出，并在服务器创建新账号之前完成恢复。先确认备份文件校验成功；停服务，将 `server.env` 的 `DATA_DIR` 指向恢复目录，并授予服务读写权限：
 

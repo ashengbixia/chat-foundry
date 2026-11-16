@@ -99,12 +99,16 @@ def failure_report(raw_results, error_info):
         if item.get('limitations'):
             lines.append('  ' + item['limitations'][:220])
     if not tasks:
-        candidates = sum(len(item.get('results', [])) for item in data)
-        sources = sum(len(item.get('chunks', [])) for item in data)
+        candidates = sum(len(item['results']) for item in data if isinstance(item.get('results'), list))
+        sources = sum(1 for item in data if isinstance(item.get('text_content'), str) and item['text_content'].strip())
+        sources += sum(1 for item in data for chunk in (item.get('chunks') if isinstance(item.get('chunks'), list) else [])
+                       if isinstance(chunk, dict) and isinstance(chunk.get('content'), str) and chunk['content'].strip())
         lines.append(f'已取得 {sources} 段原文及 {candidates} 条搜索候选；候选摘要尚不等于已核实的结论。')
         errors = list(dict.fromkeys(item['error'] for item in data if isinstance(item.get('error'), str)))
         for error in errors[:3]:
             lines.append('- 读取未完成：' + error[:180])
     reason = '输入预算不足' if error_info['code'] == 'input_budget_exceeded' else '模型在汇总阶段仍请求工具，已停止追加调用' if error_info['code'] == 'model_ignored_final_phase' else '模型请求或执行未正常结束'
+    if error_info['code'].startswith('model_http_') and error_info['code'][11:].isdigit():
+        reason = '模型服务返回 HTTP ' + error_info['code'][11:]
     lines.extend(['', f'由于{reason}，没有继续补搜或补造结论。完整过程与已返回来源保留在工具记录中。'])
     return '\n'.join(lines)

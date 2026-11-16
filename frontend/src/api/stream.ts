@@ -1,4 +1,10 @@
 import { createApiError } from './errors'
+import type { ContextSummary } from './chats'
+
+export type ContextStreamEvent =
+  | { type: 'context_checkpoint'; messageId: string; summary: ContextSummary }
+  | { type: 'context_sources'; chunks: unknown[] }
+  | { type: 'context_status'; status: string; text: string }
 
 export type ToolStreamEvent = // 后端收齐工具参数后才发送调用事件，结果用同一个 callId 关联
   | { type: 'tool_call'; callId: string; name: string; arguments: string; displayName?: string }
@@ -12,6 +18,7 @@ export type ChatStreamEvent =
   | { type: 'error'; message: string }
   | ToolStreamEvent
   | ProcessStreamEvent
+  | ContextStreamEvent
 
 
 export function parseSseEvent(
@@ -49,6 +56,14 @@ export function parseSseEvent(
     if ('call_id' in data && typeof data.call_id === 'string' && data.call_id && 'output' in data && typeof data.output === 'string') {
       return { type: 'tool_result', callId: data.call_id, output: data.output, ...('duration_ms' in data && typeof data.duration_ms === 'number' ? { durationMs: data.duration_ms } : {}) }
     }
+  } else if (eventType === 'context_checkpoint') {
+    if ('message_id' in data && typeof data.message_id === 'string' && 'summary' in data && data.summary && typeof data.summary === 'object' && 'text' in data.summary && typeof data.summary.text === 'string') {
+      return { type: 'context_checkpoint', messageId: data.message_id, summary: data.summary as ContextSummary }
+    }
+  } else if (eventType === 'context_sources') {
+    if ('chunks' in data && Array.isArray(data.chunks)) return { type: 'context_sources', chunks: data.chunks }
+  } else if (eventType === 'context_status') {
+    if ('status' in data && typeof data.status === 'string' && 'text' in data && typeof data.text === 'string') return { type: 'context_status', status: data.status, text: data.text }
   } else if (eventType === 'done') {
     if ('message_id' in data && typeof data.message_id === 'string') {
       return { type: 'done', messageId: data.message_id, ...('duration_ms' in data && typeof data.duration_ms === 'number' ? { durationMs: data.duration_ms } : {}) }
@@ -71,7 +86,8 @@ export async function streamChatReply(
     signal?: AbortSignal,
     onTool?: (event: ToolStreamEvent) => void,
     onProcess?: (event: ProcessStreamEvent) => void,
-    onDone?: (durationMs?: number) => void): Promise<string> {
+    onDone?: (durationMs?: number) => void,
+    onContext?: (event: ContextStreamEvent) => void): Promise<string> {
   const response = await fetch(
       `/api/chats/${encodeURIComponent(chatId)}/respond`,
       {
@@ -119,6 +135,8 @@ export async function streamChatReply(
           onProcess?.(event)
         } else if (event?.type === 'tool_call' || event?.type === 'tool_result') {
           onTool?.(event) // 将工具事件交给仓库，不在请求层修改页面状态
+        } else if (event?.type === 'context_checkpoint' || event?.type === 'context_sources' || event?.type === 'context_status') {
+          onContext?.(event)
         } else if (event?.type === 'error') {
           throw new Error(event.message)
         } else if (event?.type === 'done') {

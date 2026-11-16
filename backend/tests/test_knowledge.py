@@ -31,6 +31,9 @@ from backend.app.chat.guards import acquire_generation, release_generation
 
 class KnowledgeTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
+        summary = patch('backend.app.chat.compaction.summarize_history', AsyncMock(return_value='历史目标与证据位置保留，具体条款需核对原文。'))
+        summary.start()
+        self.addCleanup(summary.stop)
         self.engine = create_async_engine("sqlite+aiosqlite:///:memory:")
         self.sessions = async_sessionmaker(self.engine, expire_on_commit=False)
         await create_tables(self.engine)
@@ -283,8 +286,9 @@ class KnowledgeTests(unittest.IsolatedAsyncioTestCase):
             if len(turns) == 1:
                 self.assertIn('read_history_sources', str(tools))
                 self.assertNotIn('search_uploaded_files', str(tools))
-                self.assertNotIn('text_content', str(messages))
-                yield {'type': 'tool_call_delta', 'tool_calls': [{'index': 0, 'id': 'history-1', 'function': {'name': 'read_history_sources', 'arguments': '{"source_ids":["H1"]}'}}]}
+                self.assertIn('text_content', str(messages))
+                self.assertIn('FT-204表示泵出口流量', str(messages))
+                yield {'type': 'text_delta', 'text': '依据历史快照，是泵出口流量[1]。'}
             else:
                 latest = json.loads(messages[-1]['content'])
                 if not latest['chunks']:
@@ -325,7 +329,7 @@ class KnowledgeTests(unittest.IsolatedAsyncioTestCase):
                 async with self.sessions() as session:
                     await create_message(session, 'chat', 'user', '请总结全文', file_ids=['f1'])
                 async def final_answer(messages, tools):
-                    data = json.loads(messages[-1]['content'])
+                    data = json.loads(next(item['content'] for item in reversed(messages) if item.get('role') == 'tool'))
                     self.assertTrue(data['complete'])
                     self.assertEqual(data['complete_files'], 1)
                     yield {'type': 'text_delta', 'text': '已按各段归纳全文[1]。'}

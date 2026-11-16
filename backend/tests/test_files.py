@@ -17,6 +17,18 @@ from backend.app.repositories.file import list_files
 from backend.tests.index_fixture import mock_file_vectors
 
 class FileUploadTests(unittest.IsolatedAsyncioTestCase):  # 测试仅使用临时目录和内存数据库
+    async def test_document_upload_keeps_original_and_exposes_indexed_extracted_text(self):
+        from backend.tests.test_document_parsing import sample_documents
+        for extension, content, expected in sample_documents():
+            response = await self.upload(content, 'sample' + extension, 'application/octet-stream')
+            self.assertEqual(response.status_code, 201, response.text)
+            file_id = response.json()['id']
+            extracted = await self.client.get(f'/api/files/{file_id}/content')
+            self.assertIn(expected, extracted.json()['text_content'])
+            record = next(record for record in await self.records() if record.id == file_id)
+            self.assertEqual((self.upload_dir / record.storage_path).read_bytes(), content)
+            self.assertEqual(record.index_status, 'ready')
+
     async def asyncSetUp(self):
         self.engine = create_async_engine("sqlite+aiosqlite:///:memory:")
         self.sessions = async_sessionmaker(self.engine, expire_on_commit=False)
@@ -104,7 +116,7 @@ class FileUploadTests(unittest.IsolatedAsyncioTestCase):  # 测试仅使用临�
             await engine.dispose()
 
     async def test_extension_and_filename_validation(self):
-        for filename in ["test.pdf", "test.txt.exe", "a" * 252 + ".txt"]:
+        for filename in ["test.doc", "test.txt.exe", "a" * 252 + ".txt"]:
             self.assertEqual((await self.upload(filename=filename)).status_code, 400)
         self.assertEqual(await self.records(), [])
         self.assertFalse(self.upload_dir.exists())

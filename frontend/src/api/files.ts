@@ -13,7 +13,7 @@ export async function listFiles(signal?: AbortSignal): Promise<FileInfo[]> { // 
 }
 export function validateTextFile(file: Pick<File, 'name' | 'size'>): string { // 前端提前提示，后端仍需实际校验
   if (!file.name || file.name.length > 255) return '文件名不能为空，且不能超过255个字符'
-  if (!file.name.toLowerCase().endsWith('.txt')) return '当前仅支持UTF-8编码的TXT文件'
+  if (!/\.(txt|pdf|docx|xlsx)$/i.test(file.name)) return '仅支持TXT、PDF、Word(.docx)、Excel(.xlsx)，旧版.doc/.xls请先转换'
   if (file.size === 0) return '不能上传空文件'
   if (file.size > MAX_UPLOAD_SIZE) return '文件大小不能超过5MB'
   return ''

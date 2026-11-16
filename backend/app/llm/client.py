@@ -7,6 +7,8 @@ from typing import Any  # 模型消息和事件可以包含不同类型的数据
 from contextlib import aclosing  # 外层停止读取时，及时关闭内部模型流
 from backend.app.llm.budget import ensure_input_budget
 from backend.app.llm.connection import ModelConnection
+from backend.app.llm.messages import complete_tool_reasoning
+from backend.app.llm.capabilities import apply_model_capabilities
 
 class ModelStreamError(RuntimeError):
     """模型流未完整结束，或回答被服务端截断；说明可直接展示给用户。"""
@@ -38,6 +40,7 @@ async def generate_reply(message: str, connection: ModelConnection | None = None
         "stream": False,
         "max_tokens": settings.llm_max_output_tokens,
     }
+    payload = apply_model_capabilities(payload, connection)
     ensure_input_budget(payload["messages"], None, settings.llm_context_window, settings.llm_max_output_tokens, settings.llm_context_margin)
 
     async with model_client(connection,
@@ -65,10 +68,11 @@ async def generate_reply(message: str, connection: ModelConnection | None = None
 
         return content
 
-async def stream_model_events(messages: list[dict[str, Any]], tools: list[dict[str, Any]] | None = None, connection: ModelConnection | None = None) -> AsyncIterator[dict[str, Any]]:
+async def stream_model_events(messages: list[dict[str, Any]], tools: list[dict[str, Any]] | None = None, connection: ModelConnection | None = None, *, max_output_tokens: int | None = None, tool_choice: Any = None) -> AsyncIterator[dict[str, Any]]:
     """流式读取模型的正文和工具调用片段，不执行工具。"""
 
     connection = connection or ModelConnection(settings.llm_base_url, settings.llm_model, settings.llm_timeout, settings.llm_api_key)
+    output_tokens = min(max_output_tokens, settings.llm_max_output_tokens) if max_output_tokens is not None else settings.llm_max_output_tokens
     api_key = connection.api_key.get_secret_value()  # 流式请求同样只在后端读取真实密钥
     if not all((
         connection.base_url,
@@ -83,22 +87,46 @@ async def stream_model_events(messages: list[dict[str, Any]], tools: list[dict[s
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"
 
+    messages = complete_tool_reasoning(messages)
     payload = {
         "model": connection.model,
         "messages": messages,
-        "stream": True,
-        "max_tokens": settings.llm_max_output_tokens,
+        "stream": connection.capabilities.streaming,
+        "max_tokens": output_tokens,
     }
     if tools:
         payload["tools"] = tools  # 本次请求允许模型使用的工具
-        payload["tool_choice"] = "auto"  # 允许模型选择调用工具或直接回答
+        payload["tool_choice"] = tool_choice or "auto"  # 诊断可明确要求测试工具，正常聊天维持auto
     else:
         payload['tool_choice'] = 'none'  # 显式禁止调用，不能依赖供应商的默认行为。
-    ensure_input_budget(messages, tools, settings.llm_context_window, settings.llm_max_output_tokens, settings.llm_context_margin)  # 所有流式入口都必须通过检查
+    payload = apply_model_capabilities(payload, connection)
+    ensure_input_budget(payload['messages'], payload.get('tools'), settings.llm_context_window, output_tokens, settings.llm_context_margin)
 
     async with model_client(connection,
         timeout=connection.timeout
     ) as client:
+        if not connection.capabilities.streaming:
+            response = await client.post(url, headers=headers, json=payload)
+            response.raise_for_status()
+            choice = response.json()['choices'][0]
+            message = choice.get('message') or {}
+            reasoning = message.get('reasoning_content') or message.get('reasoning') or message.get('thinking')
+            if isinstance(reasoning, str) and reasoning:
+                yield {'type': 'reasoning_delta', 'text': reasoning}
+            content = message.get('content')
+            if isinstance(content, str) and content:
+                yield {'type': 'text_delta', 'text': content}
+            calls = message.get('tool_calls') or []
+            if calls:
+                yield {'type': 'tool_call_delta', 'tool_calls': [dict(call, index=index) for index, call in enumerate(calls)]}
+            reason = choice.get('finish_reason')
+            if reason == 'length':
+                raise ModelStreamError('模型输出达到长度限制，本次回答不完整')
+            if reason not in ('stop', 'tool_calls') or (reason == 'tool_calls') != bool(calls):
+                raise ModelStreamError('模型返回的工具调用与结束原因不一致或不受支持')
+            if not calls and not (isinstance(content, str) and content.strip()):
+                raise ModelStreamError('模型没有返回正文或工具调用')
+            return
         async with client.stream(
             "POST",
             url,

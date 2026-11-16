@@ -124,6 +124,12 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\deploy\windows\Manage-
 
 ## 5. 后续更新、迁移和备份
 
+### 模型能力配置与多格式文档版本
+
+新增模型能力与分项诊断、PDF/DOCX/XLSX上传的版本，同时涉及前后端、新Python依赖和数据库迁移（最新为e06a91c4d873，包含推荐追问开关、账号记忆与工具开关、模型能力和消息摘要检查点）。升级时必须按下文先停机备份，再覆盖完整新版部署包，使用Configure的 `-InstallDependencies` 安装解析依赖，执行runtime.py的upgrade，成功后再启动服务。只替换脚本或只更新dist不能完成此次升级。旧TXT、已有模型Key、会话和引用均保留，不需要重新上传原文件。
+
+### 常规更新流程
+
 **先备份，再更新代码，涉及数据库变化再迁移。** 同一管理员PowerShell中，先停服务，然后用旧代码备份：
 
 ```powershell

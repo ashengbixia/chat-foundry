@@ -1,5 +1,8 @@
 from urllib.parse import urlsplit
 
+ACCOUNT_FILE_SOURCE_TOOLS = {'query_knowledge_files', 'grep_knowledge_files', 'view_knowledge_file', 'kb_exec', 'display_file'}
+FILE_BROWSING_SOURCE_TOOLS = ACCOUNT_FILE_SOURCE_TOOLS | {'view_file', 'grep_chat_files'}
+
 
 def is_web_source(item):
     if not isinstance(item, dict) or item.get('source_type') != 'web' or not isinstance(item.get('url'), str) or not isinstance(item.get('title'), str):

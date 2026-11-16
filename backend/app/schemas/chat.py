@@ -1,4 +1,4 @@
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 class ChatCreate(BaseModel):
@@ -63,6 +63,7 @@ class MessageResponse(BaseModel):
     role: str
     content: str
     output: list
+    context_summary: dict | None = None
     attachments: list[MessageAttachmentResponse] = Field(default_factory=list)  # 旧消息没有附件时返回空列表
     status: str
     model: str | None
@@ -76,11 +77,27 @@ class MessagePageResponse(BaseModel):  # 一批消息和继续加载所需的信
     has_more: bool  # 是否还有更早消息
     next_before_sequence: int | None  # 下一批查询边界，没有下一批时为 None
 
+class ClarificationReply(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    message_id: str = Field(min_length=1, max_length=36)
+    call_id: str = Field(min_length=1, max_length=200)
+    answers: dict[str, str] = Field(default_factory=dict, max_length=3)
+    cancelled: bool = Field(default=False, strict=True)
+
+    @field_validator('answers')
+    @classmethod
+    def bounded_answers(cls, value):
+        if any(len(key) > 64 or len(answer) > 2000 for key, answer in value.items()):
+            raise ValueError('答案过长')
+        return value
+
+
 class MessageCreate(BaseModel):
     """客户端提交的用户消息。"""
     model_config = ConfigDict(str_strip_whitespace=True)
     content: str = Field(min_length=1,max_length=10000,)
     file_ids: list[str] = Field(default_factory=list, max_length=3)  # 每条用户消息最多3份附件
+    clarification: ClarificationReply | None = None
 
 class ChatRename(BaseModel):  # 修改会话标题的请求格式
     model_config = ConfigDict(str_strip_whitespace=True)  # 自动去掉两端空白

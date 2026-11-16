@@ -24,9 +24,14 @@ def is_greeting(text):
 async def title_round(session, chat_id):
     rows = (await session.execute(select(Message).where(Message.chat_id == chat_id).order_by(Message.sequence))).scalars()
     question = None
+    clarifying = False
     for message in rows:
         if message.role == 'user':
-            question = message.content if not is_greeting(message.content) else None
+            if not clarifying:
+                question = message.content if not is_greeting(message.content) else None
+            clarifying = False
+        elif question and any(isinstance(item, dict) and item.get('type') == 'function_call' and item.get('name') == 'ask_user' for item in (getattr(message, 'output', None) or [])):
+            clarifying = True  # 标题围绕原任务，不用“我选第二项”替换原问题。
         elif question and message.role == 'assistant' and message.status == 'completed' and message.content.strip():
             return question, message.content
     return None
@@ -71,8 +76,9 @@ async def generate_title(question, answer, connection):
         headers['Authorization'] = f'Bearer {key}'
     from backend.app.llm.http import model_client
     async with model_client(connection, timeout=min(connection.timeout, 20)) as client:
+        from backend.app.llm.capabilities import apply_model_capabilities
         response = await client.post(connection.base_url.rstrip('/') + '/chat/completions', headers=headers,
-                                     json={'model': connection.model, 'messages': messages, 'stream': False, 'max_tokens': max_tokens})
+                                     json=apply_model_capabilities({'model': connection.model, 'messages': messages, 'stream': False, 'max_tokens': max_tokens}, connection))
         response.raise_for_status()
         choice = response.json()['choices'][0]
         if choice.get('finish_reason') not in (None, 'stop'):

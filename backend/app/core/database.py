@@ -45,6 +45,7 @@ async def get_db():
     async with SessionLocal() as session:
         yield session
 def register_models():  # 集中注册模型，供启动、迁移检查和测试共用
+    from backend.app.models.memory import Memory, UserToolSetting
     from backend.app.models.subagent import SubagentTask
     from backend.app.models.file_cleanup import FileCleanup
     from backend.app.models.chat_file import ChatFile

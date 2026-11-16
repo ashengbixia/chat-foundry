@@ -1,6 +1,9 @@
 import { createApiError } from './errors'
 
 export type ModelProvider = 'server' | 'deepseek' | 'openai' | 'qwen' | 'ollama' | 'custom'
+export interface ModelCapabilities { tools: boolean; streaming: boolean; thinking: 'default' | 'enabled' | 'disabled'; thinking_parameter: 'thinking' | 'enable_thinking'; reasoning_content: 'preserve' | 'omit' }
+export const defaultCapabilities = (): ModelCapabilities => ({ tools: true, streaming: true, thinking: 'default', thinking_parameter: 'thinking', reasoning_content: 'preserve' })
+export interface DiagnosticCheck { id: string; label: string; status: 'passed' | 'failed' | 'limited' | 'skipped'; message: string; duration_ms: number; code?: string }
 export interface ModelCatalog { models: string[]; notice?: string; capabilities?: Record<string, string[]>; excluded_models?: { id: string; reason: string }[] } // 未知类型保留，只有服务明确声明的向量模型才被过滤
 export interface ModelServiceConfig { // 响应中只有Key状态，没有明文或密文
   provider: ModelProvider
@@ -9,6 +12,8 @@ export interface ModelServiceConfig { // 响应中只有Key状态，没有明文
   timeout: number
   key_source: 'environment' | 'personal' | 'none'
   key_configured: boolean
+  capabilities?: ModelCapabilities
+  model_profiles?: Record<string, ModelCapabilities>
 }
 export interface ModelServiceDraft extends Omit<ModelServiceConfig, 'key_configured'> { api_key: string | null } // null表示地址未变时保留已保存的个人Key
 export interface ModelPreset { id: ModelProvider; name: string; base_url: string; model: string }
@@ -23,6 +28,7 @@ export const saveModelSettings = (body: ModelServiceDraft, signal?: AbortSignal)
 export const resetModelSettings = (signal?: AbortSignal) => request<void>('', 'DELETE', undefined, signal)
 export const discoverModels = (body: ModelServiceDraft, signal?: AbortSignal) => request<ModelCatalog>('/models', 'POST', body, signal)
 export const testModelService = (body: ModelServiceDraft, signal?: AbortSignal) => request<{ message: string; status?: 'ok' | 'limited' }>('/test', 'POST', body, signal)
+export const diagnoseModelService = (body: ModelServiceDraft, signal?: AbortSignal) => request<{ message: string; status: 'ok' | 'partial' | 'failed'; checks: DiagnosticCheck[] }>('/diagnose', 'POST', body, signal)
 export async function selectModel(model: string, base_url: string, signal?: AbortSignal): Promise<{ config: ModelServiceConfig; inherited: boolean }> { // 快捷切换只提交模型名和校验地址，不携带Key
   const response = await fetch('/api/settings/model-service/model', { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ model, base_url }), signal })
   if (!response.ok) throw await createApiError(response, '切换模型失败')

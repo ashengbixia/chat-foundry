@@ -153,10 +153,13 @@ async def list_messages_page(session: AsyncSession, chat_id: str, before_sequenc
 async def list_recent_messages(
     session: AsyncSession,
     chat_id: str,
-    limit: int = 50,
+    limit: int | None = None,
 ) -> list[Message]:
     """获取最近的已完成消息，返回时按序号从小到大排列。"""
 
+    checkpoint_sequence = (await session.execute(select(func.max(Message.sequence)).where(
+        Message.chat_id == chat_id, Message.context_summary.is_not(None),
+        Message.role == 'user', Message.status == 'completed'))).scalar_one()
     statement = (
         select(Message)
         .where(
@@ -165,8 +168,11 @@ async def list_recent_messages(
             Message.role.in_(["user", "assistant"]),
         )
         .order_by(Message.sequence.desc())
-        .limit(limit)
     )
+    if checkpoint_sequence is not None:
+        statement = statement.where(Message.sequence >= checkpoint_sequence)
+    if limit is not None:
+        statement = statement.limit(limit)
 
     result = await session.execute(statement)
     messages = list(result.scalars().all())

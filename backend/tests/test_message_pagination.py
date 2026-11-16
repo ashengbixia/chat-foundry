@@ -121,10 +121,10 @@ class MessagePaginationTests(unittest.IsolatedAsyncioTestCase):  # 所有数据�
                 response = await self.client.get("/api/chats/main/messages", params=params)
                 self.assertEqual(response.status_code, 422)
 
-    async def test_model_history_query_unchanged(self):  # 给模型读取的历史仍然只包含已完成消息
+    async def test_model_history_has_no_fixed_fifty_message_cutoff(self):
         async with self.sessions() as session:
             items = await list_recent_messages(session, "main")
-            self.assertEqual(len(items), 50)
+            self.assertEqual(len(items), 197)
             self.assertTrue(all(item.status == "completed" for item in items))
             self.assertEqual(items[-1].sequence, 197)
 

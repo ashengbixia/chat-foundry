@@ -1,16 +1,23 @@
 import json
-from backend.app.chat.source_types import is_web_source
+from backend.app.chat.source_types import is_web_source, FILE_BROWSING_SOURCE_TOOLS
 
-SOURCE_TOOLS = {"search_uploaded_files", "read_uploaded_file", "read_history_sources", "summarize_uploaded_files", "read_webpage", 'delegate_task', 'get_subagent_task'}
+SOURCE_TOOLS = {"search_uploaded_files", "read_uploaded_file", "read_history_sources", "summarize_uploaded_files", "read_webpage", 'delegate_task', 'get_subagent_task'} | FILE_BROWSING_SOURCE_TOOLS
 
 
-def collect_history_sources(history: list) -> dict[str, dict]:  # 只从当前会话真实工具结果提取证据，不能把助手自己的说法当作原文
+def collect_history_sources(history: list, limit: int | None = 40) -> dict[str, dict]:  # 只从真实工具结果提取证据
     sources, seen = {}, set()
     for message in reversed(history):
         if message.role != "assistant" or message.status != "completed":
             continue
         calls = {}
-        for item in getattr(message, "output", []) or []:
+        output, cached = [], []
+        for item in getattr(message, 'output', []) or []:
+            if isinstance(item, dict) and item.get('type') == 'context_sources':
+                cached.extend([{'type': 'function_call', 'call_id': 'replayed_context', 'name': 'read_history_sources'},
+                               {'type': 'function_call_output', 'call_id': 'replayed_context', 'output': json.dumps({'chunks': item.get('chunks', [])}, ensure_ascii=False)}])
+            else:
+                output.append(item)
+        for item in output + cached:
             if not isinstance(item, dict):
                 continue
             if item.get("type") == "function_call":
@@ -46,7 +53,7 @@ def collect_history_sources(history: list) -> dict[str, dict]:  # 只从当前�
                 source_id = f"H{len(sources) + 1}"
                 identity_fields = {'source_type': 'web', 'url': chunk['url'], 'title': chunk['title'], 'filename': chunk['title'], 'retrieved_at': chunk.get('retrieved_at')} if web else {'file_id': chunk['file_id'], 'filename': chunk['filename']}
                 sources[source_id] = {"source_id": source_id, **identity_fields, "content": text, "start_offset": offset, "end_offset": offset + len(text), "historical": True, "origin_message_id": chunk.get("origin_message_id") or getattr(message, "id", None), "origin_created_at": chunk.get("origin_created_at") or getattr(message, "created_at", None), "truncated": bool(chunk.get("truncated"))}
-                if len(sources) >= 40:
+                if limit is not None and len(sources) >= limit:
                     return sources
     return sources
 

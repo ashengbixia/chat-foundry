@@ -28,11 +28,13 @@ function component(filename, mocks) { // 在内存编译真实 Vue 组件，用�
   return module.exports.default
 }
 const processUtils = createTypeScriptLoader()('src/utils/messageProcess.ts')
-const ToolCallList = component('ToolCallList.vue', { '../../utils/toolOutput': utils, '../../utils/messageProcess': processUtils, './SubagentTasks.vue': { render: () => null } })
+const FileToolPreview = component('FileToolPreview.vue', {})
+const ToolCallList = component('ToolCallList.vue', { '../../utils/toolOutput': utils, '../../utils/messageProcess': processUtils, './SubagentTasks.vue': { render: () => null }, './FileToolPreview.vue': FileToolPreview })
 const MessageProcess = component('MessageProcess.vue', { '../../utils/toolOutput': utils, '../../utils/messageProcess': processUtils, '../../utils/markdown': createTypeScriptLoader()('src/utils/markdown.ts'), './ToolCallList.vue': ToolCallList })
 const loader = createTypeScriptLoader()
 const MessageAnswer = component('MessageAnswer.vue', { '../../utils/markdown': loader('src/utils/markdown.ts'), '../../utils/citations': loader('src/utils/citations.ts'), '../../utils/dialog': loader('src/utils/dialog.ts'), '../../api/files': loader('src/api/files.ts'), '../../api/errors': loader('src/api/errors.ts') })
-const MessageList = component('MessageList.vue', { './MessageProcess.vue': MessageProcess, '../../utils/messageProcess': processUtils, './MessageAnswer.vue': MessageAnswer })
+const UserQuestionCard = component('UserQuestionCard.vue', {})
+const MessageList = component('MessageList.vue', { './MessageProcess.vue': MessageProcess, '../../utils/messageProcess': processUtils, './MessageAnswer.vue': MessageAnswer, './FileToolPreview.vue': FileToolPreview, '../../utils/toolOutput': utils, './UserQuestionCard.vue': UserQuestionCard, './FollowUps.vue': { render: () => null }, '../../utils/userQuestions': loader('src/utils/userQuestions.ts') })
 const MessageInput = component('MessageInput.vue', { './ComposerResourceMenu.vue': component('ComposerResourceMenu.vue', { '../../api/files': loader('src/api/files.ts'), '../../api/knowledge': loader('src/api/knowledge.ts') }) })
 
 test('来源只从配对工具结果恢复，快照定位兼容中文及emoji', () => {
@@ -124,6 +126,36 @@ test('消息列表保留助手正文，只有助手的工具记录会展示', as
   assert.equal((html.match(/class="tool-call"/g) ?? []).length, 1)
   assert.match(html, /用户正文/)
   assert.match(html, /助手正文/)
+})
+
+test('压缩标记挂在原消息前且默认收起，摘要内容按普通文字展示', async () => {
+  const messages = [{ id: 'anchor', role: 'user', content: '继续讨论', status: 'completed', output: [], context_summary: { text: '<script>旧目标</script>', through_sequence: 20 } }]
+  const html = await renderToString(createSSRApp(MessageList, { messages }))
+  assert.equal((html.match(/<article/g) ?? []).length, 1)
+  assert.match(html, /此前对话已压缩/)
+  assert.match(html, /&lt;script&gt;旧目标/)
+  assert.ok(!html.includes('<details open'))
+})
+
+test('文件展示工具直接显示安全正文预览，新工具来源也能引用', async () => {
+  const payload = { display_file: true, chunks: [{ file_id: 'f', filename: '规则.txt', content: '<script>原文</script>', start_offset: 4, citation_id: 1 }], has_more: true }
+  const output = [call('preview', 'display_file'), result('preview', JSON.stringify(payload))]
+  const html = await renderToString(createSSRApp(MessageList, { messages: [{ id: 'preview', role: 'assistant', content: '文件已展示', output, status: 'completed' }] }))
+  assert.match(html, /文件正文预览/)
+  assert.match(html, /&lt;script&gt;原文/)
+  const sources = loader('src/utils/citations.ts').getCitationSources(output)
+  assert.equal(sources[0].filename, '规则.txt')
+  assert.equal(sources[0].startOffset, 4)
+})
+
+test('追问卡片展示选项与自由输入入口，不预先代替用户选择', async () => {
+  const call = { callId: 'ask', status: 'awaiting_user', answers: {}, questions: [{ id: 'scope', question: '选择范围？', allow_other: true, options: [{ label: '基础', description: '常用流程' }, { label: '完整', description: '更多场景' }] }] }
+  const html = await renderToString(createSSRApp(UserQuestionCard, { call, messageId: 'question', active: true }))
+  assert.match(html, /提交并继续/)
+  assert.match(html, /自己填写/)
+  assert.match(html, /推荐/)
+  assert.ok(!/<input[^>]*\schecked/.test(html))
+  assert.match(html, /<button[^>]*disabled[^>]*>提交并继续/)
 })
 
 test('实时调用随消息结束状态切换，不会在取消或报错后继续转圈', async () => {

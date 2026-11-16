@@ -80,6 +80,7 @@ class Message(Base):
 
     # 结构化输出：以后保存正文、思考、工具调用等条目。
     output: Mapped[list] = mapped_column(JSON, default=list)
+    context_summary: Mapped[dict | None] = mapped_column(JSON(none_as_null=True), nullable=True)
 
     # generating / completed / cancelled / failed。
     status: Mapped[str] = mapped_column(

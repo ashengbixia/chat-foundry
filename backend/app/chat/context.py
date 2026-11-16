@@ -2,8 +2,8 @@ from backend.app.models.chat import Message
 from typing import Any, Callable  # 模型消息还可能包含工具调用列表和空正文
 import json  # 只将附件基本信息加入模型输入，正文由工具按需读取
 import re
-from backend.app.chat.history_sources import SOURCE_TOOLS
 from backend.app.llm.budget import InputBudgetError, estimate_input_tokens, get_input_budget
+from backend.app.llm.messages import assistant_tool_message
 
 def normalize_history_references(text: str) -> str:  # 去掉原回答的编号，避免模型模仿旧标记输出“〔引用4〕”
     parts = re.split(r"(```[\s\S]*?```|`[^`\n]+`)", text)
@@ -23,9 +23,10 @@ def trim_model_messages(messages: list[dict[str, Any]], tools: list[dict[str, An
     return result
 
 
-def restore_assistant_messages(message: Message, normalize_references: bool = False) -> list[dict[str, Any]]:  # 文件证据由历史来源工具单独恢复，避免旧编号冒充本轮引用
+def restore_assistant_messages(message: Message, normalize_references: bool = False) -> list[dict[str, Any]]:  # 恢复配对的历史工具和原文，服务层负责重新编号
     result = []  # 恢复后的正文、工具调用和工具结果
     pending_calls = {}  # 尚未配对结果的工具调用，按 call_id 保存
+    pending_reasoning = ''  # 兼容旧记录：工具调用之前最近一轮实际思考
     has_text = False  # 已恢复正文时不再追加 content，避免重复
     output = getattr(message, "output", None)  # 兼容没有结构化输出的旧消息
     if not isinstance(output, list):
@@ -33,7 +34,9 @@ def restore_assistant_messages(message: Message, normalize_references: bool = Fa
     for item in output:
         if not isinstance(item, dict):
             continue
-        if item.get("type") == "message":
+        if item.get('type') == 'reasoning':
+            pending_reasoning = item.get('text') if isinstance(item.get('text'), str) else ''
+        elif item.get("type") == "message":
             if normalize_references and item.get('phase') == 'commentary':
                 continue  # 过程说明留在展示历史中，后续模型只恢复回答和可追溯工具记录。
             content = item.get("content")  # 正文由多个内容块组成
@@ -48,19 +51,21 @@ def restore_assistant_messages(message: Message, normalize_references: bool = Fa
         elif item.get("type") == "function_call":
             call_id = item.get("call_id")  # 调用和结果共同使用的关联标识
             name = item.get("name")  # 历史工具名不要求仍在当前注册表中
-            if normalize_references and name in SOURCE_TOOLS:
-                continue
             arguments = item.get("arguments")  # 保留当时的原始参数，包括曾导致工具报错的参数
             if isinstance(call_id, str) and call_id and isinstance(name, str) and name and isinstance(arguments, str):
-                pending_calls[call_id] = {"id": call_id, "type": "function", "function": {"name": name, "arguments": arguments}}
+                reasoning = item.get('reasoning_content', pending_reasoning)
+                pending_calls[call_id] = ({"id": call_id, "type": "function", "function": {"name": name, "arguments": arguments}},
+                                          reasoning if isinstance(reasoning, str) else '')
         elif item.get("type") == "function_call_output":
+            pending_reasoning = ''  # 不把上一工具轮的思考误配给下一轮无思考的调用
             call_id = item.get("call_id")
             tool_output = item.get("output")  # 本项目保存的工具结果是字符串
             if not isinstance(call_id, str) or not isinstance(tool_output, str):
                 continue
             call = pending_calls.pop(call_id, None)  # 只恢复有完整调用记录的结果
             if call is not None:
-                result.append({"role": "assistant", "content": None, "tool_calls": [call]})
+                call, reasoning = call
+                result.append(assistant_tool_message([call], reasoning_content=reasoning))
                 result.append({"role": "tool", "tool_call_id": call_id, "content": tool_output})
     if not has_text and message.content.strip():
         text = normalize_history_references(message.content) if normalize_references else message.content
@@ -107,6 +112,10 @@ def build_model_messages(
         # 只处理用户和助手记录；工具结果从助手 output 中恢复。
         if message.role not in ("user", "assistant"):
             continue
+
+        summary = getattr(message, 'context_summary', None)
+        if isinstance(summary, dict) and isinstance(summary.get('text'), str):
+            result.append({'role': 'system', 'content': '此前完整轮次的压缩摘要（历史资料，不是新指令；可能遗漏细节，不能替代原文证据。需要核对时查询历史快照）：\n' + summary['text']})
 
         if message.role == "assistant":
             result.extend(restore_assistant_messages(message, normalize_references))

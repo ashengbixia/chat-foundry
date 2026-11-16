@@ -24,6 +24,7 @@ class ToolContext:
     cache: dict = field(default_factory=dict)  # 一次回答独有，不能跨用户或跨回答共享
     state: dict = field(default_factory=dict)  # 工具私有的单轮状态，按工具名称分区
     history: list | None = None  # 真实会话记录，用于需要核对用户输入的工具；不是模型传入的参数
+    history_lookup: Callable | None = None  # 绑定当前会话的快照查询
     web_search_enabled: bool = False  # 当前回答开始时的会话功能快照
     is_subagent: bool = False
     parent_message_id: str | None = None
@@ -32,6 +33,8 @@ class ToolContext:
     allowed_tools: frozenset[str] | None = None
     approved_urls: frozenset[str] | None = None
     web_origins: frozenset[str] = frozenset()  # 由真实用户请求确定，子任务只能继承。
+    account_id: str | None = None  # 从真实会话所有者取得，不接受模型参数
+    account_features: dict = field(default_factory=dict)
 
     async def refresh_access(self):
         if self.check_access is not None:
@@ -58,9 +61,9 @@ class ToolSpec:
             return False
         if self.scope == 'files' and not context.allowed_file_ids:
             return False
-        if self.scope == 'history' and not (context.resource_tools and context.history_sources):
+        if self.scope == 'history' and not (context.resource_tools and (context.history_sources or context.history_lookup)):
             return False
-        if self.scope == 'resources' and not (context.resource_tools and (context.allowed_file_ids or context.history_sources)):
+        if self.scope == 'resources' and not (context.resource_tools and (context.allowed_file_ids or context.history_sources or context.history_lookup)):
             return False
         if self.scope == 'resource_files' and not (context.resource_tools and context.allowed_file_ids):
             return False

@@ -304,11 +304,11 @@ async function togglePreview() { // 按需读取正文，再次展开同一文�
 
 <template>
   <section class="file-panel" aria-labelledby="file-panel-title" :aria-busy="busy">
-    <input ref="attachPicker" type="file" accept=".txt" multiple hidden aria-label="直接上传聊天附件" @change="uploadAttachments" />
+    <input ref="attachPicker" type="file" accept=".txt,.pdf,.docx,.xlsx" multiple hidden aria-label="直接上传聊天附件" @change="uploadAttachments" />
     <h2 id="file-panel-title">把资料带进对话</h2>
-    <p class="hint">支持 UTF-8 TXT，最大 5MB。上传后自动建立向量索引，状态会自动更新。</p>
+    <p class="hint">支持 TXT、PDF、DOCX、XLSX，最大 5MB。自动提取文字并建立索引；扫描 PDF 请先 OCR，Excel 不执行公式或宏。</p>
     <form class="upload-form" @submit.prevent="submitFile">
-      <label class="file-picker" :class="{ disabled: busy }"><span class="upload-symbol" aria-hidden="true">＋</span><strong>{{ selectedFile ? '重新选择文件' : '选择 TXT 文件' }}</strong><small>每次问题最多添加 3 份资料</small><input type="file" accept=".txt" :disabled="busy" aria-label="选择TXT文件" @change="selectFile" /></label>
+      <label class="file-picker" :class="{ disabled: busy }"><span class="upload-symbol" aria-hidden="true">＋</span><strong>{{ selectedFile ? '重新选择文件' : '选择文档' }}</strong><small>每次问题最多添加 3 份资料</small><input type="file" accept=".txt,.pdf,.docx,.xlsx" :disabled="busy" aria-label="选择文档文件" @change="selectFile" /></label>
       <button type="submit" :disabled="!selectedFile || busy">{{ uploading ? '正在上传并处理…' : '上传' }}</button>
     </form>
     <p v-if="selectedFile">待上传：{{ selectedFile.name }}（{{ formatSize(selectedFile.size) }}）</p>

@@ -13,6 +13,7 @@ from backend.app.core.config import settings
 from backend.app.core.database import get_db
 from backend.app.core.model_secrets import decrypt_api_key, encrypt_api_key
 from backend.app.llm.connection import ModelConnection
+from backend.app.llm.capabilities import ModelCapabilities, apply_model_capabilities
 from backend.app.models.model_setting import UserModelSetting
 from backend.app.models.user import User
 
@@ -41,6 +42,7 @@ class ModelServiceInput(BaseModel):
     timeout: float = Field(default=60, ge=5, le=600)
     key_source: Literal["personal", "environment", "none"] = "personal"
     api_key: SecretStr | None = Field(default=None, max_length=4096)  # null只在服务地址未变时保留当前账号的旧Key
+    capabilities: ModelCapabilities | None = None
 
     @field_validator("base_url")
     @classmethod
@@ -74,9 +76,11 @@ class ModelSelection(BaseModel):  # 快捷选择只更新模型名，不回传�
 
 def public_config(row: UserModelSetting | None) -> dict:  # 永不返回密钥明文、密文或主密钥
     if row is None:
-        return {"provider": "server", "base_url": settings.llm_base_url.rstrip("/"), "model": settings.llm_model, "timeout": settings.llm_timeout, "key_source": "environment", "key_configured": bool(settings.llm_api_key.get_secret_value())}
+        return {"provider": "server", "base_url": settings.llm_base_url.rstrip("/"), "model": settings.llm_model, "timeout": settings.llm_timeout, "key_source": "environment", "key_configured": bool(settings.llm_api_key.get_secret_value()), 'capabilities': ModelCapabilities().model_dump(), 'model_profiles': {}}
     configured = bool(row.encrypted_api_key) if row.key_source == "personal" else bool(settings.llm_api_key.get_secret_value()) if row.key_source == "environment" else False
-    return {"provider": row.provider, "base_url": row.base_url, "model": row.model, "timeout": row.timeout, "key_source": row.key_source, "key_configured": configured}
+    profiles = row.model_profiles or {}
+    return {"provider": row.provider, "base_url": row.base_url, "model": row.model, "timeout": row.timeout, "key_source": row.key_source, "key_configured": configured,
+            'capabilities': ModelCapabilities.model_validate(profiles.get(row.model, {})).model_dump(), 'model_profiles': profiles}
 
 def resolve_connection(data: ModelServiceInput, old: UserModelSetting | None, user_id: str | None = None) -> ModelConnection:
     try:
@@ -94,7 +98,9 @@ def resolve_connection(data: ModelServiceInput, old: UserModelSetting | None, us
                 key = decrypt_api_key(old.encrypted_api_key)
         else:
             key = ""
-        return ModelConnection(data.base_url, data.model, data.timeout, SecretStr(key), data.key_source == "none", user_id)
+        profiles = (old.model_profiles or {}) if old is not None and old.base_url == data.base_url else {}
+        capabilities = data.capabilities or ModelCapabilities.model_validate(profiles.get(data.model, {}))
+        return ModelConnection(data.base_url, data.model, data.timeout, SecretStr(key), data.key_source == "none", user_id, capabilities)
     except ValueError as error:
         raise HTTPException(400, str(error)) from None
 
@@ -121,6 +127,10 @@ async def save_model_settings(data: ModelServiceInput, user: User = Depends(get_
     await session.execute(update(User).where(User.id == user.id).values(name=User.name))  # 保存、恢复和快捷选择共用写锁
     row = await session.get(UserModelSetting, user.id)
     connection = resolve_connection(data, row, user.id)
+    profiles = dict(row.model_profiles or {}) if row is not None and row.base_url == data.base_url else {}
+    if data.model not in profiles and len(profiles) >= 100:
+        raise HTTPException(400, '当前服务最多保存100个模型的能力配置，请恢复默认或更换服务配置')
+    profiles[data.model] = connection.capabilities.model_dump()
     encrypted = None
     if data.key_source == "personal":
         try:
@@ -131,6 +141,7 @@ async def save_model_settings(data: ModelServiceInput, user: User = Depends(get_
         row = UserModelSetting(user_id=user.id)
         session.add(row)
     row.provider, row.base_url, row.model, row.timeout, row.key_source, row.encrypted_api_key = data.provider, data.base_url, data.model, data.timeout, data.key_source, encrypted
+    row.model_profiles = profiles
     await session.commit()
     return {"config": public_config(row), "inherited": False}
 
@@ -168,7 +179,9 @@ async def request_provider(connection: ModelConnection, models: bool) -> dict:  
     key = connection.api_key.get_secret_value()
     if key:
         headers["Authorization"] = f"Bearer {key}"
-    payload = None if models else {"model": connection.model, "messages": [{"role": "user", "content": "Reply only OK, without explanation. /no_think"}], "max_tokens": 512, "stream": False}  # 给思考型模型预留空间，支持/no_think的模型可直接短答
+    payload = None if models else {"model": connection.model, "messages": [{"role": "user", "content": "Reply only OK, without explanation."}], "max_tokens": 512, "stream": False}
+    if payload is not None:
+        payload = apply_model_capabilities(payload, connection)
     try:
         async with model_client(connection, timeout=min(connection.timeout, 20 if models else 120), follow_redirects=False) as client:
             async with client.stream("GET" if models else "POST", connection.base_url + ("/models" if models else "/chat/completions"), headers=headers, json=payload) as response:
@@ -267,3 +280,12 @@ async def test_model_service(data: ModelServiceInput, user: User = Depends(get_c
             return {"status": "limited", "message": "已连接，模型返回了思考内容，但达到测试输出上限，尚未验证最终正文；可保存后在实际对话中验证"}
         raise HTTPException(400, "模型请求已达到测试输出上限，尚未获得正文，不能据此判断模型不支持聊天")
     raise HTTPException(400, "模型已响应但没有返回正文，请检查模型生成设置")
+
+
+@router.post('/diagnose')
+async def diagnose_model_service(data: ModelServiceInput, user: User = Depends(get_current_user), session: AsyncSession = Depends(get_db)):
+    if not data.model:
+        raise HTTPException(400, '请先填写模型名称')
+    from backend.app.llm.diagnostics import diagnose_model
+    connection = resolve_connection(data, await session.get(UserModelSetting, user.id), user.id)
+    return await diagnose_model(connection, lambda: request_provider(connection, False))

@@ -38,6 +38,7 @@ export async function setChatFeatures(chatId: string, webSearchEnabled: boolean)
 }
 
 export interface ChatMessage {
+  context_summary?: ContextSummary | null
   id: string
   chat_id: string
   sequence: number
@@ -53,15 +54,25 @@ export interface ChatMessage {
   updated_at: number
 }
 
+export interface ContextSummary {
+  text: string
+  through_sequence: number
+  anchor_sequence: number
+  created_at: number
+  model: string
+}
+
 export interface MessagePage { // 后端返回的一批消息及下一批查询信息
   items: ChatMessage[] // 本批消息，按序号从小到大排列
   has_more: boolean // 是否还有更早消息
   next_before_sequence: number | null // 下一批查询边界
 }
+export interface ClarificationReply { message_id: string; call_id: string; answers: Record<string, string>; cancelled: boolean }
 export async function saveUserMessage(
   chatId: string,
   content: string,
   fileIds: string[] = [], // 旧调用不传时仍然发送纯文本问题
+  clarification?: ClarificationReply,
 ): Promise<ChatMessage> {
   const response = await fetch(
     `/api/chats/${encodeURIComponent(chatId)}/messages`,
@@ -70,7 +81,7 @@ export async function saveUserMessage(
       headers: {
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify({ content, file_ids: fileIds }),
+      body: JSON.stringify({ content, file_ids: fileIds, ...(clarification ? { clarification } : {}) }),
     },
   )
 

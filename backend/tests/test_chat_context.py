@@ -48,7 +48,7 @@ class ChatContextTests(unittest.TestCase):
         with patch("backend.app.tools.registry.execute_tool") as execute:
             messages = build_model_messages(history, "")
         execute.assert_not_called()  # 恢复的是历史结果，不能再次查询当前时间
-        self.assertEqual(messages, [{"role": "assistant", "content": None, "tool_calls": [{"id": "c1", "type": "function", "function": {"name": "get_current_time", "arguments": "{}"}}]}, {"role": "tool", "tool_call_id": "c1", "content": '{"timezone":"Asia/Shanghai"}'}, {"role": "assistant", "content": "现在是北京时间。"}])
+        self.assertEqual(messages, [{"role": "assistant", "content": None, "reasoning_content": "", "tool_calls": [{"id": "c1", "type": "function", "function": {"name": "get_current_time", "arguments": "{}"}}]}, {"role": "tool", "tool_call_id": "c1", "content": '{"timezone":"Asia/Shanghai"}'}, {"role": "assistant", "content": "现在是北京时间。"}])
 
     def test_multiple_tool_rounds_preserve_order(self):
         output = [text("先查询"), call("c1"), result("c1"), text("继续确认"), call("c2"), result("c2"), text("最终回答")]

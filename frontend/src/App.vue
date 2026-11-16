@@ -215,6 +215,21 @@ async function sendChatMessage() { // 第一次发送时自动新建会话，保
   }
   await sendMessage()
 }
+async function answerQuestion(value: { text: string; clarification: import('./api/chats').ClarificationReply }) {
+  if (interactionBusy.value) return
+  await sendMessage(value)
+}
+async function chooseFollowUp(question: string) {
+  if (interactionBusy.value) return
+  if (inputText.value.trim() || selectedAttachments.value.length) {
+    inputText.value = inputText.value.trim() ? `${inputText.value}\n${question}` : question
+    notify('已加入输入框，草稿和附件已保留，可编辑后发送')
+    await focusComposer()
+    return
+  }
+  inputText.value = question
+  await sendChatMessage()
+}
 </script>
 
 <template>
@@ -259,7 +274,7 @@ async function sendChatMessage() { // 第一次发送时自动新建会话，保
             </button>
             <small v-else-if="messages.length">对话从这里开始</small>
           </div>
-          <MessageList :messages="messages" :has-chat="!!currentChat" @updated="chatStore.refreshSubagentMessages($event)" />
+          <MessageList :messages="messages" :has-chat="!!currentChat" :busy="interactionBusy" @updated="chatStore.refreshSubagentMessages($event)" @reply="answerQuestion" @follow-up="chooseFollowUp" @layout="scrollMessagesToBottom" />
         </div>
       </section>
     </template>

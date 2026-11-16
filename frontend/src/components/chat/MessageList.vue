@@ -5,9 +5,15 @@ import MessageProcess from './MessageProcess.vue'
 import { answerContent, messageClock, isTaskUpdate } from '../../utils/messageProcess'
 import AppIcon from '../AppIcon.vue'
 import MessageAnswer from './MessageAnswer.vue'
+import FileToolPreview from './FileToolPreview.vue'
+import { getToolCalls } from '../../utils/toolOutput'
+import UserQuestionCard from './UserQuestionCard.vue'
+import FollowUps from './FollowUps.vue'
+import { getUserQuestions } from '../../utils/userQuestions'
+import type { ClarificationReply } from '../../api/chats'
 
-defineProps<{ messages: DisplayMessage[]; hasChat?: boolean }>() // 接收消息和会话状态，不在此处请求接口或修改消息
-const emit = defineEmits<{ updated: [chatId: string] }>()
+defineProps<{ messages: DisplayMessage[]; hasChat?: boolean; busy?: boolean }>()
+const emit = defineEmits<{ updated: [chatId: string]; reply: [value: { text: string; clarification: ClarificationReply }]; followUp: [question: string]; layout: [] }>()
 const copied = ref('')
 const copyError = ref('')
 async function copyAnswer(message: DisplayMessage) {
@@ -29,10 +35,19 @@ async function copyAnswer(message: DisplayMessage) {
     </div>
     <small>{{ hasChat ? '在下方输入问题，开始这段对话' : '直接输入问题即可开始新对话，也可以先添加资料' }}</small>
   </div>
-  <article v-for="message in messages" :key="message.id" class="message" :class="message.role === 'user' ? 'user-message' : 'assistant-message'" :aria-label="message.role === 'user' ? '我的消息' : '助手消息'">
+  <template v-for="message in messages" :key="message.id">
+  <details v-if="message.context_summary" class="context-checkpoint">
+    <summary>此前对话已压缩 · 查看摘要</summary>
+    <small>覆盖至第 {{ message.context_summary.through_sequence }} 条消息；原始记录保留。摘要用于延续讨论，核对条款仍以原文为准。</small>
+    <p>{{ message.context_summary.text }}</p>
+  </details>
+  <article class="message" :class="message.role === 'user' ? 'user-message' : 'assistant-message'" :aria-label="message.role === 'user' ? '我的消息' : '助手消息'">
     <div v-if="message.role === 'assistant'" class="assistant-heading"><span class="assistant-mark"><AppIcon name="spark" :size="16" /></span><strong>ChatFoundry</strong><span>{{ isTaskUpdate(message) ? '子任务更新' : '助手' }}</span></div>
     <div class="message-body">
     <MessageProcess v-if="message.role === 'assistant'" :message="message" @updated="emit('updated', $event)" />
+    <template v-if="message.role === 'assistant'"><FileToolPreview v-for="call in getToolCalls(message.output).filter(item => item.name === 'display_file')" :key="call.callId" :result="call.result" /></template>
+    <template v-if="message.role === 'assistant'"><UserQuestionCard v-for="call in getUserQuestions(message.output)" :key="call.callId" :call="call" :message-id="message.id" :active="message.id === messages.at(-1)?.id && message.status === 'completed'" :busy="busy" @reply="emit('reply', $event)" /></template>
+    <template v-for="(item, index) in (message.output as any[])" :key="index"><small v-if="item?.type === 'context_status'" class="message-status" role="status">{{ item.text }}</small></template>
     <MessageAnswer v-if="answerContent(message) && message.role === 'assistant'" class="message-text markdown-body" :content="answerContent(message)" :output="message.output" />
     <div v-else-if="message.role === 'user' && message.content" class="message-text">{{ message.content }}</div>
     <ul v-if="message.attachments?.length" class="message-attachments" aria-label="消息附件">
@@ -46,11 +61,15 @@ async function copyAnswer(message: DisplayMessage) {
       <span v-if="copyError === message.id" role="status">复制失败，请手动选择文字</span>
       <time v-if="message.created_at" :datetime="new Date(message.created_at * 1000).toISOString()" :title="`${new Date(message.created_at * 1000).toLocaleString()}${message.model ? ` · ${message.model}` : ''}`">{{ messageClock(message.created_at) }}</time>
     </footer>
+    <FollowUps v-if="message.role === 'assistant' && message.status === 'completed' && message.chat_id && message.id === messages.at(-1)?.id && answerContent(message) && !getUserQuestions(message.output).some(call => call.status === 'awaiting_user')" :chat-id="message.chat_id" :message-id="message.id" :output="message.output" :busy="busy" @choose="emit('followUp', $event)" @layout="emit('layout')" />
     </div>
   </article>
+  </template>
 </template>
 
 <style scoped>
+.context-checkpoint { margin: 8px 0 24px; padding: 10px 0; border-top: 1px solid #e8ece9; color: #7b8780; font-size: 12px; }
+.context-checkpoint summary { cursor: pointer; }.context-checkpoint small { display: block; margin-top: 10px; }.context-checkpoint p { white-space: pre-wrap; line-height: 1.8; color: #59675f; }
 .welcome { padding: clamp(36px, 10vh, 110px) 0 32px; text-align: center; }
 .welcome-symbol { display: grid; place-items: center; width: 62px; height: 62px; margin: 0 auto 24px; border: 1px solid #dde9e1; border-radius: 22px; background: #f2f7f3; color: #527761; box-shadow: 0 5px 18px #354f3d05; }
 .welcome-eyebrow { margin: 0 0 12px; font-size: 11px; letter-spacing: .2em; color: #8b948e; }

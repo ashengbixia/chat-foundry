@@ -1,5 +1,5 @@
 import time
-from sqlalchemy import Float, ForeignKey, String, Text
+from sqlalchemy import Float, ForeignKey, String, Text, JSON, text
 from sqlalchemy.orm import Mapped, mapped_column
 from backend.app.core.database import Base
 
@@ -12,4 +12,5 @@ class UserModelSetting(Base):  # 每个账号保存一套当前模型服务，Ke
     timeout: Mapped[float] = mapped_column(Float)
     key_source: Mapped[str] = mapped_column(String(20))  # personal / environment / none
     encrypted_api_key: Mapped[str | None] = mapped_column(Text, nullable=True)
+    model_profiles: Mapped[dict] = mapped_column(JSON, default=dict, server_default=text("'{}'"))
     updated_at: Mapped[int] = mapped_column(default=lambda: int(time.time()), onupdate=lambda: int(time.time()))

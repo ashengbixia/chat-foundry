@@ -38,6 +38,7 @@ class Settings(BaseSettings):  # 优先读取环境变量，本机开发时也�
     llm_context_window: int = Field(default=32768, gt=0)  # 应用采用的总预算，不代表模型官方上限
     llm_max_output_tokens: int = Field(default=4096, gt=0)  # 输出上限，同时传给模型服务
     llm_context_margin: int = Field(default=1024, ge=0)  # 为包装和估算误差预留空间
+    context_compaction_enabled: bool = True  # 接近输入预算时压缩完整旧轮次，保留原始历史
     chat_response_max_tool_call_iterations: int = Field(default=1024, ge=-1)  # 0禁用模型工具迭代，-1不限制；自动资料准备另计。
     embedding_model: str = Field(default="BAAI/bge-small-zh-v1.5", min_length=1)  # 向量模型名称，也可以填写本地模型目录
     embedding_device: str = Field(default="cpu", min_length=1)  # 初版默认使用CPU

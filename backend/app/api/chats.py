@@ -90,6 +90,12 @@ async def create_message_endpoint(
     if not acquire_generation(chat_id):
         raise HTTPException(409, '会话正在回答，请先停止当前回答')
     try:
+        from backend.app.chat.questions import resolve_question
+        latest = await get_latest_message(session, chat_id)
+        try:
+            resolve_question(latest, request.content, request.clarification)
+        except ValueError as error:
+            raise HTTPException(409, str(error)) from None
         message = await create_message(
             session=session,
             chat_id=chat_id,

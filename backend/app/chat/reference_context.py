@@ -1,4 +1,5 @@
 import json
+from backend.app.llm.messages import assistant_tool_message
 import re
 from sqlalchemy import func, select
 from backend.app.models.file import File
@@ -48,6 +49,8 @@ async def prepare_auto_reference(session, question, allowed_ids, messages, tools
     catalog = await describe_resources(session, allowed_ids)
     users = [item for item in (history or []) if item.role == 'user']
     attached_now = bool(users and getattr(users[-1], 'attachments', []))
+    if not attached_now and any(item.get('role') == 'tool' for item in messages) and not re.search(r'重新|最新|更新|刷新|再读|完整|全文|总结|汇总', question):
+        return []  # 近期原文已在模型输入中；新范围与证据缺口由模型按需查询。
     explicit = bool(re.search(r'附件|文件|资料|知识库|文档|手册|刚才|上面|这份|这段|继续', question))
     named = any(item['filename'].rsplit('.', 1)[0] in question for item in catalog)
     if not (attached_now or explicit or named):
@@ -67,7 +70,7 @@ async def prepare_auto_reference(session, question, allowed_ids, messages, tools
             data = await read_uploaded_file(row.id, session, current, max_chars=max(1, row.chars))
             arguments = {"file_id": row.id, "max_chars": max(1, row.chars)}
             call_id = f"prefetch-{len(reads)}"
-            view.extend([{"role": "assistant", "content": None, "tool_calls": [{"id": call_id, "type": "function", "function": {"name": "read_uploaded_file", "arguments": json.dumps(arguments)}}]}, {"role": "tool", "tool_call_id": call_id, "content": json.dumps(data, ensure_ascii=False)}])
+            view.extend([assistant_tool_message([{"id": call_id, "type": "function", "function": {"name": "read_uploaded_file", "arguments": json.dumps(arguments)}}]), {"role": "tool", "tool_call_id": call_id, "content": json.dumps(data, ensure_ascii=False)}])
             reads.append(("read_uploaded_file", arguments, data))
         if reads and estimate_input_tokens(view, tools) + 1024 < budget:
             return reads

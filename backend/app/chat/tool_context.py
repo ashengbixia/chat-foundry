@@ -3,6 +3,7 @@ import re
 from backend.app.llm.budget import estimate_input_tokens, get_input_budget
 from backend.app.llm.budget import InputBudgetError
 from backend.app.chat.context import trim_model_messages
+from backend.app.chat.history_sources import SOURCE_TOOLS
 
 
 def synthesis_context(messages):
@@ -83,7 +84,7 @@ def project_tool_results(messages, raw_results, tools, context_window, output_to
         for call in message.get("tool_calls", []):
             names[call["id"]] = call.get("function", {}).get("name")
         call_id = message.get("tool_call_id")
-        if message.get("role") != "tool" or call_id not in raw_results or names.get(call_id) not in ("search_uploaded_files", "read_uploaded_file", "read_history_sources", "summarize_uploaded_files", "read_webpage", "search_web", 'delegate_task', 'get_subagent_task'):
+        if message.get("role") != "tool" or call_id not in raw_results or names.get(call_id) not in SOURCE_TOOLS | {'search_web'}:
             projected.append(message)
             continue
         try:
@@ -107,12 +108,14 @@ def project_tool_results(messages, raw_results, tools, context_window, output_to
             bodies.append((data, 'summary', data))
         if names[call_id] == 'read_webpage' and isinstance(data.get('links'), list):
             navigation.append(data)
+        if isinstance(data.get('numbered_text'), str):
+            bodies.append((data, 'numbered_text', data))
         if names[call_id] == 'search_web' and isinstance(data.get('results'), list):
             searches.append(data)
             for item in data['results']:
                 if isinstance(item, dict) and isinstance(item.get('snippet'), str):
                     bodies.append((item, 'snippet', data))
-        elif names[call_id] in ("search_uploaded_files", "read_history_sources", "summarize_uploaded_files", "read_webpage", 'delegate_task', 'get_subagent_task') and isinstance(data.get("chunks"), list):
+        elif names[call_id] in SOURCE_TOOLS - {'read_uploaded_file'} and isinstance(data.get("chunks"), list):
             unique, duplicates = [], []
             for chunk in data["chunks"]:
                 if not isinstance(chunk, dict) or not isinstance(chunk.get("content"), str):
@@ -174,7 +177,7 @@ def project_tool_results(messages, raw_results, tools, context_window, output_to
             parent['context_notice'] = '部分搜索摘要因输入预算被截短；摘要不是网页原文，需要依据时读取候选链接。'
         if field == "content" and isinstance(item.get("start_offset"), int):
             item["end_offset"] = item["start_offset"] + len(item[field])
-            if parent.get('url') == item.get('url') and 'next_offset' in parent:
+            if (parent.get('pagination_unit') == 'characters' or (parent.get('url') is not None and parent.get('url') == item.get('url'))) and 'next_offset' in parent:
                 parent['next_offset'] = item['end_offset']
                 parent['has_more'] = True
             for page in parent.get('pages', []):

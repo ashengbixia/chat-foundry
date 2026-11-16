@@ -12,6 +12,57 @@ from backend.app.models.model_setting import UserModelSetting
 from backend.tests import test_auth as account_tests
 
 class ModelSettingsTests(unittest.IsolatedAsyncioTestCase):  # 只验证密钥、隔离和真实聊天接线，不请求外部模型
+    async def test_model_profiles_survive_quick_switch_and_apply_to_nonstream_requests(self):
+        options = {'tools': False, 'streaming': False, 'thinking': 'disabled', 'thinking_parameter': 'enable_thinking', 'reasoning_content': 'omit'}
+        saved = await self.admin.put(self.url, json={**self.draft, 'capabilities': options})
+        self.assertEqual(saved.status_code, 200, saved.text)
+        await self.admin.patch(self.url + '/model', json={'base_url': self.draft['base_url'], 'model': 'other-model'})
+        self.assertTrue((await self.admin.get(self.url)).json()['config']['capabilities']['tools'])
+        await self.admin.patch(self.url + '/model', json={'base_url': self.draft['base_url'], 'model': 'my-model'})
+        self.assertEqual((await self.admin.get(self.url)).json()['config']['capabilities'], options)
+        self.assertTrue((await self.other.get(self.url)).json()['config']['capabilities']['tools'])
+        async with self.sessions() as session:
+            connection = await api.get_user_model_connection(await session.get(api.User, self.admin_user['id']), session)
+        seen = []
+        def handler(request):
+            seen.append(json.loads(request.content))
+            return httpx.Response(200, json={'choices': [{'message': {'content': 'OK'}, 'finish_reason': 'stop'}]})
+        real_client = httpx.AsyncClient
+        with patch.object(llm.httpx, 'AsyncClient', side_effect=lambda **kwargs: real_client(transport=httpx.MockTransport(handler), **kwargs)):
+            messages = [{'role': 'user', 'content': 'hello'}, {'role': 'assistant', 'tool_calls': [{'id': 't'}], 'reasoning_content': 'kept in history'}, {'role': 'tool', 'tool_call_id': 't', 'content': '{}'}]
+            events = [event async for event in llm.stream_model_events(messages, [{'type': 'function'}], connection)]
+        self.assertEqual(events, [{'type': 'text_delta', 'text': 'OK'}])
+        self.assertFalse(seen[0]['stream'])
+        self.assertFalse(seen[0]['enable_thinking'])
+        self.assertNotIn('tools', seen[0])
+        self.assertFalse(any(item['role'] == 'tool' or 'reasoning_content' in item for item in seen[0]['messages']))
+
+    async def test_diagnostics_checks_tool_followup_without_saving_and_reports_protocol_error(self):
+        seen = []
+        def handler(request):
+            payload = json.loads(request.content)
+            seen.append(payload)
+            if not payload.get('stream'):
+                return httpx.Response(200, json={'choices': [{'message': {'content': 'OK'}, 'finish_reason': 'stop'}]})
+            if payload.get('tools'):
+                delta = {'reasoning_content': 'original reasoning', 'tool_calls': [{'index': 0, 'id': 'probe', 'type': 'function', 'function': {'name': 'diagnostic_echo', 'arguments': '{"value":"ok"}'}}]}
+                reason = 'tool_calls'
+            else:
+                for message in payload['messages']:
+                    if message.get('tool_calls') and message.get('reasoning_content') != 'original reasoning':
+                        return httpx.Response(400, json={'error': {'message': 'private upstream details'}})
+                delta, reason = {'content': 'OK'}, 'stop'
+            return httpx.Response(200, text='data: ' + json.dumps({'choices': [{'delta': delta, 'finish_reason': reason}]}) + '\n\ndata: [DONE]\n\n')
+        real_client = httpx.AsyncClient
+        with patch.object(llm.httpx, 'AsyncClient', side_effect=lambda **kwargs: real_client(transport=httpx.MockTransport(handler), **kwargs)):
+            response = await self.admin.post(self.url + '/diagnose', json=self.draft)
+            self.assertEqual(response.status_code, 200, response.text)
+            self.assertEqual([check['status'] for check in response.json()['checks']], ['passed'] * 4)
+            response = await self.admin.post(self.url + '/diagnose', json={**self.draft, 'capabilities': {'reasoning_content': 'omit'}})
+            self.assertEqual(response.json()['checks'][-1]['code'], 'http_400')
+            self.assertNotIn('private upstream details', response.text)
+        self.assertTrue((await self.admin.get(self.url)).json()['inherited'])
+
     async def asyncSetUp(self):
         await account_tests.AccountTests.asyncSetUp(self)
         self.app.include_router(api.router)

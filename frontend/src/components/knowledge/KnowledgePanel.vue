@@ -269,10 +269,10 @@ defineExpose({ open })
         <template v-if="activeId && !creating">
           <button type="button" :disabled="busy || !members.length" @click="updateAllIndexes">更新本库索引</button>
           <button class="upload-dropzone" :class="{ 'drag-active': dragDepth > 0 }" type="button" :disabled="busy" @click="uploadInput?.click()">
-            <AppIcon name="attach" :size="25" /><strong>{{ dragDepth ? (canDrop ? '松开，加入当前知识库' : '当前暂不可上传') : busy ? action : '把 TXT 文件拖到这里，或点击上传' }}</strong><small>支持一次拖入多份 · 单份最大 5 MB · 上传后自动建立索引</small>
+            <AppIcon name="attach" :size="25" /><strong>{{ dragDepth ? (canDrop ? '松开，加入当前知识库' : '当前暂不可上传') : busy ? action : '把文档拖到这里，或点击上传' }}</strong><small>支持一次拖入多份 · 单份最大 5 MB · 上传后自动建立索引</small>
           </button>
           <div class="member-heading"><div><h3>库内资料 <small>{{ members.length }} / 200</small></h3><p>移出仅解除关联，原文件和历史引用保留。</p></div><button type="button" :disabled="busy" @click="run('正在刷新…', refresh)">刷新</button></div>
-          <div class="member-actions"><button type="button" :disabled="busy || members.length >= 200" @click="uploadInput?.click()">上传新资料</button><button type="button" :disabled="busy || members.length >= 200" @click="showFilePicker = !showFilePicker">{{ showFilePicker ? '收起文件选择' : '加入已有资料' }}</button><input ref="uploadInput" hidden type="file" accept=".txt" multiple aria-label="上传知识库资料" @change="upload" /></div>
+          <div class="member-actions"><button type="button" :disabled="busy || members.length >= 200" @click="uploadInput?.click()">上传新资料</button><button type="button" :disabled="busy || members.length >= 200" @click="showFilePicker = !showFilePicker">{{ showFilePicker ? '收起文件选择' : '加入已有资料' }}</button><input ref="uploadInput" hidden type="file" accept=".txt,.pdf,.docx,.xlsx" multiple aria-label="上传知识库资料" @change="upload" /></div>
           <div v-if="showFilePicker" class="existing-files">
             <input v-model="fileSearch" type="search" placeholder="搜索已有资料" aria-label="搜索可加入资料" />
             <p class="existing-hint">可勾选批量加入，也可把文件拖到上方上传区，直接复用已有索引。</p>
@@ -284,7 +284,7 @@ defineExpose({ open })
         </template>
       </section>
     </div>
-    <footer class="dialog-footer"><small>{{ choosing ? `已选 ${chosen.length} / 5 · 应用于整个会话，随时可移除` : '单份 TXT 最大 5 MB，文件索引在各知识库之间复用' }}</small><button type="button" @click="close">{{ choosing ? '取消' : '完成' }}</button><button v-if="choosing" class="primary" type="button" :disabled="busy || selectionDisabled" @click="apply">应用到会话</button></footer>
+    <footer class="dialog-footer"><small>{{ choosing ? `已选 ${chosen.length} / 5 · 应用于整个会话，随时可移除` : '支持 TXT / PDF / DOCX / XLSX，单份最大 5 MB，文件索引在各知识库之间复用' }}</small><button type="button" @click="close">{{ choosing ? '取消' : '完成' }}</button><button v-if="choosing" class="primary" type="button" :disabled="busy || selectionDisabled" @click="apply">应用到会话</button></footer>
   </dialog>
 </template>
 

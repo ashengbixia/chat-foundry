@@ -28,17 +28,36 @@ class LlmStreamTests(unittest.IsolatedAsyncioTestCase):
         self.settings_patch.start()
         self.addCleanup(self.settings_patch.stop)
 
-    def mock_model(self, lines: list[str], status: int = 200):  # 使用内存 HTTP transport，禁止外部网络请求
+    def mock_model(self, lines: list[str], status: int = 200, require_reasoning=False):  # 使用内存 HTTP transport，禁止外部网络请求
         requests = []
         stream = ModelStream(lines)
         def handler(request):
             requests.append(json.loads(request.content))
+            if require_reasoning and any(item.get('role') == 'assistant' and item.get('tool_calls') and not isinstance(item.get('reasoning_content'), str) for item in requests[-1]['messages']):
+                return httpx.Response(400, json={'error': {'message': 'reasoning_content must be passed back'}})
             return httpx.Response(status, stream=stream)
         original_client = self.real_client
         mock = patch.object(llm.httpx, "AsyncClient", side_effect=lambda **kwargs: original_client(transport=httpx.MockTransport(handler), **kwargs))
         mock.start()
         self.addCleanup(mock.stop)
         return requests, stream
+
+    async def test_thinking_protocol_completes_missing_fields_without_overwriting_or_mutating(self):
+        import copy
+        call = [{'id': 't', 'type': 'function', 'function': {'name': 'get_current_time', 'arguments': '{}'}}]
+        second_call = copy.deepcopy(call)
+        second_call[0]['id'] = 't2'
+        messages = [{'role': 'user', 'content': '追问'},
+                    {'role': 'assistant', 'content': None, 'tool_calls': call},
+                    {'role': 'tool', 'tool_call_id': 't', 'content': '{}'},
+                    {'role': 'assistant', 'content': None, 'tool_calls': second_call, 'reasoning_content': '  原始思考\n'},
+                    {'role': 'tool', 'tool_call_id': 't2', 'content': '{}'}]
+        original = copy.deepcopy(messages)
+        requests, _ = self.mock_model([chunk({'content': '成功'}, 'stop'), 'data: [DONE]'], require_reasoning=True)
+        self.assertTrue([item async for item in llm.stream_model_events(messages)])
+        self.assertEqual(requests[0]['messages'][1]['reasoning_content'], '')
+        self.assertEqual(requests[0]['messages'][3]['reasoning_content'], '  原始思考\n')
+        self.assertEqual(messages, original)
 
     async def test_existing_text_interface(self):  # 原来的 service 仍能得到纯正文，不向模型传工具
         requests, stream = self.mock_model([": heartbeat", chunk({"role": "assistant"}), chunk({"content": "你好"}), chunk({"content": "！"}), "data: [DONE]"])

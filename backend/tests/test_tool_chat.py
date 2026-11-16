@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, Mock, patch
 from backend.app.chat import service
 from backend.app.llm.client import ModelStreamError
 from backend.app.tools.registry import get_available_tools
-from backend.app.chat.context import build_model_messages
+from backend.app.chat.context import build_model_messages, restore_assistant_messages
 from backend.app.tools.runtime import ToolArguments, ToolSpec, registry
 from backend.app.tools.local import read_webpage as webpage
 from backend.app.tools.local import search_web as web_search
@@ -68,6 +68,17 @@ class ToolChatTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(saved["output"][0]["content"][0]["text"], "你好！")
         self.assertTrue(events[-1].startswith("event: done"))
         self.assertEqual(closed, [0])
+
+    async def test_auto_attachment_read_has_empty_reasoning_on_first_model_request(self):
+        service.resolve_chat_files.return_value = {'f1'}
+        service.prepare_auto_reference.return_value = [('read_uploaded_file', {'file_id': 'f1'}, None)]
+        raw = json.dumps({'file_id': 'f1', 'filename': 'sample.txt', 'offset': 0, 'text_content': '附件原文', 'has_more': False})
+        requests, _ = self.model([[text('附件内容已读取')]])
+        with patch.object(service, 'execute_tool', AsyncMock(return_value=raw)):
+            await self.run_chat()
+        call = next(item for item in requests[0][0] if item.get('tool_calls'))
+        self.assertEqual(call['reasoning_content'], '')
+        self.assertEqual(self.update.call_args.kwargs['status'], 'completed')
 
     async def test_budget_failure_after_tools_saves_useful_body_and_error_stage(self):
         self.model([[tool()], [text('不应请求第二次模型')]])
@@ -219,7 +230,7 @@ class ToolChatTests(unittest.IsolatedAsyncioTestCase):
         config = SimpleNamespace(llm_model="test", llm_context_window=budget + 10, llm_max_output_tokens=10, llm_context_margin=0)
         with patch.object(service, "settings", config):
             await self.run_chat()
-        self.assertEqual({item["function"]["name"] for item in requests[0][1]}, {"get_current_time", "read_webpage"})
+        self.assertEqual({item["function"]["name"] for item in requests[0][1]}, {"get_current_time", "read_webpage", "search_tools", "ask_user"})
         self.assertEqual(sum(item["role"] == "user" for item in requests[0][0]), 1)
         self.assertIn("权限", json.dumps(requests[1][0], ensure_ascii=False))
         self.assertIsNone(requests[1][1])
@@ -384,6 +395,27 @@ class ToolChatTests(unittest.IsolatedAsyncioTestCase):
         self.assertGreaterEqual(meta['duration_ms'], 0)
         self.assertTrue(any('event: commentary' in event for event in events))
         self.assertEqual(next(item for item in requests[1][0] if item.get('tool_calls'))['reasoning_content'], '模型返回的思考')
+        restored = restore_assistant_messages(SimpleNamespace(content=saved['content'], output=saved['output']))
+        self.assertEqual(next(item for item in restored if item.get('tool_calls'))['reasoning_content'], '模型返回的思考')
+        legacy = copy.deepcopy(saved['output'])
+        for item in legacy:
+            item.pop('reasoning_content', None)
+        restored = restore_assistant_messages(SimpleNamespace(content=saved['content'], output=legacy))
+        self.assertEqual(next(item for item in restored if item.get('tool_calls'))['reasoning_content'], '模型返回的思考')
+
+    async def test_multiple_tool_rounds_restore_their_own_reasoning_on_followup(self):
+        self.model([[{'type': 'reasoning_delta', 'text': '第一轮思考'}, tool(call_id='a')],
+                    [tool(call_id='b')], [text('最终回答')]])
+        await self.run_chat()
+        saved = copy.deepcopy(self.update.call_args.kwargs)
+        self.read.return_value = [SimpleNamespace(role='user', content='查询时间', status='completed'),
+                                 SimpleNamespace(role='assistant', content=saved['content'], output=saved['output'], status='completed'),
+                                 SimpleNamespace(role='user', content='继续解释', status='completed')]
+        requests, _ = self.model([[text('追问成功')]])
+        await self.run_chat()
+        calls = [item for item in requests[0][0] if item.get('tool_calls')]
+        self.assertEqual([item['reasoning_content'] for item in calls], ['第一轮思考', ''])
+        self.assertEqual(self.update.call_args.kwargs['status'], 'completed')
 
 if __name__ == "__main__":
     unittest.main()

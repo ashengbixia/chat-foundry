@@ -13,6 +13,8 @@ from backend.app.repositories.file import create_file, delete_file_rows, prepare
 from backend.app.rag.vector_store import delete_all_file_vectors
 from backend.app.models.file_cleanup import FileCleanup
 from backend.app.files.cleanup import process_cleanup_job
+from backend.app.files.extract import ExtractionError, SUPPORTED_EXTENSIONS
+from backend.app.files.parsing import parse_uploaded_document
 
 logger = logging.getLogger(__name__)  # 只在后端记录详细异常
 UPLOAD_DIR = DATA_DIR / "uploads"  # 所有原文件统一保存的位置
@@ -77,17 +79,18 @@ async def finalize_upload(session, file_id, text, size):  # SQLite写锁内确�
         await session.rollback()
         raise
 
-async def process_text_file(session: AsyncSession, upload: UploadFile, user_id: str | None = None) -> File:  # 校验 TXT、保存原文件、提取正文并入库
+async def process_text_file(session: AsyncSession, upload: UploadFile, user_id: str | None = None) -> File:  # 校验文档、保存原文件、提取正文并入库
     filename = PurePosixPath((upload.filename or "").replace("\\", "/")).name  # 去掉客户端路径，仅保留展示名称
     if not filename or len(filename) > 255 or "\x00" in filename:
         raise HTTPException(status_code=400, detail="文件名为空或不合法，最长 255 个字符")
-    if Path(filename).suffix.lower() != ".txt":
-        raise HTTPException(status_code=400, detail="当前仅支持 UTF-8 编码的 .txt 文件")
+    extension = Path(filename).suffix.lower()
+    if extension not in SUPPORTED_EXTENSIONS:
+        raise HTTPException(status_code=400, detail="仅支持TXT、PDF、Word(.docx)、Excel(.xlsx)，旧版.doc/.xls请先转换")
     file_id = str(uuid.uuid4())  # 提前生成 ID，让数据库记录与磁盘文件对应
-    storage_path = f"{file_id}.txt"  # 原始名称不参与磁盘路径拼接
+    storage_path = f"{file_id}{extension}"  # 原始名称不参与磁盘路径拼接
     path = UPLOAD_DIR / storage_path  # 本次唯一的保存位置
     await create_file(session, file_id, filename, storage_path, upload.content_type, user_id)
-    content = bytearray()  # 累计最多 5MB，用于完成后的 UTF-8 解码
+    content = bytearray()  # 累计最多5MB；TXT直接解码，其他文档由独立进程解析
     size = 0  # 当前已读取的字节数
     created = False  # 仅清理本次确实创建的文件
     try:
@@ -106,11 +109,9 @@ async def process_text_file(session: AsyncSession, upload: UploadFile, user_id: 
         if not content:
             raise HTTPException(status_code=400, detail="不能上传空文件")
         try:
-            text = content.decode("utf-8-sig")  # 兼容带 BOM 的 UTF-8 文本
-        except UnicodeDecodeError:
-            raise HTTPException(status_code=400, detail="文件不是有效的 UTF-8 文本，请转换编码后上传") from None
-        if "\x00" in text or not text.strip():
-            raise HTTPException(status_code=400, detail="文件必须包含有效文字，不能是二进制或空白内容")
+            text = await parse_uploaded_document(path, bytes(content), extension)
+        except ExtractionError as error:
+            raise HTTPException(400, str(error)) from None
         return await finalize_upload(session, file_id, text, size)
     except BaseException as error:  # 普通失败和请求取消都要清理本次未完成文件
         detail = error.detail if isinstance(error, HTTPException) else "文件处理失败或上传中断，请重新上传"

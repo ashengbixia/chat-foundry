@@ -2,7 +2,7 @@
 
 项目内置工具统一放在 `backend/app/tools/local/`：一个工具一个模块，文件名、注册name和处理函数名一致；每个模块包含自己的 `Arguments` 参数模型、`@register_tool` 声明和处理函数。local表示项目本地代码，不表示工具全部离线；联网搜索和网页读取也遵守同一结构。新增后在 `backend/app/tools/registry.py` 显式导入即可，无需修改聊天调度或前端中文名称表。加载新模块需要后端重启，开发模式的reload会自动重启。这不是页面安装插件或MCP热插拔功能。
 
-当前模块：`get_current_time.py`、`read_uploaded_file.py`、`search_uploaded_files.py`、`list_available_files.py`、`read_history_sources.py`、`summarize_uploaded_files.py`、`read_webpage.py`、`search_web.py`，以及子任务入口 `delegate_task.py`、结果查询 `get_subagent_task.py`、停止 `cancel_subagent_task.py`。顶层的 `files.py`、`summaries.py`、`browser_reader.py` 是可复用业务实现，不自行注册工具；自动会话标题位于chat层，仍是后台任务。
+完整模块与权限清单见[工具清单](tools.md)。files.py、workspace.py、account.py、memory_ops.py、summaries.py和browser_reader.py复用业务实现，不自行注册工具；自动会话标题属于后台任务。
 
 ## 1. 定义参数和处理函数
 
@@ -79,8 +79,14 @@ context包含当前数据库session、chat_id、允许文件集合、历史快�
 - 异步取消会继续传播。同步函数超时或取消后会停止等待，Python不能强制终止已经运行的线程；网络IO优先使用支持取消和自身超时的异步客户端，带事务的数据库操作使用异步处理函数，不在线程里复用AsyncSession。
 - `once_per_turn=True`只允许一次回答内执行一次：相同参数和相同资料范围复用成功结果，更换参数或范围要求下一轮再执行；缓存不跨用户、会话或回答。
 - 文件总结已迁入上述机制，使用600秒总超时；原来的分段及模型调用次数限制继续保留。
-- 此次没有修改数据库表，展示名称保存在已有output JSON内，无需数据库升级。
+- 只新增普通工具模块不要求数据库迁移；本版长期记忆新增memories与user_tool_settings表，需要升级至d95e7b320a61。展示名称仍保存在output中。
 
 代码入口：`runtime.py`负责统一注册与执行，`local/<工具名>.py`声明各个内置工具，`registry.py`显式加载模块并提供聊天使用的接口。旧的集中声明文件catalog.py及builtin.py已拆分移除，不保留两套注册入口。聊天流程只负责发出调用、调用统一执行器和保存结果。工具名称、参数Schema、中文名称、权限、超时及历史记录格式保持兼容。
 
 `read_webpage` 的静态正文为空时会调用 `browser_reader.py`，在独立线程中启动隔离Chromium并等待动态正文。浏览器请求通过后端固定公网IP连接转发，不使用 `route.continue_()` 或浏览器自行发起的网络连接；新增浏览器能力时需保留这一边界。安装步骤及资源限制见README“网页读取”。浏览器结果沿用原有正文分页和引用快照，无需新增工具或数据库表。
+
+## 账号权限和按需发现
+
+账号工具通过account_available与require_account共同校验，account_id来自真实会话所有者，模型不能传入。需要账号长期记忆的工具使用memory_enabled开关，历史会话使用history_enabled，主动发现知识库使用knowledge_enabled；子运行禁止访问这些账号范围工具。不要将已授权文件ID扩大为该账号全部上传文件。
+
+扩展工具可加offer_when=discovered(工具名)。search_tools从当前有权限的工具中按名称、用途发现少量工具并更新本次回答state，下一次请求再提供这些参数Schema；offer_when只控制提供方式，不能替代执行时权限检查。需要原文引用的工具仍须接入source_types、citations、history_sources、预算投影及前端来源解析。

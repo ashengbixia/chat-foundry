@@ -41,7 +41,7 @@ async function load() { // 只获取当前服务的模型列表，不消耗聊�
     const response = await getModelSettings(request.signal)
     if (request.signal.aborted) return
     config.value = response.config
-    const { key_configured, ...fields } = response.config
+    const { key_configured, model_profiles, ...fields } = response.config
     const available = await discoverModels({ ...fields, api_key: null }, request.signal)
     if (!request.signal.aborted) {
       models.value = [...new Set(available.models)]
@@ -90,7 +90,7 @@ function settings() { close(); emit('openSettings') }
       <p v-if="error" class="model-error" role="alert">{{ error }}</p>
       <p v-if="unavailableSelection" class="model-warning" role="status">已保存的 {{ currentModel }} 不在服务返回的模型列表中，请重新选择，或到设置中核对手动配置。</p>
       <p v-if="catalogNotice" role="status">{{ catalogNotice }}</p>
-      <div class="model-options"><button v-for="model in filteredModels" :key="model" type="button" :aria-pressed="currentModel === model" :disabled="busy || saving" @click="choose(model)"><span class="model-avatar" aria-hidden="true">AI</span><span class="model-name">{{ model }}<small v-if="capabilities[model]?.includes('tools') || capabilities[model]?.includes('thinking')" class="capability">{{ [capabilities[model]?.includes('tools') ? '工具调用' : '', capabilities[model]?.includes('thinking') ? '深度思考' : ''].filter(Boolean).join(' · ') }}</small></span><AppIcon v-if="currentModel === model" name="check" :size="16" /></button></div>
+      <div class="model-options"><button v-for="model in filteredModels" :key="model" type="button" :aria-pressed="currentModel === model" :disabled="busy || saving" @click="choose(model)"><span class="model-avatar" aria-hidden="true">AI</span><span class="model-name">{{ model }}<small v-if="capabilities[model]?.includes('tools') || capabilities[model]?.includes('thinking')" class="capability">服务声明：{{ [capabilities[model]?.includes('tools') ? '工具调用' : '', capabilities[model]?.includes('thinking') ? '深度思考' : ''].filter(Boolean).join(' · ') }}</small><small v-if="config?.model_profiles?.[model]" class="capability">已配置：{{ config.model_profiles[model]!.tools ? '工具' : '无工具' }} · {{ config.model_profiles[model]!.streaming ? '流式' : '完整响应' }}{{ config.model_profiles[model]!.thinking === 'enabled' ? ' · 开启思考' : config.model_profiles[model]!.thinking === 'disabled' ? ' · 关闭思考' : '' }}</small></span><AppIcon v-if="currentModel === model" name="check" :size="16" /></button></div>
       <p v-if="catalogLoaded && !models.length">服务没有返回可选模型，可到设置中手动填写。</p>
       <p v-else-if="models.length && !filteredModels.length">没有匹配的模型。</p>
       <div class="model-footer"><span>{{ config?.provider === 'server' ? '服务器默认服务' : config?.provider === 'custom' ? '自定义服务' : config?.provider || '当前模型服务' }}</span><button type="button" :disabled="saving" @click="settings">管理模型服务<AppIcon name="chevron" :size="12" /></button></div>

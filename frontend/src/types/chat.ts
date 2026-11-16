@@ -1,6 +1,6 @@
 import type { ChatMessage } from '../api/chats'
 
-export type DisplayMessage = Pick<ChatMessage, 'id' | 'role' | 'content' | 'status' | 'error' | 'output' | 'attachments'> & Partial<Pick<ChatMessage, 'created_at' | 'updated_at' | 'model' | 'chat_id'>>
+export type DisplayMessage = Pick<ChatMessage, 'id' | 'role' | 'content' | 'status' | 'error' | 'output' | 'attachments'> & Partial<Pick<ChatMessage, 'created_at' | 'updated_at' | 'model' | 'chat_id' | 'context_summary'>>
 
 export interface ToolCallRecord { // 助手 output 中的工具调用记录
   type: 'function_call'

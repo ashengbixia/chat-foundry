@@ -210,7 +210,8 @@ test('历史文件每行显示一个删除叉号', async () => {
 
 test('文件校验：大小边界、空文件、扩展名和文件名长度', () => {
   assert.equal(api.validateTextFile({ name: '资料.TXT', size: api.MAX_UPLOAD_SIZE }), '')
-  for (const file of [{ name: 'a.txt', size: 0 }, { name: 'a.txt', size: api.MAX_UPLOAD_SIZE + 1 }, { name: 'a.pdf', size: 1 }, { name: 'a'.repeat(252) + '.txt', size: 1 }]) assert.ok(api.validateTextFile(file))
+  for (const extension of ['pdf', 'docx', 'xlsx']) assert.equal(api.validateTextFile({ name: `sample.${extension}`, size: 10 }), '')
+  for (const file of [{ name: 'a.txt', size: 0 }, { name: 'a.txt', size: api.MAX_UPLOAD_SIZE + 1 }, { name: 'a.doc', size: 1 }, { name: 'a'.repeat(252) + '.txt', size: 1 }]) assert.ok(api.validateTextFile(file))
 })
 test('上传使用 FormData，保留取消信号，不手动设置 Content-Type', async (context) => {
   const controller = new AbortController()
@@ -288,7 +289,7 @@ test('无效文件不发请求，取消异常原样传播', async (context) => {
   let count = 0
   const error = new DOMException('Aborted', 'AbortError')
   context.mock.method(globalThis, 'fetch', async () => { count++; throw error })
-  await assert.rejects(api.uploadFile(new File(['pdf'], 'a.pdf')), /TXT/)
+  await assert.rejects(api.uploadFile(new File(['doc'], 'a.doc')), /TXT/)
   assert.equal(count, 0)
   await assert.rejects(api.uploadFile(selected()), (value) => value === error)
 })
@@ -329,7 +330,7 @@ test('上传过程中阻止重复提交、切换文件及其他文件请求', as
 test('无效选择清空选择框；上传和预览失败后可重试，保留原成功数据', async () => {
   let failed = true
   const { state } = fixture({ uploadFile: async () => { if (failed) throw new Error('上传失败'); return { ...record, id: 'new-file' } }, getFileContent: async () => { if (failed) throw new Error('正文读取失败'); return { id: record.id, text_content: '重试正文' } } })
-  assert.equal(choose(state, new File(['bad'], 'bad.pdf')).value, '')
+  assert.equal(choose(state, new File(['bad'], 'bad.doc')).value, '')
   assert.equal(state.selectedFile.value, null)
   state.uploadedFile.value = record
   choose(state)

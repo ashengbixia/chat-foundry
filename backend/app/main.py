@@ -58,6 +58,8 @@ async def lifespan(app: FastAPI):  # 管理应用启动和关闭
                 tasks.cancel_scope.cancel()
     finally:
         try:
+            from backend.app.chat.follow_ups import close_jobs
+            await close_jobs()
             await close_tasks()
             await close_title_tasks()
             await engine.dispose()  # 退出时释放数据库连接
@@ -76,6 +78,10 @@ app.include_router(auth_router)
 app.include_router(model_settings_router)
 from backend.app.api.knowledge import router as knowledge_router
 app.include_router(knowledge_router)
+from backend.app.api.memories import router as memories_router
+app.include_router(memories_router)
+from backend.app.api.follow_ups import router as follow_ups_router
+app.include_router(follow_ups_router)
 
 app.add_middleware(PrivateResponseHeaders)  # 防止浏览器缓存私人数据，不改变聊天流的取消逻辑
 

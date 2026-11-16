@@ -42,6 +42,10 @@ export function getToolStatus(call: DisplayToolCall, status: DisplayMessage['sta
     if (call.failed) return '返回错误'
     try {
       const result = JSON.parse(call.result)
+      if (result?.status === 'awaiting_user') return '等待你回答'
+      if (result?.status === 'deferred') return '等待澄清 · 未执行'
+      if (call.name === 'ask_user' && result?.status === 'answered') return '已回答'
+      if (call.name === 'ask_user' && result?.status === 'cancelled') return '已跳过'
       if (result?.status === 'already_read') return '已读过'
       if (result?.status === 'navigation_only') return '仅取得入口链接'
       if (result?.outcome === 'insufficient_evidence') return '执行结束 · 资料不足'

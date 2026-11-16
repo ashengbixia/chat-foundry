@@ -31,6 +31,12 @@ Get-ChildItem -LiteralPath $PSScriptRoot -File | Where-Object { $_.Extension -in
     Copy-Item -LiteralPath $_.FullName -Destination $deployTarget
 }
 $archive = $packageRoot + '.zip'
+$docsTarget = Join-Path $packageRoot 'docs'
+New-Item -ItemType Directory -Path $docsTarget -Force | Out-Null
+foreach ($docName in @('tools.md', 'adding-tools.md')) {
+    $docSource = Join-Path $repo ('docs\' + $docName)
+    if (Test-Path -LiteralPath $docSource) { Copy-Item -LiteralPath $docSource -Destination $docsTarget }
+}
 Compress-Archive -Path (Join-Path $packageRoot '*') -DestinationPath $archive
 Write-Host "Package: $archive"
 Write-Host 'No accounts, uploads, API keys, Python environment, or external tools are included.'

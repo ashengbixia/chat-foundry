@@ -341,6 +341,9 @@ async def _deliver(sessions, parent_id, connection):
                         await session.commit()
                     return
                 latest = await get_latest_message(session, parent_id)
+                from backend.app.chat.questions import pending_question
+                if latest and pending_question(latest.output or []):
+                    return  # 不用后台更新盖住待回答卡片；用户继续后再投递。
                 if latest and (latest.role == 'user' or latest.status == 'generating'):
                     continue
                 ids = list((await session.execute(select(SubagentTask.id).where(SubagentTask.parent_chat_id == parent_id, SubagentTask.delivery_status == 'pending').limit(4))).scalars())

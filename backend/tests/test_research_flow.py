@@ -6,11 +6,21 @@ from backend.app.tools.runtime import ToolContext
 from backend.app.tools.web_scope import requested_origins, within_requested_site
 from backend.app.tools.local import read_webpage as webpage, search_web
 from backend.app.tools.registry import execute_tool
-from backend.app.chat.research import assess_result
+from backend.app.chat.research import assess_result, failure_report
 from backend.app.chat.citations import missing_source_footer
 
 
 class ResearchFlowTests(unittest.IsolatedAsyncioTestCase):
+    def test_failure_report_counts_full_text_and_valid_chunks_and_shows_http_error(self):
+        raw = {'read': json.dumps({'file_id': 'f1', 'text_content': '实际读取的附件正文', 'has_more': False}),
+               'search': json.dumps({'chunks': [{'content': '实际检索片段'}, {'content': ''}, {'error': 'failed'}]}),
+               'web': json.dumps({'results': [{'url': 'https://example.com'}]}),
+               'failed': json.dumps({'error': '读取失败', 'text_content': '', 'chunks': 'invalid'})}
+        report = failure_report(raw, {'code': 'model_http_400'})
+        self.assertIn('已取得 2 段原文及 1 条搜索候选', report)
+        self.assertIn('模型服务返回 HTTP 400', report)
+        self.assertNotIn('已取得 0 段', report)
+
     async def test_explicit_sites_allow_document_paths_without_granting_other_hosts_or_queries(self):
         history = [SimpleNamespace(role='user', content='查阅 https://docs.sample.example/ 的文档')]
         origins = requested_origins(history)

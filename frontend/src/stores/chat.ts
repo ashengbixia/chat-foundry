@@ -388,6 +388,19 @@ export const useChatStore = defineStore('chat', () => { // 集中保存聊天状
         }
       }, (durationMs) => {
         draft.output.push({ type: 'turn_metadata', duration_ms: durationMs ?? Math.round((Date.now() / 1000 - (draft.created_at ?? Date.now() / 1000)) * 1000) })
+      }, (event) => {
+        if (controller.signal.aborted) return
+        if (event.type === 'context_checkpoint') {
+          const anchor = targetMessages.find(item => item.id === event.messageId)
+          if (anchor) anchor.context_summary = event.summary
+          draft.output = draft.output.filter(item => !(item && typeof item === 'object' && 'type' in item && item.type === 'context_status'))
+        } else if (event.type === 'context_sources') {
+          draft.output = draft.output.filter(item => !(item && typeof item === 'object' && 'type' in item && item.type === 'context_sources'))
+          draft.output.push({ type: 'context_sources', chunks: event.chunks })
+        } else {
+          draft.output = draft.output.filter(item => !(item && typeof item === 'object' && 'type' in item && item.type === 'context_status'))
+          draft.output.push(event)
+        }
       })
       draft.id = messageId
       draft.status = 'completed'
@@ -406,8 +419,8 @@ export const useChatStore = defineStore('chat', () => { // 集中保存聊天状
       state.generating = false
     }
   }
-  async function sendMessage(): Promise<void> { // 保存新问题，然后生成回答
-    const text = inputText.value.trim() // 本次问题正文
+  async function sendMessage(options?: { text: string; clarification?: import('../api/chats').ClarificationReply }): Promise<void> { // 保存新问题，然后生成回答
+    const text = (options?.text ?? inputText.value).trim() // 交互答案不覆盖输入框草稿
     const chat = currentChat.value // 本次所属会话
     if (!text || pageBusy.value) return
     if (!chat) {
@@ -420,13 +433,25 @@ export const useChatStore = defineStore('chat', () => { // 集中保存聊天状
     const targetMessages = messages.value
     errorMessage.value = ''
     try {
-      const fileIds = selectedAttachments.value.map((file) => file.file_id) // 只发送文件 ID，由后端校验并保存关联
-      const userMessage = await saveUserMessage(chat.id, text, fileIds)
+      const fileIds = options ? [] : selectedAttachments.value.map((file) => file.file_id)
+      const userMessage = options?.clarification ? await saveUserMessage(chat.id, text, fileIds, options.clarification) : await saveUserMessage(chat.id, text, fileIds)
+      const previous = targetMessages.at(-1)
+      if (previous?.role === 'assistant') {
+        const questionIds = new Set((previous.output as any[]).filter(item => item?.type === 'function_call' && item.name === 'ask_user').map(item => item.call_id))
+        for (const item of previous.output as any[]) {
+          if (item?.type !== 'function_call_output' || !questionIds.has(item.call_id)) continue
+          try {
+            const data = JSON.parse(item.output)
+            const cancelled = options?.clarification?.cancelled === true
+            if (data.status === 'awaiting_user') item.output = JSON.stringify({ ...data, status: cancelled ? 'cancelled' : 'answered', answers: options?.clarification?.answers ?? { free_text: text }, notice: cancelled ? '用户已跳过本次追问，不得代选；依据已知信息继续并说明缺口。' : '这是用户已提交的真实答案，请结合原任务继续。' })
+          } catch { /* Preserve malformed old output. */ }
+        }
+      }
       targetMessages.push(userMessage)
       const files = new Map((chat.files ?? []).map(file => [file.file_id, file]))
       for (const file of userMessage.attachments ?? []) files.set(file.file_id, file)
       chat.files = [...files.values()] // 草稿清空后，已发送附件仍在会话资料中
-      if (currentChat.value?.id === chat.id) { inputText.value = ''; selectedAttachments.value = [] }
+      if (!options && currentChat.value?.id === chat.id) { inputText.value = ''; selectedAttachments.value = [] }
       if (controller.signal.aborted) return // 更新已保存的问题，但不再启动模型请求，避免再次提交
       await generateAssistantReply(chat.id, controller, targetMessages)
     } catch (error) {

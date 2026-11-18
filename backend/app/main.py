@@ -71,7 +71,9 @@ from backend.app.api.files import router as files_router  # 注册文件上传�
 from backend.app.api.auth import router as auth_router
 from backend.app.api.model_settings import router as model_settings_router, get_user_model_connection
 from backend.app.llm.connection import ModelConnection
-app = FastAPI(title=" AI 助手",lifespan=lifespan,)
+app = FastAPI(title="ChatFoundry",lifespan=lifespan,)
+from backend.app.api.site_info import router as site_info_router
+app.include_router(site_info_router)
 app.include_router(chats_router)#把接口分组注册到 FastAPI 应用上
 app.include_router(files_router)
 app.include_router(auth_router)

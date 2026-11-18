@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import type { DisplayMessage } from '../../types/chat'
 import { ref } from 'vue'
+import { siteName } from '../../stores/site'
 import MessageProcess from './MessageProcess.vue'
 import { answerContent, messageClock, isTaskUpdate } from '../../utils/messageProcess'
 import AppIcon from '../AppIcon.vue'
@@ -42,7 +43,7 @@ async function copyAnswer(message: DisplayMessage) {
     <p>{{ message.context_summary.text }}</p>
   </details>
   <article class="message" :class="message.role === 'user' ? 'user-message' : 'assistant-message'" :aria-label="message.role === 'user' ? '我的消息' : '助手消息'">
-    <div v-if="message.role === 'assistant'" class="assistant-heading"><span class="assistant-mark"><AppIcon name="spark" :size="16" /></span><strong>ChatFoundry</strong><span>{{ isTaskUpdate(message) ? '子任务更新' : '助手' }}</span></div>
+    <div v-if="message.role === 'assistant'" class="assistant-heading"><span class="assistant-mark"><AppIcon name="spark" :size="16" /></span><strong>{{ siteName }}</strong><span>{{ isTaskUpdate(message) ? '子任务更新' : '助手' }}</span></div>
     <div class="message-body">
     <MessageProcess v-if="message.role === 'assistant'" :message="message" @updated="emit('updated', $event)" />
     <template v-if="message.role === 'assistant'"><FileToolPreview v-for="call in getToolCalls(message.output).filter(item => item.name === 'display_file')" :key="call.callId" :result="call.result" /></template>

@@ -1,12 +1,26 @@
 from pathlib import Path
 import os
 
-from pydantic import Field, SecretStr
+from pydantic import Field, SecretStr, field_validator
 from typing import Literal
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 class Settings(BaseSettings):  # 优先读取环境变量，本机开发时也可读取 backend/.env
     app_env: Literal['development', 'production'] = 'development'
+    site_name: str = Field(default='ChatFoundry', max_length=80)
+    icp_record: str = Field(default='', max_length=100)
+    gongan_record: str = Field(default='', max_length=100)
+    gongan_record_code: str = Field(default='', pattern=r'^([0-9]{20})?$')
+
+    @field_validator('site_name', 'icp_record', 'gongan_record', 'gongan_record_code', mode='before')
+    @classmethod
+    def trim_site_info(cls, value, info):
+        if isinstance(value, str):
+            value = value.strip()
+            if info.field_name == 'site_name' and not value:
+                return 'ChatFoundry'
+        return value
+
     data_dir: Path = Path(__file__).resolve().parents[2] / 'data'
     registration_enabled: bool = True
     bootstrap_token: SecretStr = Field(default='', repr=False)

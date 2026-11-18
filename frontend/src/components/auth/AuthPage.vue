@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 import { useAuthStore } from '../../stores/auth'
+import { siteName } from '../../stores/site'
+import SiteFooter from '../SiteFooter.vue'
 
 const auth = useAuthStore()
 const registering = ref(false) // 首次初始化固定显示管理员创建表单
@@ -31,7 +33,7 @@ function switchMode() { registering.value = !registering.value; password.value =
 
 <template>
   <main class="auth-page">
-    <div class="auth-brand"><span>✦</span> ChatFoundry</div>
+    <div class="auth-brand"><span>✦</span> {{ siteName }}</div>
     <section class="auth-card" aria-labelledby="auth-title">
       <small>你的思考工作空间</small>
       <h1 id="auth-title">{{ auth.setupRequired ? '建立你的工作空间' : isSignup ? '创建账号' : '欢迎回来' }}</h1>
@@ -47,13 +49,13 @@ function switchMode() { registering.value = !registering.value; password.value =
       </form>
       <button v-if="!auth.setupRequired && auth.registrationEnabled" type="button" class="switch-mode" :disabled="submitting" @click="switchMode">{{ isSignup ? '已有账号？去登录' : '还没有账号？注册' }}</button>
     </section>
-    <footer>让复杂的事情，变得清楚一点。</footer>
+    <footer>让复杂的事情，变得清楚一点。<SiteFooter /></footer>
   </main>
 </template>
 
 <style scoped>
 .auth-page { min-height: 100dvh; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 32px 20px; background: radial-gradient(ellipse at top, #f0f7f2, #fff 65%); }
-.auth-brand { margin-bottom: 32px; font-weight: 650; font-size: 20px; letter-spacing: -.5px; }.auth-brand span { color: #52765d; margin-right: 6px; }
+.auth-brand { max-width: 100%; overflow-wrap: anywhere; text-align: center; margin-bottom: 32px; font-weight: 650; font-size: 20px; letter-spacing: -.5px; }.auth-brand span { color: #52765d; margin-right: 6px; }
 .auth-card { width: min(100%, 400px); padding: 30px; border: 1px solid #e4ebe6; border-radius: 18px; background: #fff; box-shadow: 0 16px 60px #2c503908; }
 .auth-card > small { color: #8b9b90; font-size: 11px; }h1 { font-size: 25px; margin: 12px 0; font-weight: 550; }.auth-card > p { color: #8c9890; line-height: 1.8; font-size: 12px; margin-bottom: 25px; }
 label { display: block; font-size: 12px; color: #637569; margin: 15px 0; }input:not([type='checkbox']) { display: block; width: 100%; padding: 11px 12px; margin-top: 7px; border: 1px solid #dde6df; border-radius: 8px; background: #fbfcfb; font-size: 14px; }

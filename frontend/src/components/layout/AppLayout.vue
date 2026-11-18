@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { onMounted, ref, watch } from 'vue'
 import AppIcon from '../AppIcon.vue'
+import { siteName } from '../../stores/site'
 
 const props = defineProps<{ filesOpen: boolean; currentChatId?: string | null; newChatRevision?: number; dropDisabled?: boolean }>() // 文件拖放与聊天共用忙碌状态
 const emit = defineEmits<{ closeFiles: []; openSettings: []; openKnowledge: []; droppedFiles: [files: File[]]; attachSaved: [fileId: string] }>()
@@ -42,7 +43,7 @@ watch(() => [props.currentChatId, props.newChatRevision], () => { sidebarOpen.va
     <aside id="chat-sidebar" class="sidebar" :class="{ 'is-open': sidebarOpen, 'is-collapsed': sidebarCollapsed }" aria-label="会话导航">
       <div class="brand">
         <span class="brand-symbol"><AppIcon name="spark" :size="21" /></span>
-        <strong>ChatFoundry<small>你的思考工作空间</small></strong>
+        <strong>{{ siteName }}<small>你的思考工作空间</small></strong>
         <button class="icon-button desktop-sidebar-toggle" type="button" aria-label="收起侧边栏" title="收起侧边栏" aria-controls="chat-sidebar" :aria-expanded="!sidebarCollapsed" @click="toggleSidebar"><AppIcon name="panel" /></button>
         <button class="icon-button mobile-button" type="button" aria-label="关闭侧栏" @click="sidebarOpen = false"><AppIcon name="close" /></button>
       </div>
@@ -96,8 +97,8 @@ watch(() => [props.currentChatId, props.newChatRevision], () => { sidebarOpen.va
 .app-layout { display: flex; height: 100vh; height: 100dvh; overflow: hidden; background: #fff; }
 .sidebar { width: 248px; flex-shrink: 0; display: flex; flex-direction: column; background: #f6f7f8; border-right: 1px solid #eeeff1; }
 .brand { height: 92px; flex-shrink: 0; padding: 0 21px; display: flex; align-items: center; gap: 10px; }
-.brand-symbol { display: grid; place-items: center; width: 34px; height: 34px; border-radius: 11px; background: #2e4438; color: #e6efe8; }
-.brand > strong { font-size: 15px; letter-spacing: -.4px; font-weight: 650; }
+.brand-symbol { flex-shrink: 0; display: grid; place-items: center; width: 34px; height: 34px; border-radius: 11px; background: #2e4438; color: #e6efe8; }
+.brand > strong { min-width: 0; overflow-wrap: anywhere; font-size: 15px; letter-spacing: -.4px; font-weight: 650; }
 .brand small { display: block; font-size: 9px; font-weight: 400; letter-spacing: .04em; color: #989eaa; margin-top: 4px; }
 .brand .mobile-button { margin-left: auto; }
 .brand .desktop-sidebar-toggle { margin-left: auto; flex-shrink: 0; }

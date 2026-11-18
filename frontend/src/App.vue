@@ -11,6 +11,8 @@ import ChatSidebar from './components/chat/ChatSidebar.vue'
 import FilePanel from './components/files/FilePanel.vue'
 import AppLayout from './components/layout/AppLayout.vue'
 import AppIcon from './components/AppIcon.vue'
+import SiteFooter from './components/SiteFooter.vue'
+import { siteName } from './stores/site'
 import AccountMenu from './components/auth/AccountMenu.vue'
 import SettingsPanel from './components/settings/SettingsPanel.vue'
 import ComposerModelPicker from './components/chat/ComposerModelPicker.vue'
@@ -312,7 +314,8 @@ async function chooseFollowUp(question: string) {
           @pick-files="filePanel?.pickAttachments()"
           @paste-files="filePanel?.uploadSelectedFiles($event)"
         ><template #model-picker><ComposerModelPicker :current-model="currentModelName" :disabled="pageBusy || uploadingAttachments || switchingKnowledge" @changed="currentModelName = $event" @busy="switchingModel = $event" @open-settings="settingsPanel?.open()" /></template></MessageInput>
-        <small class="input-hint"><span>ChatFoundry · 让思考发生</span><span>AI 回答仅供参考，请核实重要信息</span></small>
+        <small class="input-hint"><span>{{ siteName }} · 让思考发生</span><span>AI 回答仅供参考，请核实重要信息</span></small>
+        <SiteFooter />
       </div>
     </template>
     <template #files>

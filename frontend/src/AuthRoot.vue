@@ -5,6 +5,7 @@ import App from './App.vue'
 import AuthPage from './components/auth/AuthPage.vue'
 import { useAuthStore } from './stores/auth'
 import { useChatStore } from './stores/chat'
+import { loadSiteInfo } from './stores/site'
 
 const auth = useAuthStore() // 登录确认前不挂载聊天和文件组件
 const pinia = getActivePinia()! // 退出后移除上一个账号的聊天仓库，防止页面残留
@@ -22,6 +23,7 @@ function handleStorage(event: StorageEvent) { // 同一浏览器其他标签页�
   void auth.initialize()
 }
 onMounted(() => {
+  void loadSiteInfo()
   window.addEventListener('auth-expired', handleExpired)
   window.addEventListener('storage', handleStorage)
   void auth.initialize()

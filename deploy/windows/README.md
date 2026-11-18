@@ -254,3 +254,24 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\deploy\windows\Configu
 ### 资料目录与独立文件发现版本
 
 本版仅升级发现策略、工具与前端入口，没有新增依赖；若此前版本的依赖已经安装齐全，不必重复安装。仍需停机备份、覆盖新版部署包、执行runtime.py的upgrade到f38b02a9c714后再启动。不要只覆盖dist或只更新后端。
+
+## 站点名称与备案信息
+
+默认网页标题和品牌名称为 `ChatFoundry`。站点名称、ICP备案号和公安备案信息由后端运行配置提供，不写入前端构建产物或公开仓库。登录页和聊天页底部共用备案展示，未填写的备案项不显示；品牌名称也用于登录页、侧栏和助手标识。
+
+在实际环境配置中按需添加以下字段（备案文字使用已审核通过的实际内容，示例不代表真实备案）：
+
+```dotenv
+SITE_NAME=ChatFoundry
+ICP_RECORD=
+GONGAN_RECORD=
+GONGAN_RECORD_CODE=
+```
+
+`ICP_RECORD` 链接到工信部备案查询网站。`GONGAN_RECORD` 为公安备案展示文字，`GONGAN_RECORD_CODE` 为官方查询链接中的20位数字编号；未填写编号时链接到公安备案查询首页。网站名称最多80字符，备案文字各最多100字符，空白名称回退为ChatFoundry。新增配置不会替代实际备案申请。
+
+接口 `GET /api/site-info` 无需登录，只返回上述公开展示信息及官方查询链接，不返回运行配置、密钥或内部路径。配置请求失败时前端保持默认品牌，不阻塞登录和聊天。
+
+此功能无需数据库迁移或新增依赖。更新前后端后，修改运行环境配置并重启后端，再刷新页面即可生效，无需为不同部署者重新构建前端。
+
+Windows部署应修改独立运行目录中的 `server.env`（默认 `C:\ChatFoundryRuntime\server.env`），不要修改包内的 `server.env.example` 或 `frontend/dist`。已有配置不会因新版模板增加字段而自动补全，首次使用时手动添加即可。修改后执行 `Manage-Services.ps1 -Action Restart` 并刷新页面；以后更新保留完整Runtime目录，这些设置就会沿用。

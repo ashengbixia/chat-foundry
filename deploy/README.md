@@ -102,3 +102,13 @@ docker compose --env-file deploy/.env -f deploy/compose.yaml up -d
 - 首次后端启动可能需要较长时间。健康检查 `start_period=600s` 是失败宽限期，并非强制等待10分钟；后端一旦健康网关就能启动。首次网关尚未启动时通常是连接失败，已有网关等待后端恢复时才可能出现502。用 `docker compose --env-file deploy/.env -f deploy/compose.yaml ps` 和后端日志判断状态。
 - `/docs` 未被网关转发到后端，会进入前端页面；这不等于后端故障，健康检查请使用 `/health`。
 - 仓库内的本文路径是 `deploy/README.md`，本地开发机绝对路径不适用于其他机器。若使用压缩包而非Git克隆，目录没有Git历史时不能直接 `git pull`；更新源码时保留服务器 `.env`、原Compose项目名及持久卷。
+
+## 站点展示配置
+
+在 `deploy/.env` 中按需填写 `SITE_NAME`（默认ChatFoundry）、`ICP_RECORD`、`GONGAN_RECORD` 和 `GONGAN_RECORD_CODE`（公安查询编号，20位数字，可留空）。备案项留空则隐藏；配置只用于公开页面展示。更新前后端后修改配置，无需重新为不同站点构建前端，也无需数据库迁移。变量修改后强制重建后端容器以重新载入环境：
+
+```bash
+docker compose --env-file deploy/.env -f deploy/compose.yaml up -d --force-recreate backend
+```
+
+以后更新代码时保留实际 `deploy/.env`，不要用示例覆盖。Windows部署使用独立Runtime目录的server.env，详见Windows部署说明。

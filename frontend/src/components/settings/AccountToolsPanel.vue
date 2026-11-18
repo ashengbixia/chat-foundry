@@ -3,7 +3,7 @@ import { reactive, ref } from 'vue'
 import { memoryRequest } from '../../api/memories'
 import type { MemoryRecord, ToolEntry, ToolFeatures } from '../../api/memories'
 defineProps<{ expanded?: boolean }>()
-const features = reactive<ToolFeatures>({ memory_enabled: false, history_enabled: true, knowledge_enabled: true, follow_ups_enabled: true })
+const features = reactive<ToolFeatures>({ memory_enabled: false, history_enabled: true, knowledge_enabled: true, files_enabled: true, follow_ups_enabled: true })
 const records = ref<MemoryRecord[]>([]), tools = ref<ToolEntry[]>([])
 const query = ref(''), toolQuery = ref(''), error = ref(''), notice = ref(''), busy = ref(false), loaded = ref(false), offset = ref(0), more = ref(false)
 const draft = reactive({ id: '', content: '', path: '/', type: 'user' as 'user' | 'context', revision: 0 })
@@ -51,6 +51,7 @@ function visibleTools() { const q = toolQuery.value.toLowerCase(); return tools.
       <label><input v-model="features.memory_enabled" type="checkbox" />允许模型读写长期记忆</label>
       <label><input v-model="features.history_enabled" type="checkbox" />允许查找本账号的其他历史会话</label>
       <label><input v-model="features.knowledge_enabled" type="checkbox" />允许主动发现未选入会话的本人知识库</label>
+      <label><input v-model="features.files_enabled" type="checkbox" />允许发现并读取本人独立上传文件（非知识库成员）</label>
       <label><input v-model="features.follow_ups_enabled" type="checkbox" />回答后生成推荐追问</label>
       <p>推荐追问会额外调用一次当前模型，不影响正文完成时间，可随时关闭。</p>
       <p>关闭知识库发现后，当前会话已明确添加的资料仍可通过原有检索和读取工具使用。</p>
@@ -70,8 +71,8 @@ function visibleTools() { const q = toolQuery.value.toLowerCase(); return tools.
       <button type="button" :disabled="!draft.content.trim()" @click="saveMemory">{{ draft.id ? '保存修改' : '添加记忆' }}</button><button v-if="draft.id" type="button" @click="clear">取消编辑</button>
       <h3>已注册工具 · {{ tools.length }}</h3>
       <input v-model="toolQuery" aria-label="筛选工具清单" placeholder="搜索工具名称或用途" />
-      <p>附带资料、联网开关和模型工具能力会影响实际可用清单；扩展工具通过“发现可用工具”按需启用。</p>
-      <details v-for="tool in visibleTools()" :key="tool.name" class="tool"><summary>{{ tool.label }} <small>{{ tool.on_demand ? '按需发现' : '基础工具' }} · {{ tool.available ? '按权限可用' : '需开启功能或提供资料' }}</small></summary><code>{{ tool.name }}</code><p>{{ tool.description }}</p></details>
+      <p>附带资料、联网开关和模型能力会影响实际清单；常用资料工具随目录直接提供，其余扩展工具按需发现。</p>
+      <details v-for="tool in visibleTools()" :key="tool.name" class="tool"><summary>{{ tool.label }} <small>{{ tool.on_demand ? '按条件提供' : '基础工具' }} · {{ tool.available ? '按权限可用' : '需开启功能或提供资料' }}</small></summary><code>{{ tool.name }}</code><p>{{ tool.description }}</p></details>
     </fieldset>
   </details>
 </template>

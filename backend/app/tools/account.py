@@ -6,7 +6,7 @@ from backend.app.models.memory import Memory, UserToolSetting
 from backend.app.models.user import User
 
 
-DEFAULT_FEATURES = {'memory_enabled': False, 'history_enabled': True, 'knowledge_enabled': True, 'follow_ups_enabled': True}
+DEFAULT_FEATURES = {'memory_enabled': False, 'history_enabled': True, 'knowledge_enabled': True, 'files_enabled': True, 'follow_ups_enabled': True}
 
 
 async def load_features(session, account_id):

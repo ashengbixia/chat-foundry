@@ -31,6 +31,7 @@ class AccountToolTests(unittest.IsolatedAsyncioTestCase):
             await session.flush()
             session.add_all([Chat(id='current', user_id='u'), Chat(id='old', user_id='u', title='旧项目'), Chat(id='secret', user_id='v', title='旧项目'),
                 File(id='f', user_id='u', filename='规则.txt', storage_path='not-read', text_content='第一行\nFT-204是流量\n第三行\n', status='completed'),
+                File(id='standalone', user_id='u', filename='独立规则.txt', storage_path='not-read', text_content='独立原文', status='completed'),
                 File(id='s', user_id='v', filename='秘密.txt', storage_path='not-read', text_content='FT-204秘密', status='completed'),
                 KnowledgeBase(id='k', user_id='u', name='养护规则', description='绿植知识'), KnowledgeBase(id='private', user_id='v', name='养护规则', description='秘密'),
                 UserToolSetting(user_id='u', memory_enabled=True)])
@@ -184,3 +185,83 @@ class AccountToolTests(unittest.IsolatedAsyncioTestCase):
                 events = [event async for event in service.stream_chat_history_events(session, 'current')]
         self.assertEqual(len(requests), 3)
         self.assertTrue(events[-1].startswith('event: done'))
+
+    async def test_resource_catalog_visible_before_answer_and_read_tools_directly_offered(self):
+        from backend.app.chat import service
+        from backend.app.repositories.chat import create_message
+        seen = []
+        async def model(messages, tools, connection=None):
+            names = {item['function']['name'] for item in tools or []}
+            seen.append(messages)
+            self.assertTrue({'query_knowledge_files', 'search_knowledge_files', 'view_knowledge_file', 'search_files', 'view_account_file'} <= names)
+            prompt = messages[0]['content']
+            self.assertIn('养护规则', prompt)
+            self.assertIn('规则.txt', prompt)
+            self.assertNotIn('秘密.txt', prompt)
+            self.assertNotIn('FT-204是流量', prompt)
+            self.assertIn('不能仅因自己知道常识而跳过相关资料', prompt)
+            if len(seen) == 1:
+                yield {'type': 'tool_call_delta', 'tool_calls': [{'index': 0, 'id': 'read', 'function': {'name': 'view_knowledge_file', 'arguments': '{"file_id":"f"}'}}]}
+            else:
+                self.assertIn('FT-204是流量', messages[-1]['content'])
+                yield {'type': 'text_delta', 'text': '依据资料，FT-204是流量[1]。'}
+        async with self.sessions() as session:
+            await create_message(session, 'current', 'user', '介绍一下相关规则')
+            with patch.object(service, 'stream_model_events', model):
+                events = [event async for event in service.stream_chat_history_events(session, 'current')]
+        self.assertEqual(len(seen), 2)
+        self.assertTrue(events[-1].startswith('event: done'))
+
+    async def test_other_uploaded_files_have_separate_access_without_chat_attachment(self):
+        from backend.app.chat.resource_discovery import add_resource_catalog
+        async with self.sessions() as session:
+            ctx = await self.context(session)
+            system = {'role': 'system', 'content': ''}
+            await add_resource_catalog(ctx, system)
+            names = {item['function']['name'] for item in get_available_tools(set(), context=ctx)}
+            self.assertIn('view_account_file', names)
+            found = await self.call(ctx, 'search_files', query='规则')
+            self.assertEqual([item['file_id'] for item in found['files']], ['standalone'])
+            result = await self.call(ctx, 'view_account_file', file_id='standalone')
+            self.assertEqual(ctx.allowed_file_ids, set())
+            numbered = json.loads(add_citation_ids('view_account_file', json.dumps(result), {}, set()))
+            self.assertEqual(numbered['chunks'][0]['citation_id'], 1)
+            with self.assertRaises(ValueError):
+                await self.call(ctx, 'view_account_file', file_id='s')
+            with self.assertRaises(ValueError):
+                await self.call(ctx, 'view_account_file', file_id='f')
+            settings = await session.get(UserToolSetting, 'u')
+            settings.files_enabled = False; settings.knowledge_enabled = False
+            await session.commit()
+            with self.assertRaises(ValueError):
+                await self.call(ctx, 'view_account_file', file_id='standalone')
+            other = await self.context(session, ['f'])
+            system = {'role': 'system', 'content': ''}
+            await add_resource_catalog(other, system)
+            self.assertNotIn('resource_catalog', other.state)
+            self.assertNotIn('query_knowledge_files', {tool['function']['name'] for tool in get_available_tools({'f'}, context=other)})
+            self.assertIn('text_content', await self.call(other, 'read_uploaded_file', file_id='f'))
+
+    async def test_catalog_metadata_bounded_and_pageable_and_never_inherited_by_child(self):
+        from backend.app.chat.resource_discovery import add_resource_catalog
+        async with self.sessions() as session:
+            for index in range(15):
+                session.add(KnowledgeBase(id=f'kb-{index:02}', user_id='u', name='目录名' * 25, description='目录说明' * 200))
+                session.add(File(id=f'file-{index:02}', user_id='u', filename=('文档名' * 60) + str(index), storage_path='not-read', text_content='正文不应出现在目录中', status='completed'))
+            await session.commit()
+            ctx = await self.context(session)
+            await add_resource_catalog(ctx, {'role': 'system', 'content': ''})
+            catalog = ctx.state['resource_catalog']
+            self.assertLessEqual(len(json.dumps(catalog, ensure_ascii=False).encode('utf-8')), 3600)
+            kb, files = catalog['knowledge'], catalog['uploaded_files']
+            self.assertTrue(kb['has_more']); self.assertTrue(files['has_more'])
+            next_kbs = await self.call(ctx, 'list_knowledge_bases', skip=kb['next_skip'])
+            self.assertFalse({item['id'] for item in kb['knowledge_bases']} & {item['id'] for item in next_kbs['knowledge_bases']})
+            next_files = await self.call(ctx, 'search_files', skip=files['next_skip'])
+            self.assertFalse({item['file_id'] for item in files['files']} & {item['file_id'] for item in next_files['files']})
+            ctx.is_subagent = True; ctx.state.clear()
+            message = {'role': 'system', 'content': ''}
+            await add_resource_catalog(ctx, message)
+            self.assertEqual(message['content'], '')
+            with self.assertRaises(ValueError):
+                await self.call(ctx, 'view_account_file', file_id='f')

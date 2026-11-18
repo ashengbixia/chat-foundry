@@ -126,7 +126,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\deploy\windows\Manage-
 
 ### 模型能力配置与多格式文档版本
 
-新增模型能力与分项诊断、PDF/DOCX/XLSX上传的版本，同时涉及前后端、新Python依赖和数据库迁移（最新为e06a91c4d873，包含推荐追问开关、账号记忆与工具开关、模型能力和消息摘要检查点）。升级时必须按下文先停机备份，再覆盖完整新版部署包，使用Configure的 `-InstallDependencies` 安装解析依赖，执行runtime.py的upgrade，成功后再启动服务。只替换脚本或只更新dist不能完成此次升级。旧TXT、已有模型Key、会话和引用均保留，不需要重新上传原文件。
+新增模型能力与分项诊断、PDF/DOCX/XLSX上传的版本，同时涉及前后端、新Python依赖和数据库迁移（最新为f38b02a9c714，包含独立文件发现开关、推荐追问开关、账号记忆与工具开关、模型能力和消息摘要检查点）。升级时必须按下文先停机备份，再覆盖完整新版部署包，使用Configure的 `-InstallDependencies` 安装解析依赖，执行runtime.py的upgrade，成功后再启动服务。只替换脚本或只更新dist不能完成此次升级。旧TXT、已有模型Key、会话和引用均保留，不需要重新上传原文件。
 
 ### 常规更新流程
 
@@ -250,3 +250,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\deploy\windows\Configu
 ```
 
 确认成功后启动服务，并按本机部署章节信任本地CA。服务不会自动增删Windows防火墙规则。
+
+### 资料目录与独立文件发现版本
+
+本版仅升级发现策略、工具与前端入口，没有新增依赖；若此前版本的依赖已经安装齐全，不必重复安装。仍需停机备份、覆盖新版部署包、执行runtime.py的upgrade到f38b02a9c714后再启动。不要只覆盖dist或只更新后端。

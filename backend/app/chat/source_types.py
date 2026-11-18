@@ -1,6 +1,6 @@
 from urllib.parse import urlsplit
 
-ACCOUNT_FILE_SOURCE_TOOLS = {'query_knowledge_files', 'grep_knowledge_files', 'view_knowledge_file', 'kb_exec', 'display_file'}
+ACCOUNT_FILE_SOURCE_TOOLS = {'query_knowledge_files', 'grep_knowledge_files', 'view_knowledge_file', 'kb_exec', 'display_file', 'view_account_file'}
 FILE_BROWSING_SOURCE_TOOLS = ACCOUNT_FILE_SOURCE_TOOLS | {'view_file', 'grep_chat_files'}
 
 

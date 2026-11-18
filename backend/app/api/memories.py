@@ -20,6 +20,7 @@ class FeatureInput(BaseModel):
     history_enabled: bool = Field(strict=True)
     knowledge_enabled: bool = Field(strict=True)
     follow_ups_enabled: bool | None = Field(default=None, strict=True)
+    files_enabled: bool | None = Field(default=None, strict=True)
 
 
 class MemoryInput(BaseModel):

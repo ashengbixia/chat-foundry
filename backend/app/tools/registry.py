@@ -13,6 +13,8 @@ from backend.app.tools.local import (  # 显式加载受信任模块；文件名
     get_subagent_task,
     cancel_subagent_task,
     search_tools,
+    search_files,
+    view_account_file,
     ask_user,
     search_chats,
     view_chat,

@@ -12,6 +12,7 @@ class UserToolSetting(Base):
     memory_enabled: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false())
     history_enabled: Mapped[bool] = mapped_column(Boolean, default=True, server_default=true())
     knowledge_enabled: Mapped[bool] = mapped_column(Boolean, default=True, server_default=true())
+    files_enabled: Mapped[bool] = mapped_column(Boolean, default=True, server_default=true())
     follow_ups_enabled: Mapped[bool] = mapped_column(Boolean, default=True, server_default=true())
 
 

@@ -11,6 +11,15 @@ from backend.app.tools.files import read_uploaded_file, search_uploaded_files
 from backend.app.chat.context import normalize_history_references
 
 
+def metadata_page(key, items, skip, has_more, **extra):
+    """名称/描述目录有独立预算，缩小页时同步推进真实游标。"""
+    result = {key: items, 'has_more': has_more, 'next_skip': skip + len(items) if has_more else None, **extra}
+    while len(json.dumps(result, ensure_ascii=False).encode('utf-8')) > 5000 and len(items) > 1:
+        items.pop()
+        result.update(has_more=True, next_skip=skip + len(items))
+    return result
+
+
 async def search_chats(ctx, query, count=5, offset=0, start_timestamp=None, end_timestamp=None):
     owner = await require_account(ctx, 'history_enabled')
     condition = [Chat.user_id == owner, Chat.kind == 'conversation', Chat.id != ctx.chat_id]
@@ -81,8 +90,7 @@ async def list_knowledge(ctx, query='', count=10, skip=0):
     if query:
         statement = statement.where(KnowledgeBase.name.contains(query, autoescape=True) | KnowledgeBase.description.contains(query, autoescape=True))
     rows = (await ctx.session.execute(statement.group_by(KnowledgeBase.id).order_by(KnowledgeBase.updated_at.desc(), KnowledgeBase.id).offset(skip).limit(count + 1))).all()
-    return {'knowledge_bases': [{'id': row.id, 'name': row.name, 'description': row.description[:1000], 'file_count': total} for row, total in rows[:count]],
-            'has_more': len(rows) > count, 'next_skip': skip + count if len(rows) > count else None}
+    return metadata_page('knowledge_bases', [{'id': row.id, 'name': row.name, 'description': row.description[:1000], 'file_count': total} for row, total in rows[:count]], skip, len(rows) > count)
 
 
 async def search_knowledge_files(ctx, query='', knowledge_id=None, count=20, skip=0):
@@ -91,8 +99,16 @@ async def search_knowledge_files(ctx, query='', knowledge_id=None, count=20, ski
     if query:
         statement = statement.where(File.filename.contains(query, autoescape=True))
     rows = list((await ctx.session.execute(statement.order_by(File.filename, File.id).offset(skip).limit(count + 1))).scalars())
-    return {'files': [{'file_id': row.id, 'filename': row.filename, 'size': row.size, 'status': row.status, 'index_status': row.index_status} for row in rows[:count]],
-            'has_more': len(rows) > count, 'next_skip': skip + count if len(rows) > count else None}
+    return metadata_page('files', [{'file_id': row.id, 'filename': row.filename, 'size': row.size, 'status': row.status, 'index_status': row.index_status} for row in rows[:count]], skip, len(rows) > count)
+
+
+async def search_files(ctx, query, count=10, skip=0):
+    owner = await require_account(ctx, 'files_enabled')
+    rows = list((await ctx.session.execute(select(File.id.label('file_id'), File.filename, File.size, File.status, File.index_status)
+        .where(File.user_id == owner, ~File.id.in_(select(KnowledgeBaseFile.file_id)), File.filename.contains(query, autoescape=True))
+        .order_by(File.updated_at.desc(), File.id).offset(skip).limit(count + 1))).all())
+    return metadata_page('files', [dict(row._mapping) for row in rows[:count]], skip, len(rows) > count,
+        notice='这里只查找本人独立上传文件的名称，不包含知识库成员文件，没有读取正文或加入会话。用view_account_file按需读取；知识库内文件使用知识库入口，关闭文件发现后该账号入口不可用。')
 
 
 async def query_knowledge_bases(ctx, query, count=5, skip=0):
@@ -122,8 +138,13 @@ async def query_knowledge_files(ctx, query, knowledge_id=None, count=5):
     return await search_uploaded_files(query, ctx.session, await knowledge_ids(ctx, knowledge_id), limit=count)
 
 
-async def view_file(ctx, file_id, offset=0, max_chars=6000, line_numbers=False, start_line=None, end_line=None, knowledge=False):
-    ids = await knowledge_ids(ctx) if knowledge else ctx.allowed_file_ids
+async def view_file(ctx, file_id, offset=0, max_chars=6000, line_numbers=False, start_line=None, end_line=None, knowledge=False, account=False):
+    if account:
+        owner = await require_account(ctx, 'files_enabled')
+        owned = await ctx.session.scalar(select(File.id).where(File.id == file_id, File.user_id == owner, ~File.id.in_(select(KnowledgeBaseFile.file_id))))
+        ids = {owned} if owned else set()
+    else:
+        ids = await knowledge_ids(ctx) if knowledge else ctx.allowed_file_ids
     if file_id not in ids:
         raise ValueError('文件不在当前授权范围')
     if start_line is None and end_line is None and not line_numbers:

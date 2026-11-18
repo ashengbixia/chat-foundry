@@ -56,7 +56,7 @@ class DatabaseSetupTests(unittest.TestCase):  # 全部使用临时磁盘库，�
         result = db_setup.prepare_database(self.path, upgrade=True)
         self.assertEqual(result["status"], "upgraded")
         self.assertEqual(self.query("SELECT text_content, status, index_status, index_task_id FROM files"), [("已有正文", "completed", "pending", None)])
-        self.assertEqual(result["revision"], "e06a91c4d873")
+        self.assertEqual(result["revision"], "f38b02a9c714")
 
     def test_upgrade_populates_chat_files_from_old_message_attachments(self):
         db_setup.prepare_database(self.path)

@@ -23,7 +23,7 @@ export function getCitationSources(output: unknown): CitationSource[] { // 历�
   const sources = new Map<number, CitationSource>() // 同一段原文重复检索时只展示一次
   const cached = Array.isArray(output) ? output.filter(item => item?.type === 'context_sources').map(item => ({ name: 'read_history_sources', failed: false, result: JSON.stringify({ chunks: item.chunks }) })) : []
   for (const call of [...getToolCalls(output), ...cached]) {
-    if (call.failed || call.result === null || !['search_uploaded_files', 'read_uploaded_file', 'read_history_sources', 'summarize_uploaded_files', 'read_webpage', 'delegate_task', 'get_subagent_task', 'query_knowledge_files', 'grep_knowledge_files', 'view_knowledge_file', 'kb_exec', 'display_file', 'view_file', 'grep_chat_files'].includes(call.name)) continue
+    if (call.failed || call.result === null || !['search_uploaded_files', 'read_uploaded_file', 'read_history_sources', 'summarize_uploaded_files', 'read_webpage', 'delegate_task', 'get_subagent_task', 'query_knowledge_files', 'grep_knowledge_files', 'view_knowledge_file', 'kb_exec', 'display_file', 'view_file', 'grep_chat_files', 'view_account_file'].includes(call.name)) continue
     try {
       const data = JSON.parse(call.result)
       const items = call.name === 'read_uploaded_file' ? [data] : data?.chunks

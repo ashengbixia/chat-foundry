@@ -9,9 +9,19 @@ from backend.app.llm.budget import ensure_input_budget
 from backend.app.llm.connection import ModelConnection
 from backend.app.llm.messages import complete_tool_reasoning
 from backend.app.llm.capabilities import apply_model_capabilities
+from backend.app.llm.output import request_limits, apply_output_limit
 
 class ModelStreamError(RuntimeError):
     """模型流未完整结束，或回答被服务端截断；说明可直接展示给用户。"""
+
+
+class OutputLimitError(ModelStreamError):
+    """供应商明确以length结束，已返回的正文仍保留。"""
+
+
+def output_limit_error(limit):
+    setting = f'当前请求设置为{limit} Token' if limit is not None else '当前使用模型服务默认输出额度'
+    return OutputLimitError(f'模型输出达到长度限制，回答尚未完成（{setting}）。请在模型设置中调整最大输出；思考与正文可能共用额度，服务自身仍有上限。')
 
 async def generate_reply(message: str, connection: ModelConnection | None = None) -> str:
     """把用户的问题发送给模型，返回回答正文。"""
@@ -38,10 +48,10 @@ async def generate_reply(message: str, connection: ModelConnection | None = None
             {"role": "user", "content": message}
         ],
         "stream": False,
-        "max_tokens": settings.llm_max_output_tokens,
     }
-    payload = apply_model_capabilities(payload, connection)
-    ensure_input_budget(payload["messages"], None, settings.llm_context_window, settings.llm_max_output_tokens, settings.llm_context_margin)
+    window, reserve, limit = request_limits(settings, connection)
+    payload = apply_output_limit(apply_model_capabilities(payload, connection), connection, limit)
+    ensure_input_budget(payload["messages"], None, window, reserve, settings.llm_context_margin)
 
     async with model_client(connection,
         timeout=connection.timeout
@@ -58,7 +68,7 @@ async def generate_reply(message: str, connection: ModelConnection | None = None
         data = response.json()
         reason = data["choices"][0].get("finish_reason")  # 单次回答也不能把长度截断当作完整答案
         if reason == "length":
-            raise ModelStreamError("模型输出达到长度限制，本次回答不完整")
+            raise output_limit_error(limit)
         if reason == "content_filter":
             raise ModelStreamError("模型服务中止了本次输出，回答未完整生成")
         content = data["choices"][0]["message"]["content"]
@@ -72,7 +82,7 @@ async def stream_model_events(messages: list[dict[str, Any]], tools: list[dict[s
     """流式读取模型的正文和工具调用片段，不执行工具。"""
 
     connection = connection or ModelConnection(settings.llm_base_url, settings.llm_model, settings.llm_timeout, settings.llm_api_key)
-    output_tokens = min(max_output_tokens, settings.llm_max_output_tokens) if max_output_tokens is not None else settings.llm_max_output_tokens
+    window, output_tokens, output_limit = request_limits(settings, connection, max_output_tokens)
     api_key = connection.api_key.get_secret_value()  # 流式请求同样只在后端读取真实密钥
     if not all((
         connection.base_url,
@@ -92,15 +102,14 @@ async def stream_model_events(messages: list[dict[str, Any]], tools: list[dict[s
         "model": connection.model,
         "messages": messages,
         "stream": connection.capabilities.streaming,
-        "max_tokens": output_tokens,
     }
     if tools:
         payload["tools"] = tools  # 本次请求允许模型使用的工具
         payload["tool_choice"] = tool_choice or "auto"  # 诊断可明确要求测试工具，正常聊天维持auto
     else:
         payload['tool_choice'] = 'none'  # 显式禁止调用，不能依赖供应商的默认行为。
-    payload = apply_model_capabilities(payload, connection)
-    ensure_input_budget(payload['messages'], payload.get('tools'), settings.llm_context_window, output_tokens, settings.llm_context_margin)
+    payload = apply_output_limit(apply_model_capabilities(payload, connection), connection, output_limit)
+    ensure_input_budget(payload['messages'], payload.get('tools'), window, output_tokens, settings.llm_context_margin)
 
     async with model_client(connection,
         timeout=connection.timeout
@@ -121,7 +130,7 @@ async def stream_model_events(messages: list[dict[str, Any]], tools: list[dict[s
                 yield {'type': 'tool_call_delta', 'tool_calls': [dict(call, index=index) for index, call in enumerate(calls)]}
             reason = choice.get('finish_reason')
             if reason == 'length':
-                raise ModelStreamError('模型输出达到长度限制，本次回答不完整')
+                raise output_limit_error(output_limit)
             if reason not in ('stop', 'tool_calls') or (reason == 'tool_calls') != bool(calls):
                 raise ModelStreamError('模型返回的工具调用与结束原因不一致或不受支持')
             if not calls and not (isinstance(content, str) and content.strip()):
@@ -180,7 +189,7 @@ async def stream_model_events(messages: list[dict[str, Any]], tools: list[dict[s
                     yield {"type": "tool_call_delta", "tool_calls": tool_calls}
 
             if finish_reason == "length":
-                raise ModelStreamError("模型输出达到长度限制，本次回答不完整")
+                raise output_limit_error(output_limit)
             if finish_reason == "content_filter":
                 raise ModelStreamError("模型服务中止了本次输出，回答未完整生成")
             if not received_done:

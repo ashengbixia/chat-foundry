@@ -197,7 +197,7 @@ async def stream_chat_history_events(
         from backend.app.chat.memory import replay_history
         systems = [item for item in messages if item.get('role') == 'system' and not item.get('content', '').startswith('此前完整轮次的压缩摘要')]
         if getattr(settings, 'context_compaction_enabled', True):
-            boundary = select_boundary(history, available_tools, systems)
+            boundary = select_boundary(history, available_tools, systems, connection=connection)
             if boundary is not None:
                 yield format_sse('context_status', {'status': 'generating', 'text': '正在整理较早的对话…'})
                 try:
@@ -273,7 +273,7 @@ async def stream_chat_history_events(
             if getattr(settings, 'context_compaction_enabled', True) and metadata.get('context_compaction') != 'failed':
                 latest_user = max((index for index, item in enumerate(messages) if item.get('role') == 'user'), default=len(messages) - 1)
                 running = messages[latest_user + 1:]
-                boundary = select_boundary(history, tools, systems, [capability_message] + running)
+                boundary = select_boundary(history, tools, systems, [capability_message] + running, connection=connection)
                 if boundary is not None:
                     yield format_sse('context_status', {'status': 'generating', 'text': '正在整理较早的对话…'})
                     try:
@@ -296,9 +296,12 @@ async def stream_chat_history_events(
                         metadata['context_compaction'] = 'failed'
                         logger.warning('工具返回后历史摘要未完成，未推进检查点', exc_info=False)
                         yield format_sse('context_status', {'status': 'failed', 'text': '历史摘要未完成，本轮可能仅保留近期对话；原历史仍可查看。'})
+            from backend.app.llm.output import request_limits
+            context_window, output_reserve, output_limit = request_limits(settings, connection)
             trimmed, tools, finish_only, finish_reason = prepare_model_request(
-                messages, raw_tool_results, tools, settings.llm_context_window,
-                settings.llm_max_output_tokens, settings.llm_context_margin, finish_only)
+                messages, raw_tool_results, tools, context_window,
+                output_reserve, settings.llm_context_margin, finish_only)
+            metadata.update(output_limit=output_limit, output_reserve=output_reserve, context_window=context_window)
             metadata['budget_estimator'] = 'utf8_bytes_upper_bound'
             if finish_only:
                 metadata['finish_only_reason'] = finish_reason or 'tool_iteration_limit'

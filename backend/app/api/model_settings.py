@@ -14,6 +14,8 @@ from backend.app.core.database import get_db
 from backend.app.core.model_secrets import decrypt_api_key, encrypt_api_key
 from backend.app.llm.connection import ModelConnection
 from backend.app.llm.capabilities import ModelCapabilities, apply_model_capabilities
+from backend.app.llm.output import request_limits, apply_output_limit
+from backend.app.llm.budget import get_input_budget
 from backend.app.models.model_setting import UserModelSetting
 from backend.app.models.user import User
 
@@ -100,7 +102,10 @@ def resolve_connection(data: ModelServiceInput, old: UserModelSetting | None, us
             key = ""
         profiles = (old.model_profiles or {}) if old is not None and old.base_url == data.base_url else {}
         capabilities = data.capabilities or ModelCapabilities.model_validate(profiles.get(data.model, {}))
-        return ModelConnection(data.base_url, data.model, data.timeout, SecretStr(key), data.key_source == "none", user_id, capabilities)
+        connection = ModelConnection(data.base_url, data.model, data.timeout, SecretStr(key), data.key_source == "none", user_id, capabilities)
+        window, reserve, _ = request_limits(settings, connection)
+        get_input_budget(window, reserve, settings.llm_context_margin)
+        return connection
     except ValueError as error:
         raise HTTPException(400, str(error)) from None
 
@@ -179,7 +184,7 @@ async def request_provider(connection: ModelConnection, models: bool) -> dict:  
     key = connection.api_key.get_secret_value()
     if key:
         headers["Authorization"] = f"Bearer {key}"
-    payload = None if models else {"model": connection.model, "messages": [{"role": "user", "content": "Reply only OK, without explanation."}], "max_tokens": 512, "stream": False}
+    payload = None if models else apply_output_limit({"model": connection.model, "messages": [{"role": "user", "content": "Reply only OK, without explanation."}], "stream": False}, connection, request_limits(settings, connection, 512)[2])
     if payload is not None:
         payload = apply_model_capabilities(payload, connection)
     try:

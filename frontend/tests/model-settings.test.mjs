@@ -30,6 +30,10 @@ test('服务预设只填写地址，明确选择模型后保存并保留已保�
   state.selectedModel.value = 'deepseek-reasoner'
   state.apiKey.value = 'personal-test-key'
   state.profile.tools = false
+  assert.equal(state.profile.max_output_tokens, null)
+  state.profile.max_output_tokens = 16384
+  state.profile.output_token_parameter = 'max_completion_tokens'
+  state.profile.context_window = 65536
   let closed = 0
   state.dialog.value = { open: true, close() { this.open = false; closed++ } }
   await state.save()
@@ -37,6 +41,9 @@ test('服务预设只填写地址，明确选择模型后保存并保留已保�
   assert.ok(events.some(([name]) => name === 'saved'))
   assert.equal(sent[0].api_key, 'personal-test-key')
   assert.equal(sent[0].capabilities.tools, false)
+  assert.equal(sent[0].capabilities.max_output_tokens, 16384)
+  assert.equal(sent[0].capabilities.output_token_parameter, 'max_completion_tokens')
+  assert.equal(sent[0].capabilities.context_window, 65536)
   assert.equal(state.apiKey.value, '')
   assert.equal(state.hasSavedKey.value, true)
   await state.test()

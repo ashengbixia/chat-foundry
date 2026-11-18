@@ -1,5 +1,5 @@
 from typing import Literal
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class ModelCapabilities(BaseModel):
@@ -9,6 +9,9 @@ class ModelCapabilities(BaseModel):
     thinking: Literal['default', 'enabled', 'disabled'] = 'default'
     thinking_parameter: Literal['thinking', 'enable_thinking'] = 'thinking'
     reasoning_content: Literal['preserve', 'omit'] = 'preserve'
+    max_output_tokens: int | None = Field(default=None, gt=0, strict=True)
+    output_token_parameter: Literal['max_tokens', 'max_completion_tokens'] = 'max_tokens'
+    context_window: int | None = Field(default=None, ge=1024, strict=True)
 
 
 def apply_model_capabilities(payload: dict, connection) -> dict:

@@ -40,6 +40,10 @@ onUnmounted(close)
 watch(() => [draft.provider, draft.base_url, draft.model, draft.timeout, draft.key_source, apiKey.value, ...Object.values(profile)], () => { error.value = notice.value = ''; testLimited.value = false; diagnosis.value = [] }, { flush: 'sync' })
 watch(() => draft.model, (model) => { Object.assign(profile, defaultCapabilities(), modelProfiles.value[model.trim()] ?? {}) }, { flush: 'sync' })
 function clearCatalog() { models.value = []; catalogNotice.value = ''; capabilities.value = {} }
+function optionalNumber(event: Event): number | null {
+  const value = (event.target as HTMLInputElement).value
+  return value === '' ? null : Number(value)
+}
 function applyConfig(config: ModelServiceConfig, usingDefaults: boolean) {
   saved.value = config
   modelProfiles.value = config.model_profiles ?? {}
@@ -187,6 +191,11 @@ defineExpose({ open })
           <p class="hint">{{ models.length ? '下拉选择会自动填入模型 ID；也可以直接修改。' : '点击“获取模型列表”后，这里会显示可选择的模型；也可以直接输入模型 ID。' }}选择或修改后需保存配置才会生效。</p>
         </div>
         <details class="model-capabilities"><summary>当前模型能力与兼容设置</summary>
+          <label>最大输出（Token）<input :value="profile.max_output_tokens ?? ''" type="number" min="1" step="1" placeholder="使用模型服务默认值" @input="profile.max_output_tokens = optionalNumber($event)" /></label>
+          <p class="hint">留空时不发送最大输出参数，由模型服务决定，并非无限输出。思考模型的思考和正文可能共用额度；填写时请按服务支持的范围设置。</p>
+          <label v-if="profile.max_output_tokens !== null">输出参数<select v-model="profile.output_token_parameter"><option value="max_tokens">max_tokens（常见兼容接口）</option><option value="max_completion_tokens">max_completion_tokens（按服务文档选择）</option></select></label>
+          <label>应用上下文预算（Token）<input :value="profile.context_window ?? ''" type="number" min="1024" step="1" placeholder="沿用服务器配置" @input="profile.context_window = optionalNumber($event)" /></label>
+          <p class="hint">这是输入与输出合计的应用预算，需大于输出预留和安全余量；请按模型服务文档填写，不会自动查询或扩大服务实际上限。</p>
           <p class="hint">按服务地址与模型ID分别保存。开关决定发送方式，不代表已经实测支持；可用下方“分项诊断”验证。</p>
           <label class="check"><input v-model="profile.tools" type="checkbox" />允许模型调用工具</label>
           <label class="check"><input v-model="profile.streaming" type="checkbox" />使用流式输出（关闭后等待完整响应）</label>

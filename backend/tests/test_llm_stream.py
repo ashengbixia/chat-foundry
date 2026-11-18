@@ -21,6 +21,21 @@ def chunk(delta: dict | None, finish_reason: str | None = None) -> str:  # 将�
     return "data: " + json.dumps({"choices": [{"delta": delta, "finish_reason": finish_reason}]})
 
 class LlmStreamTests(unittest.IsolatedAsyncioTestCase):
+    async def test_output_defaults_to_provider_and_explicit_limits_are_not_clamped_to_4096(self):
+        from backend.app.llm.connection import ModelConnection
+        from backend.app.llm.capabilities import ModelCapabilities
+        from pydantic import SecretStr
+        requests, _ = self.mock_model([chunk({'content': '正文'}, 'stop'), 'data: [DONE]'])
+        self.assertTrue([event async for event in llm.stream_model_events([{'role': 'user', 'content': 'test'}])])
+        self.assertNotIn('max_tokens', requests[-1])
+        self.assertNotIn('max_completion_tokens', requests[-1])
+        connection = ModelConnection('https://model.test/v1', 'test-model', 5, SecretStr('test-only'),
+            capabilities=ModelCapabilities(max_output_tokens=16384, context_window=65536))
+        self.assertTrue([event async for event in llm.stream_model_events([], connection=connection)])
+        self.assertEqual(requests[-1]['max_tokens'], 16384)
+        self.assertTrue([event async for event in llm.stream_model_events([], connection=connection, max_output_tokens=512)])
+        self.assertEqual(requests[-1]['max_tokens'], 512)
+
     def setUp(self):
         self.real_client = httpx.AsyncClient  # 同一测试切换多个模拟响应时，始终使用未被替换的HTTP客户端类
         settings = SimpleNamespace(llm_api_key=SimpleNamespace(get_secret_value=lambda: "test-only"), llm_base_url="https://model.test/v1", llm_model="test-model", llm_timeout=5, llm_context_window=32768, llm_max_output_tokens=4096, llm_context_margin=1024)
@@ -187,6 +202,9 @@ class LlmStreamTests(unittest.IsolatedAsyncioTestCase):
                     self.assertEqual(saved.content, "收到一半")
                     self.assertEqual(saved.output[0]["content"][0]["text"], "收到一半")
                     self.assertIn(expected, saved.error)
+                    if reason == 'length':
+                        metadata = next(item for item in saved.output if item.get('type') == 'turn_metadata')
+                        self.assertEqual(metadata['error_info']['code'], 'output_limit_exceeded')
                 self.assertTrue(events[-1].startswith("event: error"))
                 self.assertIn(expected, events[-1])
                 self.assertFalse(any(event.startswith("event: done") for event in events))

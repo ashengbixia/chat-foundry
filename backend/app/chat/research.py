@@ -4,7 +4,7 @@ import re
 import httpx
 from sqlalchemy.exc import SQLAlchemyError
 from backend.app.llm.budget import InputBudgetError
-from backend.app.llm.client import ModelStreamError
+from backend.app.llm.client import ModelStreamError, OutputLimitError
 from backend.app.llm.http import ModelAccessError
 
 
@@ -43,6 +43,9 @@ def failure_info(error, phase):
     if isinstance(error, InputBudgetError):
         info.update(phase='input_budget', code='input_budget_exceeded')
         message = '本轮输入预算不足（按保守估算），已保留生成记录'
+    elif isinstance(error, OutputLimitError):
+        info.update(phase='model_output', code='output_limit_exceeded')
+        message = str(error)
     elif isinstance(error, SQLAlchemyError):
         info.update(phase='database', code='database_error')
         message = '数据库读写未完成，请查看后端日志'

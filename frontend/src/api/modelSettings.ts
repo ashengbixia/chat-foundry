@@ -1,8 +1,8 @@
 import { createApiError } from './errors'
 
 export type ModelProvider = 'server' | 'deepseek' | 'openai' | 'qwen' | 'ollama' | 'custom'
-export interface ModelCapabilities { tools: boolean; streaming: boolean; thinking: 'default' | 'enabled' | 'disabled'; thinking_parameter: 'thinking' | 'enable_thinking'; reasoning_content: 'preserve' | 'omit' }
-export const defaultCapabilities = (): ModelCapabilities => ({ tools: true, streaming: true, thinking: 'default', thinking_parameter: 'thinking', reasoning_content: 'preserve' })
+export interface ModelCapabilities { tools: boolean; streaming: boolean; thinking: 'default' | 'enabled' | 'disabled'; thinking_parameter: 'thinking' | 'enable_thinking'; reasoning_content: 'preserve' | 'omit'; max_output_tokens: number | null; output_token_parameter: 'max_tokens' | 'max_completion_tokens'; context_window: number | null }
+export const defaultCapabilities = (): ModelCapabilities => ({ tools: true, streaming: true, thinking: 'default', thinking_parameter: 'thinking', reasoning_content: 'preserve', max_output_tokens: null, output_token_parameter: 'max_tokens', context_window: null })
 export interface DiagnosticCheck { id: string; label: string; status: 'passed' | 'failed' | 'limited' | 'skipped'; message: string; duration_ms: number; code?: string }
 export interface ModelCatalog { models: string[]; notice?: string; capabilities?: Record<string, string[]>; excluded_models?: { id: string; reason: string }[] } // 未知类型保留，只有服务明确声明的向量模型才被过滤
 export interface ModelServiceConfig { // 响应中只有Key状态，没有明文或密文

@@ -77,7 +77,10 @@ class BudgetClientTests(unittest.IsolatedAsyncioTestCase):
                     pass
         client.assert_not_called()
 
-    async def test_output_limit_is_sent_in_both_request_paths(self):
+    async def test_output_default_and_explicit_limit_in_both_request_paths(self):
+        from backend.app.llm.connection import ModelConnection
+        from backend.app.llm.capabilities import ModelCapabilities
+        from pydantic import SecretStr
         requests = []
         def handler(request):
             payload = json.loads(request.content)
@@ -89,7 +92,11 @@ class BudgetClientTests(unittest.IsolatedAsyncioTestCase):
         with patch.object(llm.httpx, "AsyncClient", side_effect=lambda **kwargs: self.real_client(transport=httpx.MockTransport(handler), **kwargs)):
             self.assertEqual(await llm.generate_reply("问题"), "回答")
             self.assertEqual([event async for event in llm.stream_model_events([{"role": "user", "content": "问题"}])], [{"type": "text_delta", "text": "回答"}])
-        self.assertEqual([request["max_tokens"] for request in requests], [128, 128])
+            connection = ModelConnection('https://test.invalid/v1', 'test', 5, SecretStr('test-only'), capabilities=ModelCapabilities(max_output_tokens=8192))
+            self.assertEqual(await llm.generate_reply('问题', connection), '回答')
+            self.assertTrue([event async for event in llm.stream_model_events([], connection=connection)])
+        self.assertTrue(all('max_tokens' not in request and 'max_completion_tokens' not in request for request in requests[:2]))
+        self.assertEqual([request['max_tokens'] for request in requests[2:]], [8192, 8192])
 
     async def test_legacy_endpoint_returns_clear_budget_error(self):
         from backend.app import main

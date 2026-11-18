@@ -13,7 +13,7 @@ from backend.tests import test_auth as account_tests
 
 class ModelSettingsTests(unittest.IsolatedAsyncioTestCase):  # 只验证密钥、隔离和真实聊天接线，不请求外部模型
     async def test_model_profiles_survive_quick_switch_and_apply_to_nonstream_requests(self):
-        options = {'tools': False, 'streaming': False, 'thinking': 'disabled', 'thinking_parameter': 'enable_thinking', 'reasoning_content': 'omit'}
+        options = {'tools': False, 'streaming': False, 'thinking': 'disabled', 'thinking_parameter': 'enable_thinking', 'reasoning_content': 'omit', 'max_output_tokens': 65536, 'output_token_parameter': 'max_completion_tokens', 'context_window': 131072}
         saved = await self.admin.put(self.url, json={**self.draft, 'capabilities': options})
         self.assertEqual(saved.status_code, 200, saved.text)
         await self.admin.patch(self.url + '/model', json={'base_url': self.draft['base_url'], 'model': 'other-model'})
@@ -33,6 +33,8 @@ class ModelSettingsTests(unittest.IsolatedAsyncioTestCase):  # 只验证密钥�
             events = [event async for event in llm.stream_model_events(messages, [{'type': 'function'}], connection)]
         self.assertEqual(events, [{'type': 'text_delta', 'text': 'OK'}])
         self.assertFalse(seen[0]['stream'])
+        self.assertEqual(seen[0]['max_completion_tokens'], 65536)
+        self.assertNotIn('max_tokens', seen[0])
         self.assertFalse(seen[0]['enable_thinking'])
         self.assertNotIn('tools', seen[0])
         self.assertFalse(any(item['role'] == 'tool' or 'reasoning_content' in item for item in seen[0]['messages']))
@@ -69,7 +71,7 @@ class ModelSettingsTests(unittest.IsolatedAsyncioTestCase):  # 只验证密钥�
         self.admin_user = await account_tests.AccountTests.signup(self, self.admin, first=True)
         self.other_user = await account_tests.AccountTests.signup(self, self.other)
         model_secrets.get_cipher.cache_clear()
-        for current in [patch.object(model_secrets, "KEY_FILE", self.root / "private" / "model.key"), patch.object(model_secrets, "settings", SimpleNamespace(model_config_encryption_key=SecretStr(""))), patch.object(api, "settings", SimpleNamespace(llm_base_url="https://default.test/v1", llm_model="default-model", llm_timeout=60, llm_api_key=SecretStr("shared-server-key")))]:
+        for current in [patch.object(model_secrets, "KEY_FILE", self.root / "private" / "model.key"), patch.object(model_secrets, "settings", SimpleNamespace(model_config_encryption_key=SecretStr(""))), patch.object(api, "settings", SimpleNamespace(llm_base_url="https://default.test/v1", llm_model="default-model", llm_timeout=60, llm_api_key=SecretStr("shared-server-key"), llm_context_window=32768, llm_max_output_tokens=4096, llm_context_margin=1024))]:
             current.start()
             self.addCleanup(current.stop)
         self.url = "/api/settings/model-service"

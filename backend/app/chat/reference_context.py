@@ -57,7 +57,9 @@ async def prepare_auto_reference(session, question, allowed_ids, messages, tools
         return []  # 当前资料可用不等于每个新话题都需要检索，模型仍可按需调用。
     targets, query = resolve_reference_scope(question, allowed_ids, catalog, history)
     rows = (await session.execute(select(File.id, File.status, func.length(File.text_content).label("chars")).where(File.id.in_(sorted(targets))))).all()
-    budget = get_input_budget(settings.llm_context_window, settings.llm_max_output_tokens, settings.llm_context_margin)
+    from backend.app.llm.output import request_limits
+    window, reserve, _ = request_limits(settings, connection)
+    budget = get_input_budget(window, reserve, settings.llm_context_margin)
     latest = max((i for i, item in enumerate(messages) if item.get("role") == "user"), default=0)
     required = [item for item in messages[:latest] if item.get("role") == "system"] + messages[latest:]
     # 小资料先尝试全文；最终把工具包装也计入预算，不能只看字符数。

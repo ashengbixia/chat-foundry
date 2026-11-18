@@ -94,7 +94,7 @@ async function stop(task: SubagentTask) {
         <p v-if="selected.error_info" class="task-error">阶段：{{ selected.error_info.phase }} · {{ selected.error_info.code }}</p>
         <button v-if="hasMore" type="button" :disabled="loading" @click="loadHistory(true)">加载更早记录</button>
         <p v-if="loading && !messages.length" role="status">正在读取子历史…</p>
-        <MessageList :messages="messages" :has-chat="true" />
+        <MessageList readonly :messages="messages" :has-chat="true" />
       </template>
     </dialog>
   </div>

@@ -100,9 +100,19 @@ export function getSummaryCoverage(result: string | null): string {
   } catch { return '' }
 }
 
+export function getRetrievalMethod(result: string | null): string {
+  if (!result) return ''
+  try {
+    const data = JSON.parse(result)
+    if (!isRecord(data) || Object.hasOwn(data, 'error')) return ''
+    const labels: Record<string, string> = { hybrid: '混合检索', keyword_fallback: '仅关键词 · 向量不可用', exact: '精确查找', unavailable: '未执行检索' }
+    return typeof data.retrieval_method === 'string' ? labels[data.retrieval_method] ?? '' : ''
+  } catch { return '' }
+}
+
 export interface RetrievalPreview { // 将检索结果整理为可展示的来源卡片，原始JSON仍保留
   status: 'ok' | 'unavailable' | 'no_matches'
-  chunks: { fileId: string; filename: string; chunkId: string; chunkIndex: number; content: string; startOffset: number; endOffset: number; truncated: boolean }[]
+  chunks: { fileId: string; filename: string; chunkId: string; chunkIndex: number; content: string; startOffset: number; endOffset: number; truncated: boolean; matchTypeLabel: string; distance: number | null }[]
   unavailable: { fileId: string; filename: string; message: string }[]
   notice: string
   truncated: boolean
@@ -117,7 +127,9 @@ export function getRetrievalPreview(output: string | null): RetrievalPreview | n
       if (!isRecord(item) || typeof item.file_id !== 'string' || typeof item.filename !== 'string' || typeof item.chunk_id !== 'string' || typeof item.content !== 'string') continue
       if (typeof item.chunk_index !== 'number' || !Number.isInteger(item.chunk_index) || item.chunk_index < 0) continue
       if (typeof item.start_offset !== 'number' || !Number.isInteger(item.start_offset) || item.start_offset < 0 || typeof item.end_offset !== 'number' || !Number.isInteger(item.end_offset) || item.end_offset < item.start_offset) continue
-      chunks.push({ fileId: item.file_id, filename: item.filename, chunkId: item.chunk_id, chunkIndex: item.chunk_index, content: item.content, startOffset: item.start_offset, endOffset: item.end_offset, truncated: item.truncated === true })
+      chunks.push({ fileId: item.file_id, filename: item.filename, chunkId: item.chunk_id, chunkIndex: item.chunk_index, content: item.content, startOffset: item.start_offset, endOffset: item.end_offset, truncated: item.truncated === true,
+        matchTypeLabel: ({ exact: '精确匹配', hybrid: '关键词＋向量命中', keyword: '关键词命中', semantic: '向量命中' } as Record<string, string>)[String(item.match_type)] ?? '',
+        distance: typeof item.distance === 'number' && Number.isFinite(item.distance) && item.distance >= 0 ? item.distance : null })
     }
     const unavailable: RetrievalPreview['unavailable'] = []
     for (const item of Array.isArray(value.unavailable_files) ? value.unavailable_files : []) {

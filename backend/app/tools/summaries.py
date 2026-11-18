@@ -1,11 +1,17 @@
 from backend.app.core.config import settings
 from backend.app.llm.budget import estimate_input_tokens, get_input_budget, InputBudgetError
-from backend.app.llm.client import stream_reply
+from backend.app.llm.client import stream_model_events
+from backend.app.llm.output import request_limits
+import json
+import uuid
+from sqlalchemy import select, func, cast, Text
+from backend.app.models.file import File
+from backend.app.models.chat import Message
 from backend.app.repositories.resources import describe_resources
 from backend.app.tools.files import read_uploaded_file
 
 
-async def summarize_uploaded_files(session, allowed_file_ids, connection=None, file_ids=None, focus="", check_access=None):
+async def summarize_uploaded_files(session, allowed_file_ids, connection=None, file_ids=None, focus="", check_access=None, resume_state=None):
     if file_ids is not None and (not isinstance(file_ids, list) or len(file_ids) > 200 or any(not isinstance(item, str) or item not in allowed_file_ids for item in file_ids)):
         raise ValueError("只能总结当前资料清单中的文件")
     if not isinstance(focus, str) or len(focus) > 1000:
@@ -13,12 +19,27 @@ async def summarize_uploaded_files(session, allowed_file_ids, connection=None, f
     targets = set(file_ids) if file_ids is not None else set(allowed_file_ids)
     if not targets:
         raise ValueError("当前没有可重新读取的资料，可使用历史来源快照或重新选择会话资料")
+    if resume_state:
+        if targets != set(resume_state['file_ids']) or focus != resume_state['focus']:
+            raise ValueError('续接时必须沿用原文件范围与总结重点')
     catalog = await describe_resources(session, targets)
+    identities = (await session.execute(select(File.id, File.content_hash, File.updated_at, func.length(File.text_content)).where(File.id.in_(targets)))).all()
+    versions = {row[0]: [row[1], None if row[1] else row[2], row[3]] for row in identities}
+    if resume_state and versions != resume_state['versions']:
+        raise ValueError('原文件发生变化，请重新开始总结，不能沿用旧进度')
     coverage = [{"file_id": item["file_id"], "filename": item["filename"], "read_chars": 0, "complete": False, "reason": "尚未读取"} for item in catalog]
+    if resume_state:
+        previous = {row['file_id']: row for row in resume_state['coverage']}
+        for record in coverage:
+            progress = previous.get(record['file_id'], {})
+            record.update({key: progress[key] for key in ('read_chars', 'complete', 'reason', 'total_chars') if key in progress})
     chunks, calls, stopped = [], 0, False
-    budget = get_input_budget(settings.llm_context_window, settings.llm_max_output_tokens, settings.llm_context_margin)
+    window, reserve, _ = request_limits(settings, connection, 1024)
+    budget = get_input_budget(window, reserve, settings.llm_context_margin)
     for record in coverage:
-        offset = 0
+        if record["complete"]:
+            continue
+        offset = record["read_chars"]
         while calls < 8:  # 每次总结最多8次分段请求，超出时返回真实覆盖范围，不能伪称已读完
             current = await check_access() if check_access else targets
             if record["file_id"] not in current:
@@ -41,12 +62,13 @@ async def summarize_uploaded_files(session, allowed_file_ids, connection=None, f
             if not content:
                 raise InputBudgetError("输入预算不足以归纳文件片段，请缩短总结重点或调整上下文配置")
             summary = []
-            reply = stream_reply(messages(content), connection) if connection is not None else stream_reply(messages(content))
+            reply = stream_model_events(messages(content), None, connection, max_output_tokens=1024)
             calls += 1
             try:
                 try:
-                    async for text in reply:
-                        summary.append(text)
+                    async for event in reply:
+                        if event["type"] == "text_delta":
+                            summary.append(event["text"])
                 finally:
                     await reply.aclose()
             except Exception:
@@ -69,4 +91,31 @@ async def summarize_uploaded_files(session, allowed_file_ids, connection=None, f
         if stopped:
             break
     complete = len(coverage) == len(targets) and all(item["complete"] for item in coverage)
-    return {"chunks": chunks, "coverage": coverage[:20], "total_files": len(targets), "complete_files": sum(item["complete"] for item in coverage), "unread_files": len(targets) - sum(item["read_chars"] > 0 or item["complete"] for item in coverage), "coverage_list_truncated": len(coverage) > 20, "complete": complete, "model_calls": calls, "notice": "summary是分段归纳，content才是对应原文。请综合各段并引用对应编号。" + ("所选文件已完整覆盖。" if complete else "本次未覆盖全部原文，必须说明已读范围，不能声称完整总结；可指定文件或章节继续。")}
+    continuation = None if complete else {'cursor': str(uuid.uuid4()), 'file_ids': sorted(targets), 'focus': focus,
+        'versions': versions, 'coverage': coverage}
+    return {"resumed": bool(resume_state), "continuation": continuation, "chunks": chunks, "coverage": coverage[:20], "total_files": len(targets), "complete_files": sum(item["complete"] for item in coverage), "unread_files": len(targets) - sum(item["read_chars"] > 0 or item["complete"] for item in coverage), "coverage_list_truncated": len(coverage) > 20, "complete": complete, "model_calls": calls, "notice": ("续接结果只包含本次新读片段，累计覆盖不代表本条工具结果包含全部正文；综合时结合前轮结果或read_history_sources。" if resume_state else "") + "summary是分段归纳，content才是对应原文。请综合各段并引用对应编号。" + ("所选文件已完整覆盖。" if complete else "本次未覆盖全部原文，必须说明已读范围；用continuation.cursor作为resume_cursor续接，文件范围与focus保持不变。")}
+
+
+async def resolve_summary_cursor(context, cursor):
+    """只认可同一会话已经实际生成的进度，模型不能直接提交coverage。"""
+    for result in context.state.get('summary_results', {}).values():
+        continuation = result.get('continuation')
+        if continuation and continuation.get('cursor') == cursor:
+            return continuation
+    if not context.chat_id or context.session is None:
+        raise ValueError('当前会话没有此总结进度')
+    rows = (await context.session.execute(select(Message.output).where(Message.chat_id == context.chat_id,
+        Message.role == 'assistant', cast(Message.output, Text).contains(cursor, autoescape=True)))).scalars()
+    for output in rows:
+        calls = {item.get('call_id') for item in (output or []) if item.get('type') == 'function_call' and item.get('name') == 'summarize_uploaded_files'}
+        for item in output or []:
+            if item.get('type') != 'function_call_output' or item.get('call_id') not in calls:
+                continue
+            try:
+                result = json.loads(item['output'])
+                continuation = result.get('continuation')
+                if continuation and continuation.get('cursor') == cursor:
+                    return continuation
+            except (ValueError, TypeError, KeyError, AttributeError):
+                continue
+    raise ValueError('总结进度不存在或不属于当前会话，请重新开始')

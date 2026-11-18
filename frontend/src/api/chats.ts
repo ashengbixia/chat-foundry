@@ -6,6 +6,10 @@ import type { KnowledgeReference } from './knowledge'
 export interface Chat {
   id: string
   title: string
+  assistant_id?: string | null
+  branch_root_id?: string | null
+  branch_parent_id?: string | null
+  branch_from_sequence?: number | null
   created_at: number
   updated_at: number
   knowledge_bases?: KnowledgeReference[]
@@ -14,14 +18,14 @@ export interface Chat {
   title_status?: 'manual' | 'pending' | 'generating' | 'generated' | 'fallback'
 }
 
-export async function createChat(title: string = '新会话', knowledgeBaseIds: string[] = [], webSearchEnabled = false): Promise<Chat>
+export async function createChat(title: string = '新会话', knowledgeBaseIds: string[] = [], webSearchEnabled = false, assistantId?: string): Promise<Chat>
 {
   const response = await fetch('/api/chats', {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
     },
-    body: JSON.stringify({ title, ...(knowledgeBaseIds.length ? { knowledge_base_ids: knowledgeBaseIds } : {}), ...(webSearchEnabled ? { web_search_enabled: true } : {}) }),
+    body: JSON.stringify({ title, ...(assistantId ? { assistant_id: assistantId } : {}), ...(knowledgeBaseIds.length || assistantId ? { knowledge_base_ids: knowledgeBaseIds } : {}), ...(webSearchEnabled ? { web_search_enabled: true } : {}) }),
   })
 
   if (!response.ok) {

@@ -129,12 +129,12 @@ export const useChatStore = defineStore('chat', () => { // 集中保存聊天状
     nextBeforeSequence.value = null
     return true
   }
-  async function createNewChat(knowledgeBaseIds: string[] = []): Promise<Chat | null> { // 首次发送可同时保存所选知识库
+  async function createNewChat(knowledgeBaseIds: string[] = [], assistantId?: string): Promise<Chat | null> { // 首次发送可同时保存所选知识库
     if (pageBusy.value) return null
     creatingChat.value = true
     errorMessage.value = ''
     try {
-      const chat = await createChat('新会话', knowledgeBaseIds, pendingWebSearch.value)
+      const chat = await createChat('新会话', knowledgeBaseIds, pendingWebSearch.value, assistantId)
       currentChat.value = chat
       pendingWebSearch.value = false
       chats.value.unshift(chat)

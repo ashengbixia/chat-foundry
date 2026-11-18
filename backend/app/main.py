@@ -74,6 +74,12 @@ from backend.app.llm.connection import ModelConnection
 app = FastAPI(title="ChatFoundry",lifespan=lifespan,)
 from backend.app.api.site_info import router as site_info_router
 app.include_router(site_info_router)
+from backend.app.api.workspace import router as workspace_router
+app.include_router(workspace_router)
+from backend.app.api.branches import router as branches_router
+app.include_router(branches_router)
+from backend.app.api.documents import router as documents_router
+app.include_router(documents_router)
 app.include_router(chats_router)#把接口分组注册到 FastAPI 应用上
 app.include_router(files_router)
 app.include_router(auth_router)

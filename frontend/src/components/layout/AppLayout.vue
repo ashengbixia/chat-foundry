@@ -70,7 +70,7 @@ watch(() => [props.currentChatId, props.newChatRevision], () => { sidebarOpen.va
       </header>
       <div class="workspace-body">
         <section class="chat-content" aria-label="聊天" @dragenter="dragEnter" @dragover="dragOver" @dragleave="dragLeave" @drop="drop" @dragend="dragDepth = 0">
-          <div v-if="dragDepth" class="drop-overlay" role="status"><strong>{{ dropDisabled ? '请等待当前操作完成' : '松开，把资料带进对话' }}</strong><span>已有资料直接引用 · 本地 TXT 自动上传 · 最多 3 份</span></div>
+          <div v-if="dragDepth" class="drop-overlay" role="status"><strong>{{ dropDisabled ? '请等待当前操作完成' : '松开，把资料带进对话' }}</strong><span>已有资料直接引用 · 本地文档自动上传 · 最多 3 份</span></div>
           <div class="message-region">
             <slot name="messages"></slot>
           </div>

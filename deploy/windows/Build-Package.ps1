@@ -33,7 +33,7 @@ Get-ChildItem -LiteralPath $PSScriptRoot -File | Where-Object { $_.Extension -in
 $archive = $packageRoot + '.zip'
 $docsTarget = Join-Path $packageRoot 'docs'
 New-Item -ItemType Directory -Path $docsTarget -Force | Out-Null
-foreach ($docName in @('tools.md', 'adding-tools.md')) {
+foreach ($docName in @('tools.md', 'adding-tools.md', 'workspaces.md')) {
     $docSource = Join-Path $repo ('docs\' + $docName)
     if (Test-Path -LiteralPath $docSource) { Copy-Item -LiteralPath $docSource -Destination $docsTarget }
 }

@@ -13,12 +13,12 @@ from backend.app.repositories.file import create_file, delete_file_rows, prepare
 from backend.app.rag.vector_store import delete_all_file_vectors
 from backend.app.models.file_cleanup import FileCleanup
 from backend.app.files.cleanup import process_cleanup_job
-from backend.app.files.extract import ExtractionError, SUPPORTED_EXTENSIONS
+from backend.app.files.extract import ExtractionError
+from backend.app.files.formats import SUPPORTED_EXTENSIONS, MAX_FILE_SIZE, UNSUPPORTED_MESSAGE
 from backend.app.files.parsing import parse_uploaded_document
 
 logger = logging.getLogger(__name__)  # 只在后端记录详细异常
 UPLOAD_DIR = DATA_DIR / "uploads"  # 所有原文件统一保存的位置
-MAX_FILE_SIZE = 5 * 1024 * 1024  # 每个文件最多 5MB
 READ_CHUNK_SIZE = 64 * 1024  # 每次读取 64KB，累计检查大小
 
 async def delete_uploaded_file(session: AsyncSession, file_id: str) -> bool:  # SQL删除和清理待办同一事务提交；提交前不动原文件
@@ -85,7 +85,7 @@ async def process_text_file(session: AsyncSession, upload: UploadFile, user_id: 
         raise HTTPException(status_code=400, detail="文件名为空或不合法，最长 255 个字符")
     extension = Path(filename).suffix.lower()
     if extension not in SUPPORTED_EXTENSIONS:
-        raise HTTPException(status_code=400, detail="仅支持TXT、PDF、Word(.docx)、Excel(.xlsx)，旧版.doc/.xls请先转换")
+        raise HTTPException(status_code=400, detail=UNSUPPORTED_MESSAGE)
     file_id = str(uuid.uuid4())  # 提前生成 ID，让数据库记录与磁盘文件对应
     storage_path = f"{file_id}{extension}"  # 原始名称不参与磁盘路径拼接
     path = UPLOAD_DIR / storage_path  # 本次唯一的保存位置

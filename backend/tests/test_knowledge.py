@@ -315,11 +315,11 @@ class KnowledgeTests(unittest.IsolatedAsyncioTestCase):
                 file.text_content = '养护条件。' * (size // 5)
                 await session.commit()
             calls = []
-            async def summarize(messages, connection=None):
+            async def summarize(messages, tools=None, connection=None, **kwargs):
                 calls.append(messages)
-                yield '本段介绍养护条件。'
+                yield {'type': 'text_delta', 'text': '本段介绍养护条件。'}
             async with self.sessions() as session:
-                with patch.object(summaries, 'stream_reply', summarize):
+                with patch.object(summaries, 'stream_model_events', summarize):
                     result = await summaries.summarize_uploaded_files(session, {'f1'}, focus='总结全文')
             self.assertEqual(len(calls), expected_calls)
             self.assertEqual(result['complete'], complete)
@@ -333,7 +333,7 @@ class KnowledgeTests(unittest.IsolatedAsyncioTestCase):
                     self.assertTrue(data['complete'])
                     self.assertEqual(data['complete_files'], 1)
                     yield {'type': 'text_delta', 'text': '已按各段归纳全文[1]。'}
-                with patch.object(summaries, 'stream_reply', summarize), patch.object(service, 'stream_model_events', final_answer):
+                with patch.object(summaries, 'stream_model_events', summarize), patch.object(service, 'stream_model_events', final_answer):
                     async with self.sessions() as session:
                         events = [item async for item in service.stream_chat_history_events(session, 'chat')]
                         saved = (await session.execute(select(Message).where(Message.role == 'assistant'))).scalar_one()

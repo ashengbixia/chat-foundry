@@ -17,6 +17,7 @@ export function createTypeScriptLoader(mocks = {}) { // 内存加载 TypeScript�
     modules.set(filename, module)
     const requireModule = (name) => { // 优先使用模拟接口，再解析正常导入
       if (Object.hasOwn(mocks, name)) return mocks[name]
+      if (name.endsWith('.json')) return JSON.parse(readFileSync(resolve(dirname(filename), name), 'utf8'))
       return name.startsWith('.') ? loadTypeScript(resolve(dirname(filename), `${name}.ts`)) : nativeRequire(name)
     }
     new Function('require', 'module', 'exports', code)(requireModule, module, module.exports)

@@ -34,7 +34,7 @@ const MessageProcess = component('MessageProcess.vue', { '../../utils/toolOutput
 const loader = createTypeScriptLoader()
 const MessageAnswer = component('MessageAnswer.vue', { '../../utils/markdown': loader('src/utils/markdown.ts'), '../../utils/citations': loader('src/utils/citations.ts'), '../../utils/dialog': loader('src/utils/dialog.ts'), '../../api/files': loader('src/api/files.ts'), '../../api/errors': loader('src/api/errors.ts') })
 const UserQuestionCard = component('UserQuestionCard.vue', {})
-const MessageList = component('MessageList.vue', { './MessageProcess.vue': MessageProcess, '../../utils/messageProcess': processUtils, './MessageAnswer.vue': MessageAnswer, './FileToolPreview.vue': FileToolPreview, '../../utils/toolOutput': utils, './UserQuestionCard.vue': UserQuestionCard, './FollowUps.vue': { render: () => null }, '../../utils/userQuestions': loader('src/utils/userQuestions.ts') })
+const MessageList = component('MessageList.vue', { '../../stores/site': loader('src/stores/site.ts'), './MessageProcess.vue': MessageProcess, '../../utils/messageProcess': processUtils, './MessageAnswer.vue': MessageAnswer, './FileToolPreview.vue': FileToolPreview, '../../utils/toolOutput': utils, './UserQuestionCard.vue': UserQuestionCard, './FollowUps.vue': { render: () => null }, '../../utils/userQuestions': loader('src/utils/userQuestions.ts') })
 const MessageInput = component('MessageInput.vue', { './ComposerResourceMenu.vue': component('ComposerResourceMenu.vue', { '../../api/files': loader('src/api/files.ts'), '../../api/knowledge': loader('src/api/knowledge.ts') }) })
 
 test('来源只从配对工具结果恢复，快照定位兼容中文及emoji', () => {
@@ -141,7 +141,7 @@ test('文件展示工具直接显示安全正文预览，新工具来源也能�
   const payload = { display_file: true, chunks: [{ file_id: 'f', filename: '规则.txt', content: '<script>原文</script>', start_offset: 4, citation_id: 1 }], has_more: true }
   const output = [call('preview', 'display_file'), result('preview', JSON.stringify(payload))]
   const html = await renderToString(createSSRApp(MessageList, { messages: [{ id: 'preview', role: 'assistant', content: '文件已展示', output, status: 'completed' }] }))
-  assert.match(html, /文件正文预览/)
+  assert.match(html, /提取正文预览/)
   assert.match(html, /&lt;script&gt;原文/)
   const sources = loader('src/utils/citations.ts').getCitationSources(output)
   assert.equal(sources[0].filename, '规则.txt')
@@ -230,4 +230,17 @@ test('异常检索结果回退原始展示，非法片段不会渲染为来源�
   const html = await renderToString(createSSRApp(ToolCallList, { output: [call('s1', 'search_uploaded_files'), result('s1', '损坏的旧结果')] }))
   assert.match(html, /损坏的旧结果/)
   assert.match(html, /调用 ID/)
+})
+
+
+test('知识库正文展示实际检索方式，向量失败降级与精确查找不冒充混合检索', async () => {
+  const chunk = { file_id: 'f', filename: '说明.md', chunk_id: 'part', chunk_index: 0, start_offset: 0, end_offset: 2, content: '原文', match_type: 'semantic', distance: 0.2 }
+  const raw = JSON.stringify({ status: 'ok', retrieval_method: 'hybrid', chunks: [chunk] })
+  const html = await renderToString(createSSRApp(ToolCallList, { output: [call('kb', 'query_knowledge_files'), result('kb', raw)], status: 'completed' }))
+  assert.match(html, /混合检索/)
+  assert.match(html, /向量命中/)
+  assert.match(html, /0.200/)
+  assert.equal(utils.getRetrievalMethod(JSON.stringify({ retrieval_method: 'keyword_fallback' })), '仅关键词 · 向量不可用')
+  assert.equal(utils.getRetrievalMethod(JSON.stringify({ retrieval_method: 'exact' })), '精确查找')
+  assert.equal(utils.getRetrievalMethod(JSON.stringify({ chunks: [] })), '')
 })

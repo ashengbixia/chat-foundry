@@ -10,6 +10,7 @@ import AppIcon from '../AppIcon.vue'
 const props = defineProps<{ message: DisplayMessage }>()
 const emit = defineEmits<{ updated: [chatId: string] }>()
 const parts = computed(() => processParts(props.message.output))
+const copiedFromBranch = computed(() => props.message.output.some(item => item && typeof item === 'object' && 'type' in item && item.type === 'branch_snapshot'))
 const calls = computed(() => getToolCalls(props.message.output))
 const hasReasoning = computed(() => parts.value.some(part => part.kind === 'reasoning'))
 const now = ref(Date.now())
@@ -26,9 +27,9 @@ const label = computed(() => props.message.status === 'generating' ? (hasReasoni
 <template>
   <details v-if="parts.length" class="message-process" :open="message.status === 'generating'">
     <summary><AppIcon name="chevron" :size="12" /><span>{{ label }}</span><span v-if="elapsed !== undefined">· {{ formatDuration(elapsed) }}</span><span v-if="calls.length">· {{ calls.length }} 项工具</span><span v-if="calls.some(call => call.failed)" class="process-warning">有调用未成功</span></summary>
-    <div class="process-body">
+    <div class="process-body"><small v-if="copiedFromBranch">从原对话复制的历史过程；子任务详情请切回原版本查看。</small>
       <template v-for="(part, index) in parts" :key="index">
-        <ToolCallList v-if="part.kind === 'tools'" :output="part.output ?? []" :status="message.status" :chat-id="message.chat_id" @updated="emit('updated', $event)" />
+        <ToolCallList v-if="part.kind === 'tools'" :output="part.output ?? []" :status="message.status" :chat-id="copiedFromBranch ? undefined : message.chat_id" @updated="emit('updated', $event)" />
         <details v-else-if="part.kind === 'reasoning'" class="reasoning-section">
           <summary>模型思考 <small>展开查看</small></summary>
           <div class="process-text" v-html="renderMarkdown(part.text ?? '')"></div>

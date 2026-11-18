@@ -5,7 +5,7 @@ from pathlib import Path
 import tempfile
 import unittest
 from zipfile import ZipFile
-from backend.app.files.extract import ExtractionError, check_office_archive
+from backend.app.files.extract import ExtractionError, check_office_archive, extract_document
 from backend.app.files.parsing import parse_uploaded_document
 
 
@@ -40,6 +40,19 @@ def sample_documents():
 
 
 class DocumentParsingTests(unittest.IsolatedAsyncioTestCase):
+    async def test_plain_documents_preserve_structure_and_bom_without_executing_content(self):
+        samples = {'.md': '# 标题\n\n```python\nraise RuntimeError("do not execute")\n```\n',
+                   '.csv': '名称,数量\n样例,2\n', '.json': '{"说明":"示例"}',
+                   '.yaml': '说明: 示例\n', '.py': '# source\nraise RuntimeError("do not execute")\n'}
+        for extension, text in samples.items():
+            self.assertEqual(await parse_uploaded_document(Path('unused'), text.encode('utf-8-sig'), extension), text)
+        self.assertEqual(extract_document(samples['.md'].encode('utf-16'), '.md'), samples['.md'])
+        for data in [b'\x00binary', b'\xffinvalid', b'   ']:
+            with self.assertRaises(ExtractionError):
+                extract_document(data, '.md')
+        with self.assertRaisesRegex(ExtractionError, '100万'):
+            extract_document(b'x' * 1000001, '.md')
+
     @unittest.skipUnless(os.name == 'nt', 'Windows hot-reload event loop')
     async def test_selector_loop_can_parse_when_uvicorn_reload_is_enabled(self):
         with tempfile.TemporaryDirectory() as directory:

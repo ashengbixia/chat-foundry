@@ -23,6 +23,12 @@ from types import SimpleNamespace
 
 class AccountToolTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
+        from backend.app.rag import knowledge_discovery
+        from unittest.mock import Mock
+        for name, value in [('cached_vectors', Mock(return_value=None)), ('save_vectors', Mock()), ('prune_vectors', Mock()), ('cleanup_knowledge_vectors', Mock())]:
+            current = patch.object(knowledge_discovery, name, value)
+            current.start()
+            self.addCleanup(current.stop)
         self.engine = create_async_engine('sqlite+aiosqlite:///:memory:')
         self.sessions = async_sessionmaker(self.engine, expire_on_commit=False)
         await create_tables(self.engine)

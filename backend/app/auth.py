@@ -110,6 +110,15 @@ async def check_chat_access(request: Request, user: User = Depends(get_current_u
     if "chat_id" in request.path_params:
         await require_chat_owner(request.path_params["chat_id"], user, session)
 
+async def require_file_reader(file_id, user, session):
+    from backend.app.repositories.knowledge_access import readable_files
+    if not await session.scalar(select(File.id).where(File.id == file_id, readable_files(user.id))):
+        raise HTTPException(404, '文件不存在')
+
+
 async def check_file_access(request: Request, user: User = Depends(get_current_user), session: AsyncSession = Depends(get_db)):
     if "file_id" in request.path_params:
-        await require_file_owner(request.path_params["file_id"], user, session)
+        if request.method in ("GET", "HEAD"):
+            await require_file_reader(request.path_params["file_id"], user, session)
+        else:
+            await require_file_owner(request.path_params["file_id"], user, session)

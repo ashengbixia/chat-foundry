@@ -55,6 +55,7 @@ class ToolSpec:
     max_result_bytes: int = 262144
     available: Callable | None = None
     offer_when: Callable | None = None  # 动态额度只影响模型清单；执行入口仍返回具体限额原因
+    alias_of: str | None = None  # 保留历史名称，发现和设置页优先展示规范入口。
 
     def is_available(self, context: ToolContext) -> bool:
         if context.allowed_tools is not None and self.name not in context.allowed_tools:
@@ -84,6 +85,8 @@ class ToolRegistry:
             raise ValueError(f'工具名称不合法或重复：{spec.name}')
         if spec.scope not in {'always', 'files', 'history', 'resources', 'resource_files'}:
             raise ValueError('未知的工具可用范围')
+        if spec.alias_of is not None and (spec.alias_of == spec.name or not re.fullmatch(r'[a-z][a-z0-9_]{0,63}', spec.alias_of)):
+            raise ValueError('兼容工具必须指定其他有效工具名')
         if not issubclass(spec.arguments, ToolArguments) or not callable(spec.handler) or not spec.label.strip() or not spec.description.strip():
             raise ValueError('工具必须提供参数模型、执行函数、名称及说明')
         reserved = set(ToolContext.__dataclass_fields__)
@@ -99,7 +102,10 @@ class ToolRegistry:
         return spec
 
     def definitions(self, context: ToolContext):
-        return [spec.definition() for spec in self._tools.values() if spec.is_available(context) and (spec.offer_when is None or spec.offer_when(context))]
+        offered = [spec for spec in self._tools.values() if spec.is_available(context) and (spec.offer_when is None or spec.offer_when(context))]
+        names = {spec.name for spec in offered}
+        explicit = context.state.get('discovered_tools', set())
+        return [spec.definition() for spec in offered if not spec.alias_of or spec.alias_of not in names or spec.name in explicit]
 
     def label(self, name: str):
         spec = self._tools.get(name)

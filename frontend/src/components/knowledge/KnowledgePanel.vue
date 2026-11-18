@@ -2,9 +2,11 @@
 import { computed, onUnmounted, ref } from 'vue'
 import { addKnowledgeFiles, createKnowledge, deleteKnowledge, listKnowledge, listKnowledgeFiles, removeKnowledgeFile, updateKnowledge, updateKnowledgeIndex } from '../../api/knowledge'
 import type { KnowledgeBase, KnowledgeReference } from '../../api/knowledge'
-import { listFiles, rebuildFileIndex, uploadFile, validateTextFile } from '../../api/files'
+import { listFiles, rebuildFileIndex, uploadFile, validateTextFile, UPLOAD_ACCEPT, UPLOAD_FORMATS_LABEL } from '../../api/files'
 import type { FileInfo } from '../../types/file'
 import { createDialogBackdrop } from '../../utils/dialog'
+import { listShares, addShare, removeShare } from '../../api/workspace'
+import type { Share } from '../../api/workspace'
 import AppIcon from '../AppIcon.vue'
 
 const props = defineProps<{ selected: KnowledgeReference[]; selectionDisabled: boolean; applySelection: (items: KnowledgeBase[]) => Promise<void> }>()
@@ -29,7 +31,13 @@ const action = ref('')
 const error = ref('')
 const notice = ref('')
 const dragDepth = ref(0)
-const canDrop = computed(() => !!activeId.value && !creating.value && !busy.value)
+const canEdit = computed(() => creating.value || bases.value.find(item => item.id === activeId.value)?.can_edit !== false)
+const shares = ref<Share[]>([])
+const shareUsername = ref('')
+async function loadShares() { await run('正在读取共享…', async () => { shares.value = await listShares(activeId.value) }) }
+async function grant() { await run('正在共享…', async () => { await addShare(activeId.value, shareUsername.value.trim()); shareUsername.value = ''; shares.value = await listShares(activeId.value) }) }
+async function revoke(id: string) { await run('正在取消共享…', async () => { await removeShare(activeId.value, id); shares.value = await listShares(activeId.value) }) }
+const canDrop = computed(() => !!activeId.value && canEdit.value && !creating.value && !busy.value)
 const visibleBases = computed(() => bases.value.filter(item => item.name.toLowerCase().includes(search.value.trim().toLowerCase())))
 const availableFiles = computed(() => allFiles.value.filter(file => !members.value.some(member => member.id === file.id) && file.filename.toLowerCase().includes(fileSearch.value.trim().toLowerCase())))
 let controller: AbortController | null = null
@@ -80,6 +88,8 @@ async function refresh(signal: AbortSignal) {
 }
 function setActive(item: KnowledgeBase | null) {
   dragDepth.value = 0
+  shares.value = []
+  shareUsername.value = ''
   activeId.value = item?.id ?? ''
   name.value = item?.name ?? ''
   description.value = item?.description ?? ''
@@ -255,36 +265,37 @@ defineExpose({ open })
         <input v-model="search" type="search" placeholder="搜索知识库" aria-label="搜索知识库" />
         <div v-for="item in visibleBases" :key="item.id" class="library-item" :class="{ active: activeId === item.id }">
           <input v-if="choosing" type="checkbox" :checked="chosen.includes(item.id)" :disabled="busy || selectionDisabled || (!chosen.includes(item.id) && chosen.length >= 5)" :aria-label="`选择知识库 ${item.name}`" @change="toggleChoice(item.id)" />
-          <button type="button" :disabled="busy" @click="selectBase(item)"><strong>{{ item.name }}</strong><small>{{ item.file_count }} 份资料</small></button>
+          <button type="button" :disabled="busy" @click="selectBase(item)"><strong>{{ item.name }}</strong><small>{{ item.file_count }} 份资料{{ item.can_edit === false ? ' · 共享只读' : '' }}</small></button>
         </div>
         <p v-if="!visibleBases.length && !busy" class="empty">{{ bases.length ? '没有匹配的知识库' : '从第一套资料开始' }}</p>
       </nav>
       <section class="library-detail" :aria-busy="busy">
         <form class="base-form" @submit.prevent="saveBase">
           <h3>{{ creating ? '新建知识库' : '知识库信息' }}</h3>
-          <label>名称<input v-model="name" required maxlength="100" placeholder="例如：离心泵维护资料" :disabled="busy" /></label>
-          <label>简介<textarea v-model="description" rows="2" maxlength="1000" placeholder="这套资料包含什么？（选填）" :disabled="busy"></textarea></label>
-          <div class="form-actions"><button v-if="!creating" type="button" class="danger" :disabled="busy" @click="removeBase">删除知识库</button><button class="primary" type="submit" :disabled="busy || !name.trim()">{{ creating ? '创建知识库' : '保存信息' }}</button></div>
+          <label>名称<input v-model="name" required maxlength="100" placeholder="例如：离心泵维护资料" :disabled="busy || !canEdit" /></label>
+          <label>简介<textarea v-model="description" rows="2" maxlength="1000" placeholder="这套资料包含什么？（选填）" :disabled="busy || !canEdit"></textarea></label>
+          <p v-if="!canEdit" class="hint">此知识库由其他账号共享，你可以查阅和检索，不能修改成员或索引。</p><div v-if="canEdit" class="form-actions"><button v-if="!creating" type="button" class="danger" :disabled="busy" @click="removeBase">删除知识库</button><button class="primary" type="submit" :disabled="busy || !name.trim()">{{ creating ? '创建知识库' : '保存信息' }}</button></div>
         </form>
         <template v-if="activeId && !creating">
-          <button type="button" :disabled="busy || !members.length" @click="updateAllIndexes">更新本库索引</button>
-          <button class="upload-dropzone" :class="{ 'drag-active': dragDepth > 0 }" type="button" :disabled="busy" @click="uploadInput?.click()">
+          <details v-if="canEdit" class="sharing"><summary @click="loadShares">共享给其他账号（只读）</summary><form @submit.prevent="grant"><input v-model="shareUsername" placeholder="对方的登录账号" required /><button type="submit" :disabled="busy || !shareUsername.trim()">添加共享</button></form><p v-for="item in shares" :key="item.id">{{ item.username }} <button :disabled="busy" @click="revoke(item.id)">取消共享</button></p><small>取消共享后，对方无法再读取原文件；已有回答中的证据快照仍保留。</small></details>
+          <button v-if="canEdit" type="button" :disabled="busy || !members.length" @click="updateAllIndexes">更新本库索引</button>
+          <button v-if="canEdit" class="upload-dropzone" :class="{ 'drag-active': dragDepth > 0 }" type="button" :disabled="busy" @click="uploadInput?.click()">
             <AppIcon name="attach" :size="25" /><strong>{{ dragDepth ? (canDrop ? '松开，加入当前知识库' : '当前暂不可上传') : busy ? action : '把文档拖到这里，或点击上传' }}</strong><small>支持一次拖入多份 · 单份最大 5 MB · 上传后自动建立索引</small>
           </button>
           <div class="member-heading"><div><h3>库内资料 <small>{{ members.length }} / 200</small></h3><p>移出仅解除关联，原文件和历史引用保留。</p></div><button type="button" :disabled="busy" @click="run('正在刷新…', refresh)">刷新</button></div>
-          <div class="member-actions"><button type="button" :disabled="busy || members.length >= 200" @click="uploadInput?.click()">上传新资料</button><button type="button" :disabled="busy || members.length >= 200" @click="showFilePicker = !showFilePicker">{{ showFilePicker ? '收起文件选择' : '加入已有资料' }}</button><input ref="uploadInput" hidden type="file" accept=".txt,.pdf,.docx,.xlsx" multiple aria-label="上传知识库资料" @change="upload" /></div>
+          <div v-if="canEdit" class="member-actions"><button type="button" :disabled="busy || members.length >= 200" @click="uploadInput?.click()">上传新资料</button><button type="button" :disabled="busy || members.length >= 200" @click="showFilePicker = !showFilePicker">{{ showFilePicker ? '收起文件选择' : '加入已有资料' }}</button><input ref="uploadInput" hidden type="file" :accept="UPLOAD_ACCEPT" multiple aria-label="上传知识库资料" @change="upload" /></div>
           <div v-if="showFilePicker" class="existing-files">
             <input v-model="fileSearch" type="search" placeholder="搜索已有资料" aria-label="搜索可加入资料" />
             <p class="existing-hint">可勾选批量加入，也可把文件拖到上方上传区，直接复用已有索引。</p>
             <div class="existing-options"><label v-for="file in availableFiles" :key="file.id" :draggable="!busy" @dragstart="dragSavedFile($event, file)"><input v-model="selectedFiles" type="checkbox" :value="file.id" :disabled="busy" /><span>{{ file.filename }}<small>{{ fileStatus(file) }}</small></span></label><p v-if="!availableFiles.length" class="empty">没有可加入的资料，可以先上传。</p></div>
             <button class="primary" type="button" :disabled="busy || !selectedFiles.length" @click="addExisting">加入选中的 {{ selectedFiles.length }} 份资料</button>
           </div>
-          <ul class="member-files"><li v-for="file in members" :key="file.id"><AppIcon name="file" :size="19" /><div><strong>{{ file.filename }}</strong><small :class="{ error: file.status === 'failed' || file.index_status === 'failed' }">{{ fileStatus(file) }}{{ file.index_error || file.error ? ` · ${file.index_error || file.error}` : '' }}</small></div><button v-if="file.status === 'completed' && !file.index_busy && file.index_status !== 'ready'" type="button" :disabled="busy" @click="retryIndex(file)">重试索引</button><button type="button" :disabled="busy" :aria-label="`移出 ${file.filename}`" @click="removeMember(file)">移出</button></li></ul>
+          <ul class="member-files"><li v-for="file in members" :key="file.id"><AppIcon name="file" :size="19" /><div><strong>{{ file.filename }}</strong><small :class="{ error: file.status === 'failed' || file.index_status === 'failed' }">{{ fileStatus(file) }}{{ file.index_error || file.error ? ` · ${file.index_error || file.error}` : '' }}</small></div><button v-if="canEdit && file.status === 'completed' && !file.index_busy && file.index_status !== 'ready'" type="button" :disabled="busy" @click="retryIndex(file)">重试索引</button><a :href="`/api/files/${encodeURIComponent(file.id)}/original`" target="_blank" rel="noopener">原文件</a><button v-if="canEdit" type="button" :disabled="busy" :aria-label="`移出 ${file.filename}`" @click="removeMember(file)">移出</button></li></ul>
           <div v-if="!members.length && !busy" class="empty-state"><AppIcon name="folder" :size="30" /><strong>把资料放进来</strong><p>可以直接拖入 TXT，也可以加入已有文件。空知识库不会提供检索依据。</p></div>
         </template>
       </section>
     </div>
-    <footer class="dialog-footer"><small>{{ choosing ? `已选 ${chosen.length} / 5 · 应用于整个会话，随时可移除` : '支持 TXT / PDF / DOCX / XLSX，单份最大 5 MB，文件索引在各知识库之间复用' }}</small><button type="button" @click="close">{{ choosing ? '取消' : '完成' }}</button><button v-if="choosing" class="primary" type="button" :disabled="busy || selectionDisabled" @click="apply">应用到会话</button></footer>
+    <footer class="dialog-footer"><small>{{ choosing ? `已选 ${chosen.length} / 5 · 应用于整个会话，随时可移除` : `支持 ${UPLOAD_FORMATS_LABEL}，单份最大 5 MB，索引可复用` }}</small><button type="button" @click="close">{{ choosing ? '取消' : '完成' }}</button><button v-if="choosing" class="primary" type="button" :disabled="busy || selectionDisabled" @click="apply">应用到会话</button></footer>
   </dialog>
 </template>
 

@@ -56,6 +56,8 @@ class RetrievalTests(unittest.IsolatedAsyncioTestCase):  # 临时SQL库与模拟
     async def test_results_keep_ranking_but_use_sql_body_and_filename(self):
         result = await self.retrieve()
         self.assertEqual(result["status"], "ok")
+        self.assertEqual(result['retrieval_method'], 'hybrid')
+        self.assertEqual(result['vector_status'], 'completed')
         self.assertEqual([item["chunk_id"] for item in result["chunks"]], ["c2", "c1"])
         self.assertEqual(result["chunks"][0]["content"], "餐费每天73元")
         self.assertEqual(result["chunks"][0]["filename"], "现行差旅规定.txt")
@@ -68,6 +70,8 @@ class RetrievalTests(unittest.IsolatedAsyncioTestCase):  # 临时SQL库与模拟
         result = await self.retrieve(query='住宿')
         self.assertEqual([item['chunk_id'] for item in result['chunks']], ['c1'])
         self.assertEqual(result['chunks'][0]['match_type'], 'keyword')
+        self.assertEqual(result['retrieval_method'], 'keyword_fallback')
+        self.assertEqual(result['vector_status'], 'failed')
         self.assertIn('关键词候选', result['notice'])
         self.embed.side_effect = None
         self.search.return_value = {'ids': [['c1', 'c2']], 'distances': [[0.99, 0.1]]}

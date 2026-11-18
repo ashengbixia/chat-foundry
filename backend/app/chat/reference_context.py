@@ -56,6 +56,21 @@ async def prepare_auto_reference(session, question, allowed_ids, messages, tools
     if not (attached_now or explicit or named):
         return []  # 当前资料可用不等于每个新话题都需要检索，模型仍可按需调用。
     targets, query = resolve_reference_scope(question, allowed_ids, catalog, history)
+    if re.search(r'继续|接着|剩余|未读', question):
+        previous = next((row for row in reversed(history or []) if row.role == 'assistant'), None)
+        outputs = getattr(previous, 'output', None) or []
+        summary_calls = {item.get('call_id') for item in outputs if item.get('type') == 'function_call' and item.get('name') == 'summarize_uploaded_files'}
+        for item in reversed(outputs):
+            if item.get('type') != 'function_call_output' or item.get('call_id') not in summary_calls:
+                continue
+            try:
+                progress = json.loads(item['output']).get('continuation')
+                if progress and set(progress['file_ids']) == targets:
+                    return [('summarize_uploaded_files', {'resume_cursor': progress['cursor']}, None)]
+            except (ValueError, TypeError, KeyError, AttributeError):
+                pass
+            break
+
     rows = (await session.execute(select(File.id, File.status, func.length(File.text_content).label("chars")).where(File.id.in_(sorted(targets))))).all()
     from backend.app.llm.output import request_limits
     window, reserve, _ = request_limits(settings, connection)

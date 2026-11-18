@@ -1,8 +1,9 @@
 FROM node:22-bookworm-slim AS frontend
-WORKDIR /build
+WORKDIR /build/frontend
 COPY frontend/package*.json ./
 RUN npm ci
 COPY frontend/ ./
+COPY backend/app/files/formats.json /build/backend/app/files/formats.json
 RUN npm run build
 
 FROM python:3.10-slim-bookworm AS backend
@@ -17,5 +18,5 @@ EXPOSE 8000
 CMD ["python", "-m", "uvicorn", "backend.app.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "1", "--limit-concurrency", "100", "--backlog", "256", "--timeout-keep-alive", "5", "--proxy-headers", "--forwarded-allow-ips", "172.30.204.2"]
 
 FROM caddy:2-alpine AS gateway
-COPY --from=frontend /build/dist /srv
+COPY --from=frontend /build/frontend/dist /srv
 COPY deploy/Caddyfile /etc/caddy/Caddyfile

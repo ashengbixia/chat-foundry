@@ -16,6 +16,7 @@ class DatabaseSetupTests(unittest.TestCase):  # 全部使用临时磁盘库，�
         self.execute("INSERT INTO users (id,username,name,password_hash,role,admin_requested,created_at) VALUES ('u','sample','sample','test-hash','user',0,1); INSERT INTO user_model_settings (user_id,provider,base_url,model,timeout,key_source,encrypted_api_key,updated_at) VALUES ('u','custom','https://model.example/v1','sample',60,'personal','test-opaque-ciphertext',1);")
         db_setup.prepare_database(self.path, upgrade=True)
         self.assertEqual(self.query('SELECT model,encrypted_api_key,model_profiles FROM user_model_settings'), [('sample', 'test-opaque-ciphertext', '{}')])
+        self.assertEqual(self.query('SELECT c.user_id,c.model,c.encrypted_api_key FROM model_service_connections c JOIN user_model_settings s ON s.active_connection_id=c.id'), [('u', 'sample', 'test-opaque-ciphertext')])
 
     def setUp(self):
         self.directory = tempfile.TemporaryDirectory()
@@ -56,7 +57,7 @@ class DatabaseSetupTests(unittest.TestCase):  # 全部使用临时磁盘库，�
         result = db_setup.prepare_database(self.path, upgrade=True)
         self.assertEqual(result["status"], "upgraded")
         self.assertEqual(self.query("SELECT text_content, status, index_status, index_task_id FROM files"), [("已有正文", "completed", "pending", None)])
-        self.assertEqual(result["revision"], "f38b02a9c714")
+        self.assertEqual(result["revision"], "a70e18c9d402")
 
     def test_upgrade_populates_chat_files_from_old_message_attachments(self):
         db_setup.prepare_database(self.path)

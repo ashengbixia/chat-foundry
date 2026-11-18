@@ -1,6 +1,7 @@
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import delete, func, select, update
 from backend.app.models.chat import Chat, Message
+from backend.app.repositories.knowledge_access import accessible_knowledge
 from backend.app.models.message_file import MessageFile
 from backend.app.models.knowledge import ChatKnowledgeBase, KnowledgeBase
 from backend.app.models.chat_file import ChatFile
@@ -17,7 +18,7 @@ async def create_chat(session: AsyncSession,title: str = "新会话", user_id: s
     session.add(chat)#把对象加入当前数据库会话，准备插入。
     if knowledge_base_ids:
         ids = set(knowledge_base_ids)
-        valid = set((await session.execute(select(KnowledgeBase.id).where(KnowledgeBase.id.in_(ids), KnowledgeBase.user_id == user_id))).scalars())
+        valid = set((await session.execute(select(KnowledgeBase.id).where(KnowledgeBase.id.in_(ids), accessible_knowledge(user_id)))).scalars())
         if valid != ids or len(ids) > 5:
             await session.rollback()
             raise MessageFileError("选择的知识库不存在或不属于当前账号，请重新选择")

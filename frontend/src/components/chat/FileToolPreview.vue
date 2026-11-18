@@ -10,7 +10,7 @@ const data = computed(() => {
 })
 </script>
 <template>
-  <details v-if="data" class="file-tool-preview" open><summary>文件正文预览</summary>
+  <details v-if="data" class="file-tool-preview" open><summary>提取正文预览</summary>
     <section v-for="(chunk, index) in data.chunks" :key="index"><strong>{{ chunk.filename }}</strong><small>字符 {{ chunk.start_offset }}～{{ chunk.end_offset ?? chunk.start_offset + Array.from(chunk.content).length }}</small><pre>{{ chunk.content }}</pre></section>
     <small v-if="data.hasMore">仅展示部分正文，可继续让助手翻页读取。</small>
   </details>

@@ -98,5 +98,5 @@ async def tool_catalog(chat_id: str | None = None, user: User = Depends(get_curr
     context = ToolContext(session=session, chat_id=chat_id, account_id=user.id, account_features=features, allowed_file_ids=files, resource_tools=True, web_search_enabled=chat.web_search_enabled if chat_id else False)
     return {'tools': [{'name': spec.name, 'label': spec.label, 'description': spec.description, 'scope': spec.scope,
                        'available': spec.is_available(context), 'on_demand': spec.offer_when is not None,
-                       'parameters': spec.arguments.model_json_schema()} for spec in registry._tools.values()], 'features': features,
+                       'alias_of': spec.alias_of, 'parameters': spec.arguments.model_json_schema()} for spec in registry._tools.values()], 'features': features,
             'notice': '按需工具经search_tools发现后提供完整参数；可用状态仍受当前会话资料、联网开关及执行时权限约束。'}

@@ -7,6 +7,10 @@ from backend.app.tools import workspace as impl
 
 
 class Arguments(ToolArguments):
+    skip: int = Field(default=0, ge=0, description='ls/tree/find目录分页位置')
+    count: int = Field(default=20, ge=1, le=30)
+    offset: int = Field(default=0, ge=0, description='cat的字符位置；grep的命中行或文件分页位置')
+    max_chars: int = Field(default=6000, ge=1, le=12000)
     command: str = Field(min_length=1, max_length=1000)
     knowledge_id: str | None = Field(default=None, max_length=36)
 

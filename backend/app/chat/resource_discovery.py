@@ -4,6 +4,7 @@ from sqlalchemy import select, func
 from backend.app.models.knowledge import KnowledgeBase, KnowledgeBaseFile
 from backend.app.models.file import File
 from backend.app.tools.account import account_available
+from backend.app.repositories.knowledge_access import accessible_knowledge, independent_files
 
 RESOURCE_POLICY = (
     '\n资料使用规则：先检查当前会话资料和可发现知识库目录，再决定依据。涉及已选会话资料时优先用search_uploaded_files和read_uploaded_file；'
@@ -25,12 +26,12 @@ async def add_resource_catalog(context, system_message):
     catalog = {}
     if account_available('knowledge_enabled')(context):
         owner = context.account_id
-        total = await context.session.scalar(select(func.count()).select_from(KnowledgeBase).where(KnowledgeBase.user_id == owner))
+        total = await context.session.scalar(select(func.count()).select_from(KnowledgeBase).where(accessible_knowledge(owner)))
         if total:
             rows = (await context.session.execute(select(KnowledgeBase.id, KnowledgeBase.name, KnowledgeBase.description, func.count(File.id).label('file_count'))
                 .outerjoin(KnowledgeBaseFile, KnowledgeBaseFile.knowledge_base_id == KnowledgeBase.id)
-                .outerjoin(File, (File.id == KnowledgeBaseFile.file_id) & (File.user_id == owner))
-                .where(KnowledgeBase.user_id == owner).group_by(KnowledgeBase.id)
+                .outerjoin(File, (File.id == KnowledgeBaseFile.file_id) & (File.user_id == KnowledgeBase.user_id))
+                .where(accessible_knowledge(owner)).group_by(KnowledgeBase.id)
                 .order_by(KnowledgeBase.updated_at.desc(), KnowledgeBase.id).limit(10))).all()
             entries = [{'id': row.id, 'name': row.name, 'description': (row.description or '')[:160],
                         'description_truncated': len(row.description or '') > 160, 'file_count': row.file_count} for row in rows]
@@ -38,7 +39,7 @@ async def add_resource_catalog(context, system_message):
             catalog['knowledge'] = data
             context.state['knowledge_catalog_available'] = True
     if account_available('files_enabled')(context):
-        independent = ~File.id.in_(select(KnowledgeBaseFile.file_id))
+        independent = independent_files()
         count = await context.session.scalar(select(func.count()).select_from(File).where(File.user_id == context.account_id, independent))
         if count:
             rows = (await context.session.execute(select(File.id, File.filename, File.status).where(File.user_id == context.account_id, independent)

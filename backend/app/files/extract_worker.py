@@ -40,11 +40,12 @@ def limit_memory():
 
 def main():
     from backend.app.files.extract import ExtractionError, extract_document
+    from backend.app.files.formats import MAX_FILE_SIZE
     logging.disable(logging.CRITICAL)
     try:
         limit_memory()
         path = Path(sys.argv[1])
-        if path.stat().st_size > 5 * 1024 * 1024:
+        if path.stat().st_size > MAX_FILE_SIZE:
             raise ExtractionError('文件大小不能超过5MB')
         result = {'text': extract_document(path.read_bytes(), path.suffix.lower())}
     except ExtractionError as error:

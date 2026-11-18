@@ -1,7 +1,12 @@
 import { createApiError } from './errors'
+import formats from '../../../backend/app/files/formats.json'
 import type { FileContent, FileInfo } from '../types/file'
 
-export const MAX_UPLOAD_SIZE = 5 * 1024 * 1024 // 与后端一致，每个文件最大 5MB
+// 格式、大小与提示来自后端解析器使用的同一份清单。
+export const MAX_UPLOAD_SIZE = formats.max_upload_bytes
+const extensions = formats.groups.flatMap(group => group.extensions)
+export const UPLOAD_ACCEPT = extensions.join(',')
+export const UPLOAD_FORMATS_LABEL = formats.summary
 export async function deleteFile(fileId: string, signal?: AbortSignal): Promise<void> { // 删除成功返回204，不读取空响应正文
   const response = await fetch(`/api/files/${encodeURIComponent(fileId)}`, { method: 'DELETE', signal })
   if (!response.ok) throw await createApiError(response, '删除文件失败')
@@ -13,7 +18,7 @@ export async function listFiles(signal?: AbortSignal): Promise<FileInfo[]> { // 
 }
 export function validateTextFile(file: Pick<File, 'name' | 'size'>): string { // 前端提前提示，后端仍需实际校验
   if (!file.name || file.name.length > 255) return '文件名不能为空，且不能超过255个字符'
-  if (!/\.(txt|pdf|docx|xlsx)$/i.test(file.name)) return '仅支持TXT、PDF、Word(.docx)、Excel(.xlsx)，旧版.doc/.xls请先转换'
+  if (file.name.lastIndexOf('.') < 1 || !extensions.some(extension => file.name.toLowerCase().endsWith(extension))) return formats.unsupported_message
   if (file.size === 0) return '不能上传空文件'
   if (file.size > MAX_UPLOAD_SIZE) return '文件大小不能超过5MB'
   return ''

@@ -1,12 +1,14 @@
 """历史会话、知识库发现与受限文件浏览。没有磁盘或系统命令入口。"""
 import json
 import shlex
+import re
 import anyio
-from sqlalchemy import select, func
+from sqlalchemy import select, func, and_, or_, case
 from backend.app.models.chat import Chat, Message
 from backend.app.models.file import File
 from backend.app.models.knowledge import KnowledgeBase, KnowledgeBaseFile
 from backend.app.tools.account import require_account
+from backend.app.repositories.knowledge_access import accessible_knowledge, independent_files
 from backend.app.tools.files import read_uploaded_file, search_uploaded_files
 from backend.app.chat.context import normalize_history_references
 
@@ -27,13 +29,18 @@ async def search_chats(ctx, query, count=5, offset=0, start_timestamp=None, end_
         condition.append(Chat.updated_at >= start_timestamp)
     if end_timestamp is not None:
         condition.append(Chat.updated_at <= end_timestamp)
-    matches = select(Message.chat_id).where(Message.status == 'completed', Message.content.contains(query, autoescape=True))
-    statement = select(Chat).where(*condition, Chat.title.contains(query, autoescape=True) | Chat.id.in_(matches))
-    rows = list((await ctx.session.execute(statement.order_by(Chat.updated_at.desc(), Chat.id).offset(offset).limit(count + 1))).scalars())
+    terms = list(dict.fromkeys(re.findall(r'[\w]+', query, re.UNICODE))) or [query]
+    content_match = and_(*(Message.content.contains(term, autoescape=True) for term in terms))
+    title_match = and_(*(Chat.title.contains(term, autoescape=True) for term in terms))
+    matches = select(Message.chat_id).where(Message.status == 'completed', content_match)
+    exact_matches = select(Message.chat_id).where(Message.status == 'completed', Message.content.contains(query, autoescape=True))
+    exact = or_(Chat.title.contains(query, autoescape=True), Chat.id.in_(exact_matches))
+    statement = select(Chat).where(*condition, title_match | Chat.id.in_(matches))
+    rows = list((await ctx.session.execute(statement.order_by(case((exact, 0), else_=1), Chat.updated_at.desc(), Chat.id).offset(offset).limit(count + 1))).scalars())
     result = []
     for row in rows[:count]:
-        text = await ctx.session.scalar(select(Message.content).where(Message.chat_id == row.id, Message.status == 'completed', Message.content.contains(query, autoescape=True)).order_by(Message.sequence).limit(1))
-        at = max(0, (text or '').casefold().find(query.casefold()) - 100)
+        text = await ctx.session.scalar(select(Message.content).where(Message.chat_id == row.id, Message.status == 'completed', content_match).order_by(Message.sequence).limit(1))
+        at = max(0, min((position for term in [query, *terms] if (position := (text or '').casefold().find(term.casefold())) >= 0), default=0) - 100)
         result.append({'chat_id': row.id, 'title': row.title, 'updated_at': row.updated_at, 'snippet': (text or '')[at:at + 500]})
     return {'chats': result, 'has_more': len(rows) > count, 'next_offset': offset + count if len(rows) > count else None}
 
@@ -73,20 +80,25 @@ async def read_chat_message(ctx, target_chat_id, sequence, offset=0, max_chars=6
             'notice': '历史助手回答的旧引用编号已归一化，不能冒充本轮来源；字符偏移基于此处返回的归一化文本。'}
 
 
-async def knowledge_ids(ctx, knowledge_id=None):
+async def knowledge_file_ids(ctx, knowledge_id=None, knowledge_ids=None):
     owner = await require_account(ctx, 'knowledge_enabled')
-    statement = select(File.id).join(KnowledgeBaseFile, KnowledgeBaseFile.file_id == File.id).join(KnowledgeBase, KnowledgeBase.id == KnowledgeBaseFile.knowledge_base_id).where(File.user_id == owner, KnowledgeBase.user_id == owner)
-    if knowledge_id:
-        exists = await ctx.session.scalar(select(KnowledgeBase.id).where(KnowledgeBase.id == knowledge_id, KnowledgeBase.user_id == owner))
-        if not exists:
+    statement = select(File.id).join(KnowledgeBaseFile, KnowledgeBaseFile.file_id == File.id).join(KnowledgeBase, KnowledgeBase.id == KnowledgeBaseFile.knowledge_base_id).where(File.user_id == KnowledgeBase.user_id, accessible_knowledge(owner))
+    if knowledge_id is not None and knowledge_ids is not None:
+        raise ValueError('knowledge_id和knowledge_ids不能同时指定')
+    selected = set(knowledge_ids) if knowledge_ids is not None else {knowledge_id} if knowledge_id else None
+    if selected is not None:
+        if not selected:
+            raise ValueError('知识库范围不能为空')
+        accessible = set((await ctx.session.execute(select(KnowledgeBase.id).where(KnowledgeBase.id.in_(selected), accessible_knowledge(owner)))).scalars())
+        if selected != accessible:
             raise ValueError('知识库不存在或无权访问')
-        statement = statement.where(KnowledgeBase.id == knowledge_id)
+        statement = statement.where(KnowledgeBase.id.in_(selected))
     return set((await ctx.session.execute(statement)).scalars())
 
 
 async def list_knowledge(ctx, query='', count=10, skip=0):
     owner = await require_account(ctx, 'knowledge_enabled')
-    statement = select(KnowledgeBase, func.count(File.id)).outerjoin(KnowledgeBaseFile, KnowledgeBaseFile.knowledge_base_id == KnowledgeBase.id).outerjoin(File, (File.id == KnowledgeBaseFile.file_id) & (File.user_id == owner)).where(KnowledgeBase.user_id == owner)
+    statement = select(KnowledgeBase, func.count(File.id)).outerjoin(KnowledgeBaseFile, KnowledgeBaseFile.knowledge_base_id == KnowledgeBase.id).outerjoin(File, (File.id == KnowledgeBaseFile.file_id) & (File.user_id == KnowledgeBase.user_id)).where(accessible_knowledge(owner))
     if query:
         statement = statement.where(KnowledgeBase.name.contains(query, autoescape=True) | KnowledgeBase.description.contains(query, autoescape=True))
     rows = (await ctx.session.execute(statement.group_by(KnowledgeBase.id).order_by(KnowledgeBase.updated_at.desc(), KnowledgeBase.id).offset(skip).limit(count + 1))).all()
@@ -94,57 +106,49 @@ async def list_knowledge(ctx, query='', count=10, skip=0):
 
 
 async def search_knowledge_files(ctx, query='', knowledge_id=None, count=20, skip=0):
-    ids = await knowledge_ids(ctx, knowledge_id)
-    statement = select(File).where(File.id.in_(ids))
+    ids = await knowledge_file_ids(ctx, knowledge_id)
+    statement = select(File.id, File.filename, File.size, File.status, File.index_status).where(File.id.in_(ids))
     if query:
         statement = statement.where(File.filename.contains(query, autoescape=True))
-    rows = list((await ctx.session.execute(statement.order_by(File.filename, File.id).offset(skip).limit(count + 1))).scalars())
+    rows = (await ctx.session.execute(statement.order_by(File.filename, File.id).offset(skip).limit(count + 1))).all()
     return metadata_page('files', [{'file_id': row.id, 'filename': row.filename, 'size': row.size, 'status': row.status, 'index_status': row.index_status} for row in rows[:count]], skip, len(rows) > count)
 
 
 async def search_files(ctx, query, count=10, skip=0):
     owner = await require_account(ctx, 'files_enabled')
     rows = list((await ctx.session.execute(select(File.id.label('file_id'), File.filename, File.size, File.status, File.index_status)
-        .where(File.user_id == owner, ~File.id.in_(select(KnowledgeBaseFile.file_id)), File.filename.contains(query, autoescape=True))
+        .where(File.user_id == owner, independent_files(), File.filename.contains(query, autoescape=True))
         .order_by(File.updated_at.desc(), File.id).offset(skip).limit(count + 1))).all())
     return metadata_page('files', [dict(row._mapping) for row in rows[:count]], skip, len(rows) > count,
         notice='这里只查找本人独立上传文件的名称，不包含知识库成员文件，没有读取正文或加入会话。用view_account_file按需读取；知识库内文件使用知识库入口，关闭文件发现后该账号入口不可用。')
 
 
 async def query_knowledge_bases(ctx, query, count=5, skip=0):
-    # Semantic discovery is paginated over metadata; these scores are never evidence.
-    from backend.app.rag.embedding import embed_query, embed_texts, split_for_embedding
-    catalog = await list_knowledge(ctx, count=50, skip=skip)
-    bases = catalog['knowledge_bases']
-    if not bases:
-        return catalog
-    chunks, indices = [], []
-    for index, row in enumerate(bases):
-        parts = await split_for_embedding(row['name'] + '\n' + row['description'])
-        for part in parts:
-            chunks.append(part.content if hasattr(part, 'content') else part['content'])
-            indices.append(index)
-    vectors, query_vector = await embed_texts(chunks), await embed_query(query)
-    scores = {}
-    for index, vector in zip(indices, vectors):
-        score = sum(a * b for a, b in zip(vector, query_vector))
-        scores[index] = max(scores.get(index, -1), score)
-    selected = sorted(scores, key=scores.get, reverse=True)[:count]
-    return {'knowledge_bases': [dict(bases[index], similarity=scores[index]) for index in selected], 'has_more': catalog['has_more'], 'next_skip': catalog['next_skip'],
-            'notice': '对本页最多50个知识库名称与描述进行语义排序；不是正文证据，相似度不是正确率。可翻页继续发现。'}
+    owner = await require_account(ctx, 'knowledge_enabled')
+    from backend.app.rag.knowledge_discovery import rank_catalog
+    # 元数据全部参与排序，先检索后做展示裁剪；目录向量跨请求持久复用。
+    rows = (await ctx.session.execute(select(KnowledgeBase.id, KnowledgeBase.name, KnowledgeBase.description)
+        .where(accessible_knowledge(owner)).order_by(KnowledgeBase.id))).all()
+    ranked = await rank_catalog(owner, [dict(row._mapping) for row in rows], query)
+    await require_account(ctx, 'knowledge_enabled')
+    valid_ids = set((await ctx.session.execute(select(KnowledgeBase.id).where(accessible_knowledge(owner)))).scalars())
+    ranked = [row for row in ranked if row['id'] in valid_ids]
+    return metadata_page('knowledge_bases', ranked[skip:skip + count], skip, len(ranked) > skip + count,
+        total=len(ranked), notice='对本人可访问知识库名称与完整描述全局语义排序；不是正文证据，相似度不是正确率。')
 
 
-async def query_knowledge_files(ctx, query, knowledge_id=None, count=5):
-    return await search_uploaded_files(query, ctx.session, await knowledge_ids(ctx, knowledge_id), limit=count)
+
+async def query_knowledge_files(ctx, query, knowledge_id=None, count=5, knowledge_ids=None):
+    return await search_uploaded_files(query, ctx.session, await knowledge_file_ids(ctx, knowledge_id, knowledge_ids), limit=count)
 
 
 async def view_file(ctx, file_id, offset=0, max_chars=6000, line_numbers=False, start_line=None, end_line=None, knowledge=False, account=False):
     if account:
         owner = await require_account(ctx, 'files_enabled')
-        owned = await ctx.session.scalar(select(File.id).where(File.id == file_id, File.user_id == owner, ~File.id.in_(select(KnowledgeBaseFile.file_id))))
+        owned = await ctx.session.scalar(select(File.id).where(File.id == file_id, File.user_id == owner, independent_files()))
         ids = {owned} if owned else set()
     else:
-        ids = await knowledge_ids(ctx) if knowledge else ctx.allowed_file_ids
+        ids = await knowledge_file_ids(ctx) if knowledge else ctx.allowed_file_ids
     if file_id not in ids:
         raise ValueError('文件不在当前授权范围')
     if start_line is None and end_line is None and not line_numbers:
@@ -199,7 +203,7 @@ def _grep(text, pattern, use_regex, case_insensitive, count_only, offset, count)
 
 
 async def grep_files(ctx, pattern, file_id=None, case_insensitive=False, use_regex=False, count_only=False, count=20, offset=0, knowledge=False, knowledge_id=None):
-    ids = await knowledge_ids(ctx, knowledge_id) if knowledge else set(ctx.allowed_file_ids)
+    ids = await knowledge_file_ids(ctx, knowledge_id) if knowledge else set(ctx.allowed_file_ids)
     if file_id:
         if file_id not in ids:
             raise ValueError('文件不在当前授权范围')
@@ -225,17 +229,19 @@ async def grep_files(ctx, pattern, file_id=None, case_insensitive=False, use_reg
             remaining_hits -= 1
         pages.append({'file_id': row.id, 'shown_lines': emitted, 'has_more': not count_only and total > base + emitted,
                       'next_offset': base + emitted if not count_only and total > base + emitted else None})
-    return {'chunks': chunks, 'counts': counts, 'file_pages': pages, 'has_more': any(page['has_more'] for page in pages) or (not file_id and len(rows) > 10),
+    return {'retrieval_method': 'exact', 'chunks': chunks, 'counts': counts, 'file_pages': pages, 'has_more': any(page['has_more'] for page in pages) or (not file_id and len(rows) > 10),
             'next_offset': pages[0]['next_offset'] if file_id and pages else scan_offset + 10 if not file_id and len(rows) > 10 else None,
             'notice': '精确正文查找，不依赖向量索引。指定文件时offset按命中行分页；跨文件时offset按文件分页，本次总正文最多18000字符和count行。file_pages列出需指定文件续读的位置，长行用view_file按字符读取。'}
 
 
-async def display_file(ctx, file_id, offset=0, max_chars=6000, knowledge=False):
-    data = await view_file(ctx, file_id, offset, max_chars, knowledge=knowledge)
-    return {'display_file': True, 'file_id': file_id, **data}
+async def display_file(ctx, file_id, offset=0, max_chars=6000, knowledge=False, account=False):
+    if knowledge and account:
+        raise ValueError('knowledge与account不能同时指定')
+    data = await view_file(ctx, file_id, offset, max_chars, knowledge=knowledge, account=account)
+    return {'display_file': True, 'preview_type': 'extracted_text', 'file_id': file_id, **data}
 
 
-async def kb_exec(ctx, command, knowledge_id=None):
+async def kb_exec(ctx, command, knowledge_id=None, skip=0, count=20, offset=0, max_chars=6000):
     """Restricted virtual document commands; never sent to a shell."""
     if any(token in command for token in ['|', ';', '&&', '>', '<', '`', '$(']):
         raise ValueError('仅支持单条只读知识库命令，不支持管道、重定向或系统命令')
@@ -244,18 +250,18 @@ async def kb_exec(ctx, command, knowledge_id=None):
         raise ValueError('请输入只读知识库命令')
     name, rest = args[0], args[1:]
     if name in ('ls', 'tree') and not rest:
-        return await search_knowledge_files(ctx, knowledge_id=knowledge_id) if knowledge_id else await list_knowledge(ctx)
+        return await search_knowledge_files(ctx, knowledge_id=knowledge_id, skip=skip, count=count) if knowledge_id else await list_knowledge(ctx, skip=skip, count=count)
     if name == 'find' and len(rest) == 1:
-        return await search_knowledge_files(ctx, query=rest[0], knowledge_id=knowledge_id)
+        return await search_knowledge_files(ctx, query=rest[0], knowledge_id=knowledge_id, skip=skip, count=count)
     if name == 'grep' and 1 <= len(rest) <= 2:
-        return await grep_files(ctx, rest[0], rest[1] if len(rest) == 2 else None, knowledge=True, knowledge_id=knowledge_id)
+        return await grep_files(ctx, rest[0], rest[1] if len(rest) == 2 else None, knowledge=True, knowledge_id=knowledge_id, offset=offset, count=count)
     if name in ('cat', 'head', 'tail', 'wc', 'stat') and len(rest) == 1:
         file_id = rest[0]
-        ids = await knowledge_ids(ctx, knowledge_id)
+        ids = await knowledge_file_ids(ctx, knowledge_id)
         if file_id not in ids:
             raise ValueError('请使用知识库目录返回的有效file_id')
         if name in ('cat', 'head'):
-            return await view_file(ctx, file_id, knowledge=True, end_line=20 if name == 'head' else None)
+            return await view_file(ctx, file_id, knowledge=True, offset=offset, max_chars=max_chars) if name == 'cat' else await view_file(ctx, file_id, knowledge=True, end_line=20, max_chars=max_chars)
         row = await ctx.session.get(File, file_id)
         if name == 'tail':
             return await view_file(ctx, file_id, knowledge=True, start_line=max(1, len(row.text_content.splitlines()) - 19))
@@ -264,7 +270,7 @@ async def kb_exec(ctx, command, knowledge_id=None):
         import re
         match = re.fullmatch(r'(\d+),(\d+)p', rest[0])
         if match:
-            if rest[1] not in await knowledge_ids(ctx, knowledge_id):
+            if rest[1] not in await knowledge_file_ids(ctx, knowledge_id):
                 raise ValueError('文件不在指定知识库')
             return await view_file(ctx, rest[1], knowledge=True, start_line=max(1, int(match[1])), end_line=int(match[2]))
     raise ValueError('支持ls、tree、find 关键词、grep 文字 [file_id]、cat/head/tail/wc/stat file_id、sed 起始行,结束行p file_id；只浏览知识库虚拟文件，不访问服务器磁盘')

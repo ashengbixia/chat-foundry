@@ -4,6 +4,8 @@ import type { FileInfo } from './types/file'
 import KnowledgePanel from './components/knowledge/KnowledgePanel.vue'
 import { listKnowledge, setChatKnowledge } from './api/knowledge'
 import type { KnowledgeBase, KnowledgeReference } from './api/knowledge'
+import { listAssistants, listBranches, forkBranch } from './api/workspace'
+import type { Assistant } from './api/workspace'
 import { getChat } from './api/chats'
 import MessageList from './components/chat/MessageList.vue'
 import MessageInput from './components/chat/MessageInput.vue'
@@ -31,6 +33,37 @@ const filePanel = ref<InstanceType<typeof FilePanel> | null>(null) // 直接复�
 const uploadingAttachments = ref(false)
 const switchingModel = ref(false)
 const knowledgePanel = ref<InstanceType<typeof KnowledgePanel> | null>(null)
+const assistants = ref<Assistant[]>([])
+const pendingAssistant = ref('')
+const branches = ref<Chat[]>([])
+const branching = ref(false)
+const activeAssistant = computed(() => assistants.value.find(item => item.id === currentChat.value?.assistant_id))
+async function refreshAssistants() { try { assistants.value = await listAssistants() } catch (e) { errorMessage.value = e instanceof Error ? e.message : '加载助手失败' } }
+async function chooseAssistant() {
+  const id = pendingAssistant.value
+  if (currentChat.value) return
+  switchingKnowledge.value = true
+  try { const catalog = await listKnowledge(); if (!currentChat.value && pendingAssistant.value === id) { const profile = assistants.value.find(item => item.id === id); pendingKnowledge.value = catalog.filter(item => profile?.knowledge_ids.includes(item.id)) } }
+  catch (e) { errorMessage.value = e instanceof Error ? e.message : '读取助手知识库失败' }
+  finally { switchingKnowledge.value = false }
+}
+async function refreshBranches() { const id = currentChat.value?.id; if (!id) { branches.value = []; return }; try { const items = await listBranches(id); if (currentChat.value?.id === id) branches.value = items } catch { branches.value = [] } }
+async function createBranch(value: { messageId: string; content?: string; regenerate?: boolean }) {
+  if (!currentChat.value || interactionBusy.value || generatingReply.value) return
+  const sourceId = currentChat.value.id
+  branching.value = true
+  try {
+    const branch = await forkBranch(sourceId, value.messageId, value.content, value.regenerate)
+    if (!pageActive) return
+    await chatStore.loadChats()
+    branching.value = false
+    await openChat(branch)
+    if (currentChat.value?.id !== branch.id) return
+    if (value.content !== undefined || value.regenerate) await retryReply()
+    notify('已创建分支，原对话保留')
+  } catch (e) { errorMessage.value = e instanceof Error ? e.message : '创建分支失败' }
+  finally { branching.value = false }
+}
 const pendingKnowledge = ref<KnowledgeReference[]>([]) // 空白页先选库，首次发送时随新会话一起保存
 const switchingKnowledge = ref(false)
 const selectedKnowledge = computed(() => currentChat.value?.knowledge_bases ?? pendingKnowledge.value)
@@ -45,7 +78,7 @@ function notify(message: string) {
   toastTimer = setTimeout(() => { toast.value = '' }, 3200)
 }
 async function focusComposer() { await nextTick(); messageInput.value?.focus() }
-function settingsSaved() { notify('模型配置已保存，下次回答生效'); void focusComposer() }
+function settingsSaved() { void refreshAssistants(); notify('模型配置已保存，下次回答生效'); void focusComposer() }
 function attachFile(file: FileInfo) { // 已有资料直接引用，不重复上传或建立索引
   if (addAttachment(file)) notify(file.reused ? `同内容资料已存在，已复用：${file.filename}` : `已添加：${file.filename}`)
 }
@@ -63,10 +96,11 @@ function jumpToLatest() {
 }
 const { setWebSearchEnabled, startBlankChat, createNewChat, openChatSession, initializeChat, renameChatSession, deleteChatSession, sendMessage, retryReply, stopReply, loadOlderMessages, addAttachment, removeAttachment, markFileDeleted, removeConversationFile } = chatStore
 const { webSearchEnabled, updatingFeatures, inputText, selectedAttachments, messages, currentChat, chats, errorMessage, sendingMessage, generatingReply, generatingChatIds, navigationBusy, creatingChat, loadingChats, restoringChat, deletingChatId, renamingChatId, pageBusy, inputDisabled, sendDisabled, canRetryReply, hasOlderMessages, loadingOlderMessages } = storeToRefs(chatStore) // 保持响应式连接，不复制出另一份状态
+watch(() => currentChat.value?.id, () => { void refreshBranches() })
 const messageListElement = ref<HTMLElement | null>(null) // 消息区域的页面元素
 const filesOpen = ref(false) // 是否显示文件管理区域，隐藏时保留上传与预览状态
-const interactionBusy = computed(() => pageBusy.value || uploadingAttachments.value || switchingModel.value || switchingKnowledge.value)
-const sidebarBusy = computed(() => navigationBusy.value || uploadingAttachments.value || switchingModel.value || switchingKnowledge.value)
+const interactionBusy = computed(() => branching.value || pageBusy.value || uploadingAttachments.value || switchingModel.value || switchingKnowledge.value)
+const sidebarBusy = computed(() => branching.value || navigationBusy.value || uploadingAttachments.value || switchingModel.value || switchingKnowledge.value)
 async function applyKnowledge(items: KnowledgeBase[] | KnowledgeReference[]) {
   if (interactionBusy.value) throw new Error('请等待当前操作完成后再调整知识库')
   if (!currentChat.value) { pendingKnowledge.value = items; notify('已选择知识库，发送第一条消息时保存'); return }
@@ -184,6 +218,7 @@ async function openChat(chat: Chat) { // 打开成功后，处理浏览器记录
   finally { switchingKnowledge.value = false }
 }
 onMounted(async () => { // 启动时读取浏览器记录，由 store 恢复数据，页面只负责记录和滚动
+  void refreshAssistants()
   const result = await initializeChat(getLastChatId(accountId)) // 初始化结果区分会话不存在和请求失败
   if (result.status === 'missing') clearLastChatId(accountId)
   if (result.status !== 'restored' || result.chat === null) return
@@ -201,13 +236,14 @@ async function startNewChat() { // 打开空白输入页，不请求创建接口
   newChatRevision.value++
   void focusComposer()
   pendingKnowledge.value = []
+  pendingAssistant.value = ''
 }
 async function sendChatMessage() { // 第一次发送时自动新建会话，保留已经写好的正文和附件
   if (interactionBusy.value || !inputText.value.trim()) return
   if (!currentChat.value) {
     const text = inputText.value
     const attachments = [...selectedAttachments.value]
-    const chat = await createNewChat(pendingKnowledge.value.map(item => item.id))
+    const chat = await createNewChat(pendingKnowledge.value.map(item => item.id), pendingAssistant.value || undefined)
     if (!chat || !pageActive) return
     inputText.value = text
     selectedAttachments.value = attachments
@@ -235,7 +271,7 @@ async function chooseFollowUp(question: string) {
 </script>
 
 <template>
-  <SettingsPanel ref="settingsPanel" @model-changed="currentModelName = $event" @saved="settingsSaved" />
+  <SettingsPanel ref="settingsPanel" @model-changed="currentModelName = $event" @saved="settingsSaved" @workspace-changed="refreshAssistants" />
   <KnowledgePanel ref="knowledgePanel" :selected="selectedKnowledge" :selection-disabled="interactionBusy" :apply-selection="applyKnowledge" @changed="refreshKnowledge" />
   <div v-if="toast" class="toast" role="status">{{ toast }}</div>
   <AppLayout :files-open="filesOpen" :current-chat-id="currentChat?.id" :new-chat-revision="newChatRevision" :drop-disabled="interactionBusy" @close-files="closeFiles" @open-settings="settingsPanel?.open()" @open-knowledge="knowledgePanel?.open()" @dropped-files="filePanel?.uploadSelectedFiles($event)" @attach-saved="filePanel?.attachById($event)">
@@ -260,8 +296,9 @@ async function chooseFollowUp(question: string) {
     </template>
     <template #header>
       <div class="chat-title"><span class="workspace-label">工作空间 <span>/</span> 对话</span><strong>{{ currentChat?.title ?? '新的开始' }}</strong></div>
+      <select v-if="branches.length > 1" aria-label="切换对话分支" :value="currentChat?.id" :disabled="sidebarBusy" @change="openChat(branches.find(item => item.id === ($event.target as HTMLSelectElement).value)!)"><option v-for="(branch, index) in branches" :key="branch.id" :value="branch.id">版本 {{ index + 1 }} · {{ branch.title }}</option></select>
       <span class="model-placeholder" title="打开当前账号的模型服务设置">
-        <button class="model-button" type="button" @click="settingsPanel?.open()"><span class="model-dot"></span>{{ currentModelName || '设置模型服务' }}<AppIcon name="chevron" :size="12" /></button>
+        <button class="model-button" type="button" @click="settingsPanel?.open()"><span class="model-dot"></span>{{ activeAssistant?.name || currentModelName || '设置模型服务' }}<AppIcon name="chevron" :size="12" /></button>
       </span>
       <button class="files-toggle" :class="{ active: filesOpen }" type="button" aria-controls="file-manager" :aria-expanded="filesOpen" @click="filesOpen = !filesOpen"><AppIcon name="panel" :size="16" /><span>文件管理</span></button>
     </template>
@@ -276,12 +313,13 @@ async function chooseFollowUp(question: string) {
             </button>
             <small v-else-if="messages.length">对话从这里开始</small>
           </div>
-          <MessageList :messages="messages" :has-chat="!!currentChat" :busy="interactionBusy" @updated="chatStore.refreshSubagentMessages($event)" @reply="answerQuestion" @follow-up="chooseFollowUp" @layout="scrollMessagesToBottom" />
+          <MessageList :messages="messages" :has-chat="!!currentChat" :busy="interactionBusy || generatingReply" @updated="chatStore.refreshSubagentMessages($event)" @reply="answerQuestion" @follow-up="chooseFollowUp" @layout="scrollMessagesToBottom" @branch="createBranch" />
         </div>
       </section>
     </template>
     <template #composer>
       <div class="composer-content">
+        <div class="assistant-selector"><label v-if="!currentChat">助手 <select v-model="pendingAssistant" :disabled="interactionBusy" @focus="refreshAssistants" @change="chooseAssistant"><option value="">普通对话</option><option v-for="item in assistants" :key="item.id" :value="item.id">{{ item.name }}</option></select></label><small v-else-if="activeAssistant">{{ activeAssistant.name }} · {{ activeAssistant.model || '沿用连接模型' }}</small><button v-if="!currentChat" type="button" @click="settingsPanel?.open()">管理助手</button></div>
         <div v-if="showLatest" class="latest-actions"><button type="button" @click="jumpToLatest">↓ 回到最新消息</button></div>
         <div class="reply-actions">
           <button v-if="canRetryReply" class="retry-button" type="button" :disabled="!currentChat || interactionBusy" @click="retryReply"><AppIcon name="refresh" :size="13" />重试回答</button>
@@ -313,7 +351,7 @@ async function chooseFollowUp(question: string) {
           @open-files="filesOpen = true"
           @pick-files="filePanel?.pickAttachments()"
           @paste-files="filePanel?.uploadSelectedFiles($event)"
-        ><template #model-picker><ComposerModelPicker :current-model="currentModelName" :disabled="pageBusy || uploadingAttachments || switchingKnowledge" @changed="currentModelName = $event" @busy="switchingModel = $event" @open-settings="settingsPanel?.open()" /></template></MessageInput>
+        ><template #model-picker><span v-if="activeAssistant?.connection_id || activeAssistant?.model" class="assistant-model">{{ activeAssistant.name }} · {{ activeAssistant.model || '专用连接' }}</span><ComposerModelPicker v-else :current-model="currentModelName" :disabled="pageBusy || uploadingAttachments || switchingKnowledge" @changed="currentModelName = $event" @busy="switchingModel = $event" @open-settings="settingsPanel?.open()" /></template></MessageInput>
         <small class="input-hint"><span>{{ siteName }} · 让思考发生</span><span>AI 回答仅供参考，请核实重要信息</span></small>
         <SiteFooter />
       </div>
@@ -325,6 +363,8 @@ async function chooseFollowUp(question: string) {
 </template>
 
 <style scoped>
+.assistant-selector { display:flex; align-items:center; gap:12px; margin:0 4px 8px; font-size:11px; color:#8a958e; }.assistant-selector select { border:0; background:transparent; color:#596e60; padding:5px; }.assistant-selector button { border:0; background:transparent; color:#89968d; font-size:11px; }.assistant-model { font-size:12px; color:#75857a; }
+
 .toast { position: fixed; top: 20px; left: 50%; transform: translateX(-50%); max-width: calc(100vw - 32px); z-index: 50; padding: 12px 18px; border: 1px solid #d6e5dc; border-radius: 12px; background: #f2f8f4; color: #365c45; box-shadow: 0 8px 28px #233d2f16; font-size: 13px; overflow-wrap: anywhere; }
 .composer-content { position: relative; }
 .latest-actions { position: absolute; bottom: calc(100% + 12px); left: 50%; transform: translateX(-50%); }

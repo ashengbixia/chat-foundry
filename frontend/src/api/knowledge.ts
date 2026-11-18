@@ -2,7 +2,7 @@ import { createApiError } from './errors'
 import type { FileInfo } from '../types/file'
 
 export interface KnowledgeReference { id: string; name: string }
-export interface KnowledgeBase extends KnowledgeReference { description: string; file_count: number; created_at: number; updated_at: number }
+export interface KnowledgeBase extends KnowledgeReference { can_edit?: boolean; description: string; file_count: number; created_at: number; updated_at: number }
 async function request<T>(url: string, method = 'GET', body?: unknown, signal?: AbortSignal): Promise<T> {
   const response = await fetch(url, { method, signal, headers: body === undefined ? { Accept: 'application/json' } : { 'Content-Type': 'application/json' }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) })
   if (!response.ok) throw await createApiError(response, '知识库操作失败')

@@ -6,12 +6,13 @@ import subprocess
 import sys
 import anyio
 from backend.app.files.extract import ExtractionError, extract_document
+from backend.app.files.formats import TEXT_EXTENSIONS
 
 _slots = asyncio.Semaphore(1)
 
 
 async def parse_uploaded_document(path: Path, content: bytes, extension: str) -> str:
-    if extension == '.txt':
+    if extension in TEXT_EXTENSIONS:
         return extract_document(content, extension)
     async with _slots:
         required_environment = {'SYSTEMROOT', 'WINDIR', 'PATH', 'PATHEXT', 'TEMP', 'TMP', 'USERPROFILE', 'APPDATA', 'LOCALAPPDATA', 'LANG', 'LC_ALL', 'LD_LIBRARY_PATH'}

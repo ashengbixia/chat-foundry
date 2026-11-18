@@ -15,6 +15,8 @@ async def search_tools(context, query='', count=5):
     for spec in registry._tools.values():
         if spec.name == 'search_tools' or not spec.is_available(context):
             continue
+        if spec.alias_of and spec.name not in tokens:
+            continue
         text = (spec.name + ' ' + spec.label + ' ' + spec.description).casefold()
         score = 0
         for token in tokens:
@@ -28,7 +30,16 @@ async def search_tools(context, query='', count=5):
             candidates.append((score, spec))
     candidates.sort(key=lambda item: (-item[0], item[1].name))
     selected = [spec for _, spec in candidates[:count]]
-    # Keep a bounded active set; execution permissions are never widened here.
-    context.state['discovered_tools'] = {spec.name for spec in selected}
+    # 最近发现的工具保留在有上限的活动集合内；无权限项不会因缓存重新出现。
+    active = [name for name in context.state.get('discovered_tool_order', [])
+              if name in registry._tools and registry._tools[name].is_available(context)]
+    for spec in selected:
+        if spec.name in active:
+            active.remove(spec.name)
+        active.append(spec.name)
+    active = active[-16:]
+    context.state['discovered_tool_order'] = active
+    context.state['discovered_tools'] = set(active)
     return {'tools': [{'name': spec.name, 'label': spec.label, 'description': spec.description} for spec in selected],
-            'notice': '上述工具的完整参数将在下一次模型请求中提供。可以再次按精确工具名发现；不会授予额外文件或账号权限。'}
+            'active_tools': active,
+            'notice': '上述工具的完整参数将在下一次模型请求中提供；本轮保留最近16个发现入口，最早项超出后可重新发现。不会授予额外文件或账号权限。'}

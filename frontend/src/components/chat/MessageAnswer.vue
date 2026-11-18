@@ -14,6 +14,7 @@ const selected = ref<CitationSource | null>(null) // 当前查看的历史原文
 const dialog = ref<HTMLDialogElement | null>(null) // 浏览器原生弹窗提供焦点限制及Esc关闭
 const quoteElement = ref<HTMLElement | null>(null) // 全文中实际引用的位置
 const checking = ref(false) // 正在检查原文件是否还存在
+const originalUrl = ref('')
 const available = ref(false) // 已确认原文件可以读取
 const deleted = ref(false) // 只有404才显示原文件已删除，网络失败不能冒充删除
 const loading = ref(false) // 正在读取全文
@@ -35,6 +36,7 @@ async function openSource(source: CitationSource) { // 快照立即展示，当�
   controller = request
   selected.value = source
   available.value = false
+  originalUrl.value = ''
   deleted.value = false
   fullText.value = null
   notice.value = ''
@@ -51,6 +53,10 @@ async function openSource(source: CitationSource) { // 快照立即展示，当�
     const file = await getFile(source.fileId, request.signal)
     if (request.signal.aborted) return
     available.value = file.status === 'completed'
+    if (available.value) {
+      const result = await fetch(`/api/files/${encodeURIComponent(source.fileId)}/preview?offset=${Math.max(0, source.startOffset ?? 0)}`, { signal: request.signal })
+      if (result.ok) { const data = await result.json(); if (!request.signal.aborted) originalUrl.value = data.url }
+    }
     if (!available.value) notice.value = '原文件尚未处理完成，当前仅显示引用快照。'
   } catch (error) {
     if (!request.signal.aborted) showFileError(error)
@@ -112,6 +118,7 @@ function closeSource() { // 关闭弹窗时停止请求，快照仍保存在消�
       <p v-if="checking" class="source-notice" role="status">正在检查原文件状态…</p>
       <p v-if="notice" class="source-notice" role="status">{{ notice }}</p>
       <p v-if="selected.sourceType === 'web' && selected.truncated" class="source-notice">这是部分提取正文，可在对话中继续读取后文。</p>
+      <a v-if="originalUrl" :href="originalUrl" class="web-source-link" target="_blank" rel="noopener">打开原文件（PDF 定位到引用页）</a>
       <pre class="source-snapshot">{{ selected.content }}</pre>
       <button v-if="selected.sourceType !== 'web' && !deleted && !fullText" type="button" :disabled="checking || loading" @click="available ? openFullText() : openSource(selected)">{{ loading ? '正在读取…' : available ? '查看全文并定位' : '重新检查原文件' }}</button>
       <div v-if="fullText" class="source-fulltext" tabindex="0" aria-label="原文件全文及引用位置"><span>{{ fullText.before }}</span><mark ref="quoteElement">{{ fullText.quote }}</mark><span>{{ fullText.after }}</span></div>

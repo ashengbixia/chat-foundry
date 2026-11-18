@@ -13,8 +13,12 @@ import FollowUps from './FollowUps.vue'
 import { getUserQuestions } from '../../utils/userQuestions'
 import type { ClarificationReply } from '../../api/chats'
 
-defineProps<{ messages: DisplayMessage[]; hasChat?: boolean; busy?: boolean }>()
-const emit = defineEmits<{ updated: [chatId: string]; reply: [value: { text: string; clarification: ClarificationReply }]; followUp: [question: string]; layout: [] }>()
+defineProps<{ messages: DisplayMessage[]; hasChat?: boolean; busy?: boolean; readonly?: boolean }>()
+const emit = defineEmits<{ updated: [chatId: string]; reply: [value: { text: string; clarification: ClarificationReply }]; followUp: [question: string]; layout: []; branch: [value: { messageId: string; content?: string; regenerate?: boolean }] }>()
+const editing = ref('')
+const editedText = ref('')
+function edit(message: DisplayMessage) { editing.value = message.id; editedText.value = message.content }
+function saveEdit() { if (!editedText.value.trim()) return; emit('branch', { messageId: editing.value, content: editedText.value.trim() }); editing.value = '' }
 const copied = ref('')
 const copyError = ref('')
 async function copyAnswer(message: DisplayMessage) {
@@ -47,9 +51,10 @@ async function copyAnswer(message: DisplayMessage) {
     <div class="message-body">
     <MessageProcess v-if="message.role === 'assistant'" :message="message" @updated="emit('updated', $event)" />
     <template v-if="message.role === 'assistant'"><FileToolPreview v-for="call in getToolCalls(message.output).filter(item => item.name === 'display_file')" :key="call.callId" :result="call.result" /></template>
-    <template v-if="message.role === 'assistant'"><UserQuestionCard v-for="call in getUserQuestions(message.output)" :key="call.callId" :call="call" :message-id="message.id" :active="message.id === messages.at(-1)?.id && message.status === 'completed'" :busy="busy" @reply="emit('reply', $event)" /></template>
+    <template v-if="message.role === 'assistant'"><UserQuestionCard v-for="call in getUserQuestions(message.output)" :key="call.callId" :call="call" :message-id="message.id" :active="!readonly && message.id === messages.at(-1)?.id && message.status === 'completed'" :busy="busy" @reply="emit('reply', $event)" /></template>
     <template v-for="(item, index) in (message.output as any[])" :key="index"><small v-if="item?.type === 'context_status'" class="message-status" role="status">{{ item.text }}</small></template>
     <MessageAnswer v-if="answerContent(message) && message.role === 'assistant'" class="message-text markdown-body" :content="answerContent(message)" :output="message.output" />
+    <form v-else-if="editing === message.id" class="edit-message" @submit.prevent="saveEdit"><textarea v-model="editedText" rows="5" maxlength="10000" required /><div><button type="button" @click="editing = ''">取消</button><button type="submit" :disabled="busy || !editedText.trim()">保存为新分支并发送</button></div></form>
     <div v-else-if="message.role === 'user' && message.content" class="message-text">{{ message.content }}</div>
     <ul v-if="message.attachments?.length" class="message-attachments" aria-label="消息附件">
       <li v-for="file in message.attachments" :key="file.file_id" :title="file.file_id"><AppIcon name="file" :size="16" /><span>{{ file.filename }}<small>{{ file.size }} 字节</small></span><span v-if="file.deleted" class="deleted-file">（文件已删除）</span></li>
@@ -58,17 +63,22 @@ async function copyAnswer(message: DisplayMessage) {
     <small v-if="message.status === 'cancelled'" class="message-status">已停止</small>
     <small v-if="message.status === 'failed'" class="message-status failed" role="alert">{{ message.error }}</small>
     <footer v-if="message.status !== 'generating'" class="message-footer">
+      <button v-if="!readonly && message.role === 'user'" type="button" :disabled="busy" @click="edit(message)">编辑</button>
+      <button v-if="!readonly && message.role === 'assistant' && !isTaskUpdate(message)" type="button" :disabled="busy" @click="emit('branch', { messageId: message.id, regenerate: true })">重新生成</button>
+      <button v-if="!readonly" type="button" :disabled="busy" title="从此处创建独立分支，原对话保留" @click="emit('branch', { messageId: message.id })">分支</button>
       <button v-if="message.role === 'assistant' && answerContent(message)" type="button" :aria-label="copied === message.id ? '已复制回答' : '复制回答'" :title="copied === message.id ? '已复制' : '复制回答'" @click="copyAnswer(message)"><AppIcon :name="copied === message.id ? 'check' : 'copy'" :size="15" /></button>
       <span v-if="copyError === message.id" role="status">复制失败，请手动选择文字</span>
       <time v-if="message.created_at" :datetime="new Date(message.created_at * 1000).toISOString()" :title="`${new Date(message.created_at * 1000).toLocaleString()}${message.model ? ` · ${message.model}` : ''}`">{{ messageClock(message.created_at) }}</time>
     </footer>
-    <FollowUps v-if="message.role === 'assistant' && message.status === 'completed' && message.chat_id && message.id === messages.at(-1)?.id && answerContent(message) && !getUserQuestions(message.output).some(call => call.status === 'awaiting_user')" :chat-id="message.chat_id" :message-id="message.id" :output="message.output" :busy="busy" @choose="emit('followUp', $event)" @layout="emit('layout')" />
+    <FollowUps v-if="!readonly && message.role === 'assistant' && message.status === 'completed' && message.chat_id && message.id === messages.at(-1)?.id && answerContent(message) && !getUserQuestions(message.output).some(call => call.status === 'awaiting_user')" :chat-id="message.chat_id" :message-id="message.id" :output="message.output" :busy="busy" @choose="emit('followUp', $event)" @layout="emit('layout')" />
     </div>
   </article>
   </template>
 </template>
 
 <style scoped>
+.edit-message textarea { width:100%; min-width:240px; padding:10px; border:1px solid #d9e2dc; border-radius:8px; font:inherit; }.edit-message button { padding:6px; margin:6px; border:0; border-radius:6px; background:#fff; }
+
 .context-checkpoint { margin: 8px 0 24px; padding: 10px 0; border-top: 1px solid #e8ece9; color: #7b8780; font-size: 12px; }
 .context-checkpoint summary { cursor: pointer; }.context-checkpoint small { display: block; margin-top: 10px; }.context-checkpoint p { white-space: pre-wrap; line-height: 1.8; color: #59675f; }
 .welcome { padding: clamp(36px, 10vh, 110px) 0 32px; text-align: center; }

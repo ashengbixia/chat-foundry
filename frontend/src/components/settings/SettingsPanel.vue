@@ -1,14 +1,16 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
+import WorkspacePanel from './WorkspacePanel.vue'
+import { saveConnection } from '../../api/workspace'
 import AccountToolsPanel from './AccountToolsPanel.vue'
 import { discoverModels, getModelSettings, resetModelSettings, saveModelSettings, testModelService, diagnoseModelService, defaultCapabilities } from '../../api/modelSettings'
 import type { ModelPreset, ModelServiceConfig, ModelServiceDraft, ModelCapabilities, DiagnosticCheck } from '../../api/modelSettings'
 import { createDialogBackdrop } from '../../utils/dialog'
 
-const emit = defineEmits<{ modelChanged: [model: string]; saved: [] }>() // 保存成功后通知聊天页面反馈并恢复输入
+const emit = defineEmits<{ modelChanged: [model: string]; saved: []; workspaceChanged: [] }>() // 保存成功后通知聊天页面反馈并恢复输入
 const dialog = ref<HTMLDialogElement | null>(null)
 const settingsOpen = ref(false)
-const activeTab = ref<'model' | 'tools'>('model')
+const activeTab = ref<'model' | 'tools' | 'workspace'>('model')
 const busy = ref(false)
 const action = ref('') // 当前操作说明
 const error = ref('')
@@ -105,6 +107,12 @@ function changeAddress() { // 自定义地址只能使用个人Key或无需Key�
   clearCatalog()
 }
 function payload(): ModelServiceDraft { return { ...draft, capabilities: { ...profile }, base_url: draft.base_url.trim(), model: draft.model.trim(), api_key: draft.key_source === 'personal' ? apiKey.value.trim() || null : null } }
+async function saveNamedConnection() {
+  const name = window.prompt('给这份模型连接起个名字：')
+  if (!name?.trim()) return
+  await run('正在保存命名连接…', async () => { await saveConnection(name.trim(), payload()); apiKey.value = ''; activeTab.value = 'workspace' })
+}
+async function connectionChanged() { await loadSettings(); emit('workspaceChanged') }
 async function save() {
   await run('正在保存…', async (signal) => {
     const response = await saveModelSettings(payload(), signal)
@@ -149,7 +157,7 @@ async function diagnose() {
   })
 }
 async function reset() {
-  if (!window.confirm('确定删除当前账号保存的模型配置和个人Key，并恢复服务器默认配置吗？')) return
+  if (!window.confirm('确定恢复服务器默认配置吗？已保存的命名连接和其中的加密 Key 仍保留，可在“连接与助手”中删除。')) return
   await run('正在恢复默认配置…', async (signal) => {
     await resetModelSettings(signal)
     const response = await getModelSettings(signal)
@@ -166,7 +174,7 @@ defineExpose({ open })
 <template>
   <dialog ref="dialog" class="settings-dialog" aria-label="设置" @cancel.prevent="close" @close="close" @pointerdown="backdrop.pointerdown" @click="backdrop.click">
     <header><div><small>个人设置</small><h2>设置</h2></div><button type="button" class="close" aria-label="关闭设置" @click="close">×</button></header>
-    <nav class="settings-tabs" aria-label="设置分类"><button type="button" :aria-pressed="activeTab === 'model'" @click="activeTab = 'model'">模型服务</button><button type="button" :aria-pressed="activeTab === 'tools'" @click="activeTab = 'tools'">记忆与工具</button></nav>
+    <nav class="settings-tabs" aria-label="设置分类"><button type="button" :aria-pressed="activeTab === 'model'" @click="activeTab = 'model'">模型服务</button><button type="button" :aria-pressed="activeTab === 'tools'" @click="activeTab = 'tools'">记忆与工具</button><button type="button" :aria-pressed="activeTab === 'workspace'" @click="activeTab = 'workspace'">连接与助手</button></nav>
     <section v-show="activeTab === 'model'">
     <p class="hint">为当前账号选择模型服务。支持官方预设及兼容 OpenAI 接口的自定义服务。</p>
     <p v-if="inherited" class="hint">当前使用服务器默认配置，保存后将使用你的个人配置。</p>
@@ -206,13 +214,14 @@ defineExpose({ open })
           <p v-if="profile.reasoning_content === 'omit'" class="test-warning">需要回传思考的模型会因此报错，请用“工具结果回传”诊断确认。</p>
         </details>
         <label>请求超时（秒）<input v-model.number="draft.timeout" type="number" min="5" max="600" step="1" required /></label>
-        <div class="actions"><button type="button" @click="fetchModels">获取模型列表</button><button type="button" @click="test">测试连接</button><button type="button" @click="diagnose">分项诊断</button><button type="button" @click="close">取消</button><button type="submit" class="primary">保存并返回聊天</button></div>
+        <div class="actions"><button type="button" @click="fetchModels">获取模型列表</button><button type="button" @click="test">测试连接</button><button type="button" @click="diagnose">分项诊断</button><button type="button" @click="close">取消</button><button type="button" @click="saveNamedConnection">另存为命名连接</button><button type="submit" class="primary">保存并返回聊天</button></div>
         <p class="hint">测试连接仅验证普通聊天；分项诊断最多发送4次简短请求，包含只读模拟工具回传，可能产生少量费用。保存配置不调用模型。</p>
         <button type="button" class="reset" :disabled="inherited" @click="reset">恢复服务器默认</button>
       </fieldset>
     </form>
     <button v-if="error && !busy" class="reload" type="button" @click="loadSettings">重新加载已保存配置</button>
     </section>
+    <WorkspacePanel v-if="settingsOpen && activeTab === 'workspace'" @changed="connectionChanged" @edit-connection="activeTab = 'model'" />
     <AccountToolsPanel v-if="settingsOpen && activeTab === 'tools'" expanded />
   </dialog>
 </template>

@@ -29,7 +29,7 @@ function fixture(overrides = {}, props = {}) { // 使用真实 Vue ref，替换�
   const emitted = []
   const actions = { validateTextFile: api.validateTextFile, deleteFile: async () => {}, listFiles: async () => [record], uploadFile: async () => record, getFile: async () => record, getFileContent: async () => ({ id: record.id, text_content: '提取的正文' }), rebuildFileIndex: async () => ({ ...record, index_status: 'pending', index_busy: true }), ...overrides }
   const tracked = Object.fromEntries(Object.entries(actions).map(([name, action]) => [name, (...args) => { calls.push([name, ...args]); return action(...args) }]))
-  const component = evaluate(script.content, { '../../api/files': tracked, vue: { ...nativeRequire('vue'), onMounted: (callback) => mount.push(callback), onUnmounted: (callback) => unmount.push(callback) } }).default
+  const component = evaluate(script.content, { '../../api/files': { ...tracked, UPLOAD_ACCEPT: api.UPLOAD_ACCEPT, UPLOAD_FORMATS_LABEL: api.UPLOAD_FORMATS_LABEL }, vue: { ...nativeRequire('vue'), onMounted: (callback) => mount.push(callback), onUnmounted: (callback) => unmount.push(callback) } }).default
   const state = component.setup(props, { expose() {}, emit: (...args) => emitted.push(args) })
   return { state, calls, mount, unmount, component, emitted }
 }
@@ -471,4 +471,15 @@ test('输入框直接选择文件后上传并附加，超出剩余数量不上�
   await state.uploadAttachments({ target: { files: [...files, selected()], value: 'selected' } })
   assert.equal(calls.filter(([name]) => name === 'uploadFile').length, 2)
   assert.match(emitted.at(-1)[1], /减少选择数量/)
+})
+
+
+test('文本格式共用清单，Markdown和代码大小写后缀可上传，二进制格式不放开', () => {
+  for (const name of ['README.MD', 'guide.markdown', 'table.csv', 'data.json', 'config.yaml', 'main.py', 'App.vue', 'types.ts']) {
+    assert.equal(api.validateTextFile({ name, size: 20 }), '')
+    assert.ok(api.UPLOAD_ACCEPT.includes(name.slice(name.lastIndexOf('.')).toLowerCase()))
+  }
+  for (const name of ['run.exe', 'archive.zip', 'old.doc', 'image.png', '.md']) {
+    assert.notEqual(api.validateTextFile({ name, size: 20 }), '')
+  }
 })

@@ -72,7 +72,7 @@ function visibleTools() { const q = toolQuery.value.toLowerCase(); return tools.
       <h3>已注册工具 · {{ tools.length }}</h3>
       <input v-model="toolQuery" aria-label="筛选工具清单" placeholder="搜索工具名称或用途" />
       <p>附带资料、联网开关和模型能力会影响实际清单；常用资料工具随目录直接提供，其余扩展工具按需发现。</p>
-      <details v-for="tool in visibleTools()" :key="tool.name" class="tool"><summary>{{ tool.label }} <small>{{ tool.on_demand ? '按条件提供' : '基础工具' }} · {{ tool.available ? '按权限可用' : '需开启功能或提供资料' }}</small></summary><code>{{ tool.name }}</code><p>{{ tool.description }}</p></details>
+      <details v-for="tool in visibleTools()" :key="tool.name" class="tool"><summary>{{ tool.label }} <small>{{ tool.alias_of ? '兼容入口' : tool.on_demand ? '按条件提供' : '基础工具' }} · {{ tool.available ? '按权限可用' : '需开启功能或提供资料' }}</small></summary><code>{{ tool.name }}</code><p v-if="tool.alias_of">推荐使用：{{ tool.alias_of }}</p><p>{{ tool.description }}</p></details>
     </fieldset>
   </details>
 </template>

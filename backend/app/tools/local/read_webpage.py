@@ -420,7 +420,20 @@ async def read_webpage(context, url, offset=0, max_chars=None):
     content = text[offset:end_limit]
     end = offset + len(content)
     more = end < len(text)
-    if content:
-        ranges.append((offset, end))
     chunk = {'source_type': 'web', 'url': document['url'], 'title': document['title'], 'retrieved_at': document['retrieved_at'], 'content': content, 'start_offset': offset, 'end_offset': end, 'truncated': more}
-    return {'url': document['url'], 'title': document['title'], 'retrieved_at': document['retrieved_at'], 'total_chars': len(text), 'offset': offset, 'has_more': more, 'next_offset': end if more else None, 'chunks': [chunk] if content else [], 'links': document.get('links', []) if offset == 0 else [], 'notice': '这是网页提取正文的片段，不是全文阅读证明。links是该页面真实链接，可按需继续读取；不是已核实正文。引用应使用后端分配的citation_id；需要后文时使用next_offset。'}
+    result = {'url': document['url'], 'title': document['title'], 'retrieved_at': document['retrieved_at'], 'total_chars': len(text), 'offset': offset, 'has_more': more, 'next_offset': end if more else None, 'chunks': [chunk] if content else [], 'links': list(document.get('links', [])) if offset == 0 else [], 'notice': '这是网页提取正文的片段，不是全文阅读证明。links是该页面真实链接，可按需继续读取；不是已核实正文。引用应使用后端分配的citation_id；需要后文时使用next_offset。'}
+    # 返回封装和JSON转义也占空间；先确定实际能交付的片段，再更新已读范围。
+    while len(json.dumps(result, ensure_ascii=False, allow_nan=False).encode('utf-8')) > MAX_BYTES:
+        if result['links']:
+            result['links'].pop()
+            result['links_truncated'] = True
+        elif len(chunk['content']) > 1:
+            chunk['content'] = chunk['content'][:len(chunk['content']) // 2]
+            end = offset + len(chunk['content'])
+            chunk.update(end_offset=end, truncated=True)
+            result.update(has_more=True, next_offset=end, result_size_limited=True)
+        else:
+            raise ValueError('网页元数据过大，未记录为已读取，请使用更具体的页面')
+    if chunk['content']:
+        ranges.append((offset, end))
+    return result

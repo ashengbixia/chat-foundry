@@ -10,6 +10,8 @@ from backend.app.models.chat import Chat
 from backend.app.models.file import File
 from backend.app.models.knowledge import KnowledgeBase, KnowledgeBaseFile, ChatKnowledgeBase
 from backend.app.repositories.knowledge import list_knowledge_bases
+from backend.app.repositories.knowledge_access import accessible_knowledge
+from backend.app.models.workspace import KnowledgeGrant
 from backend.app.repositories.file import list_files
 from backend.app.schemas.file import FileResponse
 from backend.app.chat.guards import acquire_generation, release_generation
@@ -38,6 +40,7 @@ class KnowledgeResponse(KnowledgeInput):
     file_count: int = 0
     created_at: int
     updated_at: int
+    can_edit: bool = True
 
 
 class FileSelection(BaseModel):
@@ -81,20 +84,24 @@ async def rename_base(knowledge_id: str, body: KnowledgeInput, session: AsyncSes
 
 
 @router.delete("/knowledge/{knowledge_id}", status_code=204)
-async def delete_base(knowledge_id: str, session: AsyncSession = Depends(get_db), user: User = Depends(get_current_user)):
+async def delete_base(knowledge_id: str, background_tasks: BackgroundTasks, session: AsyncSession = Depends(get_db), user: User = Depends(get_current_user)):
     item = await owned_base(session, knowledge_id, user.id, lock=True)
+    await session.execute(delete(KnowledgeGrant).where(KnowledgeGrant.knowledge_base_id == knowledge_id))
     await session.execute(delete(ChatKnowledgeBase).where(ChatKnowledgeBase.knowledge_base_id == knowledge_id))
     await session.execute(delete(KnowledgeBaseFile).where(KnowledgeBaseFile.knowledge_base_id == knowledge_id))
-    await session.delete(item)  # 原文件、切片和向量索引保持可复用
+    await session.delete(item)  # 原文件、切片和文件向量索引保持可复用
     await session.commit()
+    from backend.app.rag.knowledge_discovery import cleanup_knowledge_vectors
+    background_tasks.add_task(cleanup_knowledge_vectors, knowledge_id)
     return Response(status_code=204)
 
 
 @router.get("/knowledge/{knowledge_id}/files", response_model=list[FileResponse])
 async def base_files(knowledge_id: str, session: AsyncSession = Depends(get_db), user: User = Depends(get_current_user)):
-    await owned_base(session, knowledge_id, user.id)
+    if not await session.scalar(select(KnowledgeBase.id).where(KnowledgeBase.id == knowledge_id, accessible_knowledge(user.id))):
+        raise HTTPException(404, "知识库不存在")
     ids = set((await session.execute(select(KnowledgeBaseFile.file_id).where(KnowledgeBaseFile.knowledge_base_id == knowledge_id))).scalars())
-    return [file for file in await list_files(session, user.id) if file.id in ids]
+    return list((await session.execute(select(File).where(File.id.in_(ids)))).scalars())
 
 
 @router.post("/knowledge/{knowledge_id}/files", status_code=204)
@@ -158,7 +165,7 @@ async def set_chat_bases(chat_id: str, body: KnowledgeSelection, session: AsyncS
         if not result.rowcount:
             raise HTTPException(404, "会话不存在")
         ids = set(body.knowledge_base_ids)
-        valid = set((await session.execute(select(KnowledgeBase.id).where(KnowledgeBase.id.in_(ids), KnowledgeBase.user_id == user.id))).scalars())
+        valid = set((await session.execute(select(KnowledgeBase.id).where(KnowledgeBase.id.in_(ids), accessible_knowledge(user.id)))).scalars())
         if valid != ids:
             raise HTTPException(400, "部分知识库不存在或不属于当前账号")
         await session.execute(delete(ChatKnowledgeBase).where(ChatKnowledgeBase.chat_id == chat_id))

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
-import { deleteFile, getFile, getFileContent, listFiles, rebuildFileIndex, uploadFile, validateTextFile } from '../../api/files'
+import { deleteFile, getFile, getFileContent, listFiles, rebuildFileIndex, uploadFile, validateTextFile, UPLOAD_ACCEPT, UPLOAD_FORMATS_LABEL } from '../../api/files'
 import type { FileInfo } from '../../types/file'
 
 const props = defineProps<{ attachDisabled?: boolean; deleteDisabled?: boolean; attachmentSlots?: number; selectedIds?: string[] }>() // 输入框上传与管理面板共用同一套文件操作
@@ -304,11 +304,11 @@ async function togglePreview() { // 按需读取正文，再次展开同一文�
 
 <template>
   <section class="file-panel" aria-labelledby="file-panel-title" :aria-busy="busy">
-    <input ref="attachPicker" type="file" accept=".txt,.pdf,.docx,.xlsx" multiple hidden aria-label="直接上传聊天附件" @change="uploadAttachments" />
+    <input ref="attachPicker" type="file" :accept="UPLOAD_ACCEPT" multiple hidden aria-label="直接上传聊天附件" @change="uploadAttachments" />
     <h2 id="file-panel-title">把资料带进对话</h2>
-    <p class="hint">支持 TXT、PDF、DOCX、XLSX，最大 5MB。自动提取文字并建立索引；扫描 PDF 请先 OCR，Excel 不执行公式或宏。</p>
+    <p class="hint">支持 {{ UPLOAD_FORMATS_LABEL }}，最大 5MB。自动提取文字并建立索引；扫描 PDF 请先 OCR，代码与公式不执行。</p>
     <form class="upload-form" @submit.prevent="submitFile">
-      <label class="file-picker" :class="{ disabled: busy }"><span class="upload-symbol" aria-hidden="true">＋</span><strong>{{ selectedFile ? '重新选择文件' : '选择文档' }}</strong><small>每次问题最多添加 3 份资料</small><input type="file" accept=".txt,.pdf,.docx,.xlsx" :disabled="busy" aria-label="选择文档文件" @change="selectFile" /></label>
+      <label class="file-picker" :class="{ disabled: busy }"><span class="upload-symbol" aria-hidden="true">＋</span><strong>{{ selectedFile ? '重新选择文件' : '选择文档' }}</strong><small>每次问题最多添加 3 份资料</small><input type="file" :accept="UPLOAD_ACCEPT" :disabled="busy" aria-label="选择文档文件" @change="selectFile" /></label>
       <button type="submit" :disabled="!selectedFile || busy">{{ uploading ? '正在上传并处理…' : '上传' }}</button>
     </form>
     <p v-if="selectedFile">待上传：{{ selectedFile.name }}（{{ formatSize(selectedFile.size) }}）</p>
@@ -332,6 +332,7 @@ async function togglePreview() { // 按需读取正文，再次展开同一文�
     <p v-if="pollingError" class="hint" role="status">{{ pollingError }}</p>
     <div v-if="uploadedFile" class="file-result">
       <p><strong>{{ uploadedFile.filename }}</strong> · {{ formatSize(uploadedFile.size) }} · <span role="status">{{ statusText }}</span></p>
+      <DocumentVersions :file-id="uploadedFile.id" :disabled="busy || props.deleteDisabled" @changed="async (id: string) => { await loadFiles(); await selectSavedFile(id) }" @select="selectSavedFile" />
       <details class="file-id"><summary>文件信息</summary><p>文件ID：{{ uploadedFile.id }}</p></details>
       <p v-if="uploadedFile.error" role="alert">{{ uploadedFile.error }}</p>
       <p v-if="uploadedFile.status === 'completed'" class="index-status" role="status">向量索引：{{ indexStatusText(uploadedFile) }}</p>

@@ -117,6 +117,9 @@ async def stream_chat_history_events(
                     break
                 resource_context[key].pop()
         messages = build_model_messages(history, knowledge_context=knowledge_context, resource_context=resource_context, normalize_references=True)
+        if connection and getattr(connection, 'system_prompt', ''):
+            messages[0]['content'] += '\n当前助手配置（仍须遵守账号权限和资料范围）：\n' + connection.system_prompt
+            metadata['assistant_name'] = getattr(connection, 'assistant_name', None)
         if sessions and not run_scope:
             from backend.app.models.subagent import SubagentTask
             from sqlalchemy import select
@@ -173,6 +176,8 @@ async def stream_chat_history_events(
         if run_scope:
             tool_context.allowed_tools = run_scope.tools
             tool_context.approved_urls = run_scope.urls
+        if not run_scope and connection and getattr(connection, 'tool_names', None) is not None:
+            tool_context.allowed_tools = connection.tool_names | ({'search_tools'} if connection.tool_names else set())
         available_tools = get_available_tools(allowed_file_ids, context=tool_context)
         metadata['available_tools'] = [item['function']['name'] for item in available_tools]
 
@@ -190,7 +195,7 @@ async def stream_chat_history_events(
         if continuation_task_ids:
             from backend.app.chat.subagents import TASK_TOOLS
             from backend.app.tools.runtime import registry
-            tool_context.allowed_tools = frozenset(registry._tools) - (TASK_TOOLS - {'get_subagent_task'})
+            tool_context.allowed_tools = (tool_context.allowed_tools if tool_context.allowed_tools is not None else frozenset(registry._tools)) - (TASK_TOOLS - {'get_subagent_task'})
         metadata['available_tools'] = [tool['function']['name'] for tool in get_available_tools(allowed_file_ids, context=tool_context)]
 
         from backend.app.chat.compaction import select_boundary, compact_history

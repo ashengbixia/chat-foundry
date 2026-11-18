@@ -4,7 +4,7 @@ import httpx
 import anyio
 from typing import Literal
 from urllib.parse import urlsplit
-from fastapi import APIRouter, Depends, HTTPException, Response
+from fastapi import APIRouter, Depends, HTTPException, Response, Request
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import update
@@ -82,7 +82,7 @@ def public_config(row: UserModelSetting | None) -> dict:  # 永不返回密钥�
     configured = bool(row.encrypted_api_key) if row.key_source == "personal" else bool(settings.llm_api_key.get_secret_value()) if row.key_source == "environment" else False
     profiles = row.model_profiles or {}
     return {"provider": row.provider, "base_url": row.base_url, "model": row.model, "timeout": row.timeout, "key_source": row.key_source, "key_configured": configured,
-            'capabilities': ModelCapabilities.model_validate(profiles.get(row.model, {})).model_dump(), 'model_profiles': profiles}
+            'capabilities': ModelCapabilities.model_validate(profiles.get(row.model, {})).model_dump(), 'model_profiles': profiles, 'connection_id': getattr(row, 'active_connection_id', None)}
 
 def resolve_connection(data: ModelServiceInput, old: UserModelSetting | None, user_id: str | None = None) -> ModelConnection:
     try:
@@ -109,7 +109,15 @@ def resolve_connection(data: ModelServiceInput, old: UserModelSetting | None, us
     except ValueError as error:
         raise HTTPException(400, str(error)) from None
 
-async def get_user_model_connection(user: User = Depends(get_current_user), session: AsyncSession = Depends(get_db)) -> ModelConnection:  # 每次回答开始时读取本人配置，后续工具循环固定使用该快照
+async def get_user_model_connection(user: User = Depends(get_current_user), session: AsyncSession = Depends(get_db), request: Request = None) -> ModelConnection:  # 每次回答开始时读取本人配置，后续工具循环固定使用该快照
+    if request is not None and request.path_params.get('chat_id'):
+        from backend.app.models.chat import Chat
+        from backend.app.models.workspace import AssistantProfile
+        chat = await session.get(Chat, request.path_params['chat_id'])
+        profile = await session.get(AssistantProfile, chat.assistant_id) if chat and chat.user_id == user.id and chat.assistant_id else None
+        if profile and profile.user_id == user.id and profile.connection_id:
+            from backend.app.api.workspace import chat_connection
+            return await chat_connection(session, chat, user, None)
     row = await session.get(UserModelSetting, user.id)
     if row is None:
         if not settings.llm_base_url or not settings.llm_model or not settings.llm_api_key.get_secret_value():
@@ -147,6 +155,8 @@ async def save_model_settings(data: ModelServiceInput, user: User = Depends(get_
         session.add(row)
     row.provider, row.base_url, row.model, row.timeout, row.key_source, row.encrypted_api_key = data.provider, data.base_url, data.model, data.timeout, data.key_source, encrypted
     row.model_profiles = profiles
+    from backend.app.api.workspace import sync_connection
+    await sync_connection(session, row)
     await session.commit()
     return {"config": public_config(row), "inherited": False}
 
@@ -175,6 +185,10 @@ async def select_model(data: ModelSelection, user: User = Depends(get_current_us
         result = await session.execute(update(UserModelSetting).where(UserModelSetting.user_id == user.id, UserModelSetting.base_url == data.base_url.rstrip("/")).values(model=data.model))
         if result.rowcount == 0:
             raise HTTPException(409, "模型服务已变化，请重新打开模型列表")
+    await session.flush()
+    await session.refresh(row)
+    from backend.app.api.workspace import sync_connection
+    await sync_connection(session, row)
     await session.commit()
     await session.refresh(row)
     return {"config": public_config(row), "inherited": False}

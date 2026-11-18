@@ -17,6 +17,15 @@ from backend.app.repositories.file import list_files
 from backend.tests.index_fixture import mock_file_vectors
 
 class FileUploadTests(unittest.IsolatedAsyncioTestCase):  # 测试仅使用临时目录和内存数据库
+    async def test_markdown_upload_preserves_original_and_enters_existing_index_pipeline(self):
+        text = '# 使用说明\n\n```python\nprint("示例")\n```\n'
+        response = await self.upload(text.encode('utf-8-sig'), 'README.MD', 'text/markdown')
+        self.assertEqual(response.status_code, 201, response.text)
+        record = next(row for row in await self.records() if row.id == response.json()['id'])
+        self.assertEqual(record.text_content, text)
+        self.assertEqual(record.index_status, 'ready')
+        self.assertEqual((self.upload_dir / record.storage_path).read_bytes(), text.encode('utf-8-sig'))
+
     async def test_document_upload_keeps_original_and_exposes_indexed_extracted_text(self):
         from backend.tests.test_document_parsing import sample_documents
         for extension, content, expected in sample_documents():
@@ -126,7 +135,7 @@ class FileUploadTests(unittest.IsolatedAsyncioTestCase):  # 测试仅使用临�
         self.assertEqual((await self.upload(b"\xff\xfe", "invalid.txt", "text/plain")).status_code, 400)
         records = await self.records()
         failed = next(record for record in records if record.status == "failed")
-        self.assertIn("UTF-8", failed.error)
+        self.assertRegex(failed.error, 'UTF-8|二进制|空白')  # 仅BOM的UTF-16也是空文档，不能由MIME声明放行。
         self.assertFalse((self.upload_dir / failed.storage_path).exists())
         self.assertEqual((await self.client.get(f"/api/files/{failed.id}/content")).status_code, 409)
 

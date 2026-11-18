@@ -32,6 +32,10 @@ class Chat(Base):
     )
     web_search_enabled: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false())
     title_status: Mapped[str] = mapped_column(String(16), default='manual', server_default='manual')
+    assistant_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    branch_root_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
+    branch_parent_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    branch_from_sequence: Mapped[int | None] = mapped_column(nullable=True)
     kind: Mapped[str] = mapped_column(String(16), default='conversation', server_default='conversation')
 
     # 创建时间：Unix 秒级时间戳。

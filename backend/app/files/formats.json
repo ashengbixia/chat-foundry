@@ -1,0 +1,104 @@
+{
+  "max_upload_bytes": 5242880,
+  "max_text_chars": 1000000,
+  "summary": "TXT、Markdown、CSV/JSON/YAML、常见代码文本、PDF、DOCX、XLSX",
+  "unsupported_message": "支持TXT、Markdown、CSV/JSON/YAML、常见代码文本、PDF、DOCX、XLSX；旧版.doc/.xls请先转换，扫描件需OCR",
+  "groups": [
+    {
+      "parser": "text",
+      "label": "文本与Markdown",
+      "extensions": [
+        ".txt",
+        ".md",
+        ".markdown",
+        ".mdx",
+        ".rst",
+        ".log"
+      ]
+    },
+    {
+      "parser": "text",
+      "label": "结构化文本",
+      "extensions": [
+        ".csv",
+        ".tsv",
+        ".json",
+        ".jsonl",
+        ".ndjson",
+        ".yaml",
+        ".yml",
+        ".toml",
+        ".ini",
+        ".cfg",
+        ".conf",
+        ".xml",
+        ".ipynb"
+      ]
+    },
+    {
+      "parser": "text",
+      "label": "代码文本",
+      "extensions": [
+        ".py",
+        ".pyi",
+        ".js",
+        ".jsx",
+        ".mjs",
+        ".cjs",
+        ".ts",
+        ".tsx",
+        ".vue",
+        ".svelte",
+        ".html",
+        ".htm",
+        ".css",
+        ".scss",
+        ".less",
+        ".sql",
+        ".java",
+        ".c",
+        ".h",
+        ".cc",
+        ".cpp",
+        ".hpp",
+        ".cs",
+        ".go",
+        ".rs",
+        ".rb",
+        ".php",
+        ".swift",
+        ".kt",
+        ".kts",
+        ".sh",
+        ".bash",
+        ".ps1",
+        ".bat",
+        ".cmd",
+        ".r",
+        ".lua",
+        ".tex"
+      ]
+    },
+    {
+      "parser": "pdf",
+      "label": "PDF",
+      "extensions": [
+        ".pdf"
+      ]
+    },
+    {
+      "parser": "docx",
+      "label": "Word",
+      "extensions": [
+        ".docx"
+      ]
+    },
+    {
+      "parser": "xlsx",
+      "label": "Excel",
+      "extensions": [
+        ".xlsx"
+      ]
+    }
+  ]
+}

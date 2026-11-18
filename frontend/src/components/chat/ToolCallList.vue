@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-import { formatToolValue, getRetrievalPreview, getToolCalls, getToolStatus, getSummaryCoverage, getSearchPreview, getNavigationPreview } from '../../utils/toolOutput'
+import { formatToolValue, getRetrievalPreview, getToolCalls, getToolStatus, getSummaryCoverage, getSearchPreview, getNavigationPreview, getRetrievalMethod } from '../../utils/toolOutput'
 import type { DisplayMessage } from '../../types/chat'
 import { formatDuration } from '../../utils/messageProcess'
 import AppIcon from '../AppIcon.vue'
@@ -9,7 +9,7 @@ import SubagentTasks from './SubagentTasks.vue'
 const props = defineProps<{ output: unknown[]; status?: DisplayMessage['status']; chatId?: string }>()
 const emit = defineEmits<{ updated: [chatId: string] }>()
 const labels: Record<string, string> = { get_current_time: '查询当前时间', read_uploaded_file: '读取附件正文', search_uploaded_files: '检索附件内容', list_available_files: '查看会话资料清单', read_history_sources: '查阅历史原文快照', summarize_uploaded_files: '分段读取并归纳资料' }
-const toolCalls = computed(() => getToolCalls(props.output).map((call) => ({ ...call, retrieval: call.name === 'search_uploaded_files' ? getRetrievalPreview(call.result) : null, search: call.name === 'search_web' ? getSearchPreview(call.result) : null, navigation: call.name === 'read_webpage' ? getNavigationPreview(call.result) : null }))) // 消息变化时配对结果并解析来源卡片
+const toolCalls = computed(() => getToolCalls(props.output).map((call) => ({ ...call, retrievalMethod: getRetrievalMethod(call.result), retrieval: ['search_uploaded_files', 'query_knowledge_files'].includes(call.name) ? getRetrievalPreview(call.result) : null, search: call.name === 'search_web' ? getSearchPreview(call.result) : null, navigation: call.name === 'read_webpage' ? getNavigationPreview(call.result) : null }))) // 消息变化时配对结果并解析来源卡片
 function brief(argumentsText: string): string {
   try { const value = JSON.parse(argumentsText); return value.task ?? value.query ?? (value.url ? new URL(value.url).hostname : '') ?? '' } catch { return '' }
 }
@@ -26,6 +26,7 @@ function taskCallId(result: string | null): string {
         <span>{{ call.displayName ?? labels[call.name] ?? call.name }}</span>
         <span class="tool-brief" :title="brief(call.arguments)">{{ brief(call.arguments) }}</span>
         <small>{{ getToolStatus(call, props.status ?? 'completed') }}</small>
+        <small v-if="call.retrievalMethod" :class="{ 'source-warning': call.retrievalMethod.includes('不可用') }">{{ call.retrievalMethod }}</small>
         <small v-if="call.retrieval">{{ call.retrieval.status === 'unavailable' ? '索引不可用' : `${call.retrieval.chunks.length} 个片段` }}</small>
         <small v-if="call.name === 'summarize_uploaded_files'">{{ getSummaryCoverage(call.result) }}</small>
         <small v-if="call.search">{{ call.search.results.length }} 条候选</small>
@@ -47,6 +48,7 @@ function taskCallId(result: string | null): string {
         <p v-if="!call.retrieval.chunks.length">{{ call.retrieval.status === 'unavailable' ? '当前附件没有可用索引，可以建立索引或读取原文。' : '本次没有找到可用的候选片段。' }}</p>
         <details v-for="(chunk, chunkIndex) in call.retrieval.chunks" :key="`${chunk.chunkId}-${chunkIndex}`" class="source-card">
           <summary><span>{{ chunk.filename }}</span><small>片段 {{ chunk.chunkIndex + 1 }}</small></summary>
+          <small v-if="chunk.matchTypeLabel || chunk.distance !== null" class="source-position">{{ chunk.matchTypeLabel }}<template v-if="chunk.distance !== null"> · 向量距离 {{ chunk.distance.toFixed(3) }}（越小越接近）</template></small>
           <p class="source-content">{{ chunk.content }}</p>
           <small class="source-position">原文字符 {{ chunk.startOffset }}～{{ chunk.endOffset }}{{ chunk.truncated ? ' · 本片段未展示完整' : '' }}</small>
         </details>

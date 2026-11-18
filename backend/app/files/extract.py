@@ -2,8 +2,7 @@
 from io import BytesIO
 from zipfile import BadZipFile, ZipFile
 
-SUPPORTED_EXTENSIONS = {'.txt', '.pdf', '.docx', '.xlsx'}
-MAX_TEXT_CHARS = 1_000_000
+from backend.app.files.formats import SUPPORTED_EXTENSIONS, TEXT_EXTENSIONS, MAX_TEXT_CHARS, UNSUPPORTED_MESSAGE
 
 
 class ExtractionError(ValueError):
@@ -35,13 +34,17 @@ def extract_document(content: bytes, extension: str) -> str:
                 raise ExtractionError('提取正文超过100万字符，请拆分文件后上传')
             parts.append(value)
 
-    if extension == '.txt':
+    extension = extension.lower()
+    if extension in TEXT_EXTENSIONS:
         try:
-            text = content.decode('utf-8-sig')
+            encoding = 'utf-32' if content.startswith((b'\xff\xfe\x00\x00', b'\x00\x00\xfe\xff')) else 'utf-16' if content.startswith((b'\xff\xfe', b'\xfe\xff')) else 'utf-8-sig'
+            text = content.decode(encoding)
         except UnicodeDecodeError:
-            raise ExtractionError('文件不是有效的 UTF-8 文本，请转换编码后上传') from None
+            raise ExtractionError('文件不是有效的UTF-8文本或带BOM的UTF-16/UTF-32文本，请转换编码后上传') from None
         if '\x00' in text or not text.strip():
             raise ExtractionError('文件必须包含有效文字，不能是二进制或空白内容')
+        if len(text) > MAX_TEXT_CHARS:
+            raise ExtractionError('提取正文超过100万字符，请拆分文件后上传')
         return text
     if extension in ('.docx', '.xlsx'):
         check_office_archive(content)
@@ -89,7 +92,7 @@ def extract_document(content: bytes, extension: str) -> str:
         finally:
             workbook.close()
     else:
-        raise ExtractionError('仅支持TXT、PDF、Word(.docx)、Excel(.xlsx)')
+        raise ExtractionError(UNSUPPORTED_MESSAGE)
     if not parts:
         raise ExtractionError('未提取到文字；扫描PDF或图片需要先进行OCR转换，空白文档无法建立索引')
     return '\n'.join(parts)

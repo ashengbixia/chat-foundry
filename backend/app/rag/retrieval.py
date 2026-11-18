@@ -54,7 +54,7 @@ async def retrieve_file_chunks(session: AsyncSession, query: str, file_ids: set[
         if item is not None:
             unavailable.append(item)
     ready_ids = file_ids - {item["file_id"] for item in unavailable}
-    result = {"status": "unavailable", "query": query, "chunks": [], "unavailable_files": unavailable, "notice": REFERENCE_NOTICE, "truncated": False}
+    result = {"status": "unavailable", "query": query, "chunks": [], "unavailable_files": unavailable, "notice": REFERENCE_NOTICE, "truncated": False, "retrieval_method": "unavailable", "vector_status": "not_run", "candidate_counts": {"keyword": 0, "vector": 0}}
     if not ready_ids:
         return result  # 不下载模型，也不查询不完整的索引
     terms = list(dict.fromkeys(tokens(query)))[:32]
@@ -67,6 +67,8 @@ async def retrieve_file_chunks(session: AsyncSession, query: str, file_ids: set[
     keyword_scores = bm25_scores(query, lexical)
     keyword_rank = sorted(keyword_scores, key=lambda item: (-keyword_scores[item], item))[:50]
     semantic = {}
+    result["candidate_counts"]["keyword"] = len(keyword_rank)
+    result["retrieval_method"] = "hybrid"
     try:
         vector = await embed_query(query)
         raw = await anyio.to_thread.run_sync(search_chunk_vectors, vector, sorted(ready_ids), min(limit * 4, 50))
@@ -79,7 +81,11 @@ async def retrieve_file_chunks(session: AsyncSession, query: str, file_ids: set[
             if isinstance(chunk_id, str) and chunk_id and type(distance) in (int, float) and math.isfinite(distance):
                 if 0 <= distance <= settings.retrieval_max_distance:
                     semantic.setdefault(chunk_id, float(distance))
+        result["vector_status"] = "completed"
+        result["candidate_counts"]["vector"] = len(semantic)
     except Exception:
+        result["vector_status"] = "failed"
+        result["retrieval_method"] = "keyword_fallback"
         logger.exception("附件向量检索失败")
         if not keyword_rank:
             raise ValueError("附件检索失败，请检查向量模型与索引，或改用原文读取工具") from None

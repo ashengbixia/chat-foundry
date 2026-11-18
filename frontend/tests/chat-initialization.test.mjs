@@ -38,7 +38,7 @@ test('空白页开关搜索不改草稿或创建会话，首次创建才提交�
   assert.equal(store.currentChat, null)
   assert.deepEqual(calls, [])
   await store.createNewChat()
-  assert.deepEqual(calls, [['createChat', '新会话', [], true]])
+  assert.deepEqual(calls, [['createChat', '新会话', [], true, undefined]])
   assert.equal(store.webSearchEnabled, true)
 })
 
@@ -173,7 +173,7 @@ test('页面协调：仅 missing 清记录，仅 restored 等待页面更新后�
     let mounted // 页面登记的启动回调
     let pageUpdated = false // 模拟页面更新是否完成
     const result = { status, chat: status === 'restored' ? chat : null } // 模拟 store 初始化结果
-    const wrapper = new Function('onMounted', 'initializeChat', 'getLastChatId', 'clearLastChatId', 'saveLastChatId', 'nextTick', 'scrollMessagesToBottom', `const accountId = 'test-user'; let autoFollowMessages = false; ${code}; return { get following() { return autoFollowMessages } }`)(
+    const wrapper = new Function('onMounted', 'initializeChat', 'getLastChatId', 'clearLastChatId', 'saveLastChatId', 'nextTick', 'scrollMessagesToBottom', `const refreshAssistants = async () => {}; const accountId = 'test-user'; let autoFollowMessages = false; ${code}; return { get following() { return autoFollowMessages } }`)(
       (callback) => { mounted = callback }, async () => result, () => chat.id, () => events.push('clear'), () => events.push('save'), async () => { pageUpdated = true; events.push('tick') }, () => { assert.equal(pageUpdated, true); events.push('scroll') },
     )
     await mounted()
@@ -188,7 +188,7 @@ test('空白页第一次发送自动创建会话，保留正文与附件', async
   const method = tree.statements.find((node) => ts.isFunctionDeclaration(node) && node.name?.text === 'sendChatMessage')
   const code = ts.transpileModule(method.getText(tree), { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText
   const input = { value: '已经写好的问题' }, current = { value: null }, attachments = { value: [{ file_id: 'f1' }] }, sent = []
-  const send = new Function('inputText', 'currentChat', 'selectedAttachments', 'createNewChat', 'sendMessage', 'saveLastChatId', `const pendingKnowledge = {value:[{id:'kb1',name:'资料库'}]}, interactionBusy = {value:false}, accountId = 'u1', pageActive = true; let autoFollowMessages = false; ${code}; return sendChatMessage`)(input, current, attachments, async (ids) => { assert.deepEqual(ids, ['kb1']); current.value = { id: 'new' }; input.value = ''; attachments.value = []; return current.value }, async () => sent.push([current.value.id, input.value, attachments.value]), () => {})
+  const send = new Function('inputText', 'currentChat', 'selectedAttachments', 'createNewChat', 'sendMessage', 'saveLastChatId', `const pendingAssistant = {value:'assistant-1'}; const pendingKnowledge = {value:[{id:'kb1',name:'资料库'}]}, interactionBusy = {value:false}, accountId = 'u1', pageActive = true; let autoFollowMessages = false; ${code}; return sendChatMessage`)(input, current, attachments, async (ids, assistant) => { assert.equal(assistant, 'assistant-1'); assert.deepEqual(ids, ['kb1']); current.value = { id: 'new' }; input.value = ''; attachments.value = []; return current.value }, async () => sent.push([current.value.id, input.value, attachments.value]), () => {})
   await send()
   assert.deepEqual(sent, [['new', '已经写好的问题', [{ file_id: 'f1' }]]])
 })
@@ -223,7 +223,7 @@ test('点击新建清除上次会话记录并返回空白页，重复点击仍�
   const method = tree.statements.find(node => ts.isFunctionDeclaration(node) && node.name?.text === 'startNewChat')
   const code = ts.transpileModule(method.getText(tree), { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText
   const events = [], pending = { value: [{ id: 'old-kb' }] }, revision = { value: 0 }, latest = { value: true }
-  const start = new Function('startBlankChat', 'clearLastChatId', 'focusComposer', 'pendingKnowledge', 'newChatRevision', 'showLatest', `const sidebarBusy = { value: false }, accountId = 'u1'; let autoFollowMessages = false; ${code}; return startNewChat`)(() => { events.push('blank'); return true }, id => events.push(['clear', id]), () => events.push('focus'), pending, revision, latest)
+  const start = new Function('startBlankChat', 'clearLastChatId', 'focusComposer', 'pendingKnowledge', 'newChatRevision', 'showLatest', `const pendingAssistant = {value:'assistant-1'}; const sidebarBusy = { value: false }, accountId = 'u1'; let autoFollowMessages = false; ${code}; return startNewChat`)(() => { events.push('blank'); return true }, id => events.push(['clear', id]), () => events.push('focus'), pending, revision, latest)
   await start()
   await start()
   assert.deepEqual(events, ['blank', ['clear', 'u1'], 'focus', 'blank', ['clear', 'u1'], 'focus'])

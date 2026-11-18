@@ -31,10 +31,23 @@ router = APIRouter(prefix="/api/chats",tags=["会话管理"], dependencies=[Depe
 async def create_chat_endpoint(request: ChatCreate,session: AsyncSession = Depends(get_db), user: User = Depends(get_current_user)):
     """创建会话并返回会话信息。"""
 
+    profile = None
+    if request.assistant_id:
+        from backend.app.models.workspace import AssistantProfile
+        from sqlalchemy import select
+        profile = await session.scalar(select(AssistantProfile).where(AssistantProfile.id == request.assistant_id, AssistantProfile.user_id == user.id))
+        if profile is None: raise HTTPException(404, '助手不存在')
+        if 'knowledge_base_ids' not in request.model_fields_set:
+            from backend.app.models.knowledge import KnowledgeBase
+            from backend.app.repositories.knowledge_access import accessible_knowledge
+            request.knowledge_base_ids = list((await session.execute(select(KnowledgeBase.id).where(KnowledgeBase.id.in_(profile.knowledge_ids), accessible_knowledge(user.id)))).scalars())
     try:
         chat = await create_chat(session=session,title=request.title, user_id=user.id, knowledge_base_ids=request.knowledge_base_ids, web_search_enabled=request.web_search_enabled)
     except MessageFileError as error:
         raise HTTPException(400, str(error))
+    if profile is not None:
+        chat.assistant_id = profile.id
+        await session.commit()
     return chat
 @router.get("", response_model=list[ChatResponse])
 async def list_chats_endpoint(
@@ -124,6 +137,8 @@ async def respond_endpoint(chat_id: str, session: AsyncSession = Depends(get_db)
         chat = await get_chat(session, chat_id)  # 查询目标会话
         if chat is None:
             raise HTTPException(status_code=404, detail="会话不存在")
+        from backend.app.api.workspace import chat_connection
+        connection = await chat_connection(session, chat, user, connection)
         latest = await get_latest_message(session, chat_id)  # 查询最新消息，不过滤状态
         if latest is None:
             raise HTTPException(status_code=409, detail="请先发送一条用户消息")

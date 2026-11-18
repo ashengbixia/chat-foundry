@@ -12,6 +12,6 @@ class Arguments(ToolArguments):
     skip: int = Field(default=0, ge=0)
 
 
-@register_tool(name='query_knowledge_bases', label='语义发现知识库', description='知识库：按语义匹配本页知识库名称和描述，帮助选择库；结果不是正文依据。', arguments=Arguments, scope='always', uses_context=True, timeout=120, offer_when=discovered('query_knowledge_bases'), available=account_available('knowledge_enabled'))
+@register_tool(name='query_knowledge_bases', label='语义发现知识库', description='知识库：对本人可访问知识库名称和描述全局语义排序，帮助选择库；结果不是正文依据。', arguments=Arguments, scope='always', uses_context=True, timeout=120, offer_when=discovered('query_knowledge_bases'), available=account_available('knowledge_enabled'))
 async def query_knowledge_bases(context, **values):
     return await impl.query_knowledge_bases(context, **values)

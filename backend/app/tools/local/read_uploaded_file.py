@@ -10,6 +10,6 @@ class Arguments(ToolArguments):
     max_chars: int = Field(default=6000, ge=1, le=12000)
 
 
-@register_tool(name='read_uploaded_file', label='读取附件正文', description='读取当前会话允许文件的正文，按字符分页。has_more为true时通过next_offset继续读取，不能把片段当作全文。', arguments=Arguments, scope='files', uses_context=True)
+@register_tool(name='read_uploaded_file', label='读取附件正文', description='兼容读取入口，读取当前会话允许文件的正文，按字符分页；新发现的文件浏览优先用view_file，支持字符与行范围。has_more为true时用next_offset继续。', arguments=Arguments, scope='files', uses_context=True, alias_of='view_file')
 async def read_uploaded_file(context, **values):
     return await _read_uploaded_file(session=context.session, allowed_file_ids=context.allowed_file_ids, **values)

@@ -34,3 +34,14 @@ class SiteInfoTests(unittest.IsolatedAsyncioTestCase):
         for code in ['javascript:alert(1)', '123', '1' * 21]:
             with self.assertRaises(ValidationError):
                 Settings(_env_file=None, gongan_record_code=code)
+
+    async def test_fourteen_digit_codes_and_existing_twenty_digit_codes_keep_exact_query_value(self):
+        for code in ['0' * 14, '0' * 20]:
+            with self.subTest(length=len(code)):
+                config = Settings(_env_file=None, gongan_record='示例公安备案号', gongan_record_code=f' {code} ')
+                with patch.object(site_info, 'settings', config):
+                    data = site_info.get_site_info()
+                self.assertEqual(data.gongan_record_url, f'https://beian.mps.gov.cn/#/query/webSearch?code={code}')
+        for code in ['0' * 13, '0' * 15, '0' * 19, '0' * 21, '０' * 14, '0' * 13 + '&next=evil']:
+            with self.subTest(code=code), self.assertRaises(ValidationError):
+                Settings(_env_file=None, gongan_record_code=code)

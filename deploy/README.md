@@ -105,7 +105,7 @@ docker compose --env-file deploy/.env -f deploy/compose.yaml up -d
 
 ## 站点展示配置
 
-在 `deploy/.env` 中按需填写 `SITE_NAME`（默认ChatFoundry）、`ICP_RECORD`、`GONGAN_RECORD` 和 `GONGAN_RECORD_CODE`（公安查询编号，20位数字，可留空）。备案项留空则隐藏；配置只用于公开页面展示。更新前后端后修改配置，无需重新为不同站点构建前端，也无需数据库迁移。变量修改后强制重建后端容器以重新载入环境：
+在 `deploy/.env` 中按需填写 `SITE_NAME`（默认ChatFoundry）、`ICP_RECORD`、`GONGAN_RECORD` 和 `GONGAN_RECORD_CODE`（取平台提供HTML查询链接中的code参数，支持14位或20位纯数字，可留空）。备案项留空则隐藏；配置只用于公开页面展示。更新前后端后修改配置，无需重新为不同站点构建前端，也无需数据库迁移。变量修改后强制重建后端容器以重新载入环境：
 
 ```bash
 docker compose --env-file deploy/.env -f deploy/compose.yaml up -d --force-recreate backend

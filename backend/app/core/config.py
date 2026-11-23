@@ -10,7 +10,7 @@ class Settings(BaseSettings):  # 优先读取环境变量，本机开发时也�
     site_name: str = Field(default='ChatFoundry', max_length=80)
     icp_record: str = Field(default='', max_length=100)
     gongan_record: str = Field(default='', max_length=100)
-    gongan_record_code: str = Field(default='', pattern=r'^([0-9]{20})?$')
+    gongan_record_code: str = Field(default='', pattern=r'^(?:[0-9]{14}|[0-9]{20})?$')
 
     @field_validator('site_name', 'icp_record', 'gongan_record', 'gongan_record_code', mode='before')
     @classmethod

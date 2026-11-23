@@ -4,6 +4,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker,create_async_engine
 from sqlalchemy.orm import DeclarativeBase
 from sqlalchemy import event
 from backend.app.core.config import settings
+from backend.app.core.db_session import managed_session
 
 
 # 数据目录固定在 backend/data，不随启动目录改变。
@@ -42,7 +43,7 @@ class Base(DeclarativeBase):
 async def get_db():
     """为一次接口请求提供数据库会话，用完后关闭。"""
 
-    async with SessionLocal() as session:
+    async with managed_session(SessionLocal) as session:
         yield session
 def register_models():  # 集中注册模型，供启动、迁移检查和测试共用
     from backend.app.models.workspace import AssistantProfile, KnowledgeGrant, DocumentRevision

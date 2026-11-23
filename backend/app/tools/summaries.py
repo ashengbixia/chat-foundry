@@ -1,4 +1,5 @@
 from backend.app.core.config import settings
+from backend.app.core.db_session import release_connection
 from backend.app.llm.budget import estimate_input_tokens, get_input_budget, InputBudgetError
 from backend.app.llm.client import stream_model_events
 from backend.app.llm.output import request_limits
@@ -62,6 +63,7 @@ async def summarize_uploaded_files(session, allowed_file_ids, connection=None, f
             if not content:
                 raise InputBudgetError("输入预算不足以归纳文件片段，请缩短总结重点或调整上下文配置")
             summary = []
+            await release_connection(session)
             reply = stream_model_events(messages(content), None, connection, max_output_tokens=1024)
             calls += 1
             try:

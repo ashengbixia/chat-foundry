@@ -9,6 +9,7 @@ from dataclasses import dataclass
 import anyio
 from sqlalchemy import select, update, func
 from backend.app.core.config import settings
+from backend.app.core.db_session import managed_session, release_connection
 from backend.app.models.chat import Chat, Message
 from backend.app.models.user import User
 from backend.app.models.file import File
@@ -77,7 +78,7 @@ async def owned_task(session, parent_chat_id, task_id):
 
 async def task_result(sessions, parent_chat_id, task_id):
     from backend.app.chat.history_sources import SOURCE_TOOLS
-    async with sessions() as session:
+    async with managed_session(sessions) as session:
         task = await owned_task(session, parent_chat_id, task_id)
         data = task_view(task)
         data['task_id'] = data.pop('id')
@@ -161,8 +162,9 @@ async def delegate(context, task, task_context='', background=False, file_ids=No
              'tools': sorted(tools), 'urls': sorted(urls), 'web_origins': sorted(context.web_origins | origins_from_urls(allowed_urls)), 'web_search_enabled': context.web_search_enabled}
     request_key = hashlib.sha256(json.dumps([task, task_context, background, scope], sort_keys=True, ensure_ascii=False).encode()).hexdigest()
     lock = _locks.setdefault('submission', asyncio.Lock())  # 短事务串行登记，账号额度跨父会话一致。
+    await release_connection(context.session)
     async with lock:
-        async with context.session_factory() as session:
+        async with managed_session(context.session_factory) as session:
             parent = await session.get(Chat, context.chat_id)
             owner = await session.get(User, parent.user_id) if parent and parent.user_id else None
             message = await session.get(Message, context.parent_message_id)
@@ -215,7 +217,7 @@ def _launch(sessions, task_id, connection):
 
 async def _run(sessions, task_id, connection):
     from backend.app.chat.service import stream_chat_history_events
-    async with sessions() as session:
+    async with managed_session(sessions) as session:
         task = await session.get(SubagentTask, task_id)
         if not task:
             return
@@ -229,14 +231,14 @@ async def _run(sessions, task_id, connection):
             with anyio.fail_after(60):
                 await _semaphore('global', 4).acquire()
             try:
-                async with sessions() as session:
+                async with managed_session(sessions) as session:
                     changed = await session.execute(update(SubagentTask).where(SubagentTask.id == task_id, SubagentTask.status == 'queued').values(status='running', started_at=int(time.time())))
                     await session.commit()
                     if not changed.rowcount:
                         return
                 scope = ChildScope(task_id, parent_id, set(data['files']), data['history_sources'], frozenset(data['tools']), frozenset(data['urls']), sessions, frozenset(data.get('web_origins', [])))
                 with anyio.fail_after(settings.subagent_timeout):
-                    async with sessions() as session:
+                    async with managed_session(sessions) as session:
                         async for _ in stream_chat_history_events(session, child_id, connection, data['web_search_enabled'], run_scope=scope):
                             pass
                         result = (await session.execute(select(Message).where(Message.chat_id == child_id, Message.role == 'assistant').order_by(Message.sequence.desc()).limit(1))).scalar_one_or_none()
@@ -261,7 +263,7 @@ async def _run(sessions, task_id, connection):
         from backend.app.chat.research import failure_info
         worker_error_info, _ = failure_info(exception, 'subagent_run')
         status, error = 'failed', '子任务执行失败，请查看子会话历史'
-    async with sessions() as session:
+    async with managed_session(sessions) as session:
         # 失败/取消时同样关联已保存的部分结果。
         if result_id is None:
             result_id = (await session.execute(select(Message.id).where(Message.chat_id == child_id, Message.role == 'assistant').order_by(Message.sequence.desc()).limit(1))).scalar_one_or_none()
@@ -280,7 +282,7 @@ async def _run(sessions, task_id, connection):
 
 
 async def cancel_task(sessions, parent_id, task_id):
-    async with sessions() as session:
+    async with managed_session(sessions) as session:
         task = await owned_task(session, parent_id, task_id)
         if task.status not in ACTIVE:
             return task_view(task)
@@ -290,7 +292,7 @@ async def cancel_task(sessions, parent_id, task_id):
     if job is not None:
         job.cancel()
         await asyncio.gather(job, return_exceptions=True)
-    async with sessions() as session:
+    async with managed_session(sessions) as session:
         await session.execute(update(SubagentTask).where(SubagentTask.id == task_id, SubagentTask.status == 'cancelling').values(status='cancelled', finished_at=int(time.time()), error='子任务已停止'))
         await session.commit()
     return await task_result(sessions, parent_id, task_id)
@@ -332,7 +334,7 @@ async def _deliver(sessions, parent_id, connection):
             continue
         ids = []
         try:
-            async with sessions() as session:
+            async with managed_session(sessions) as session:
                 parent = await session.get(Chat, parent_id)
                 owner = await session.get(User, parent.user_id) if parent else None
                 if not parent or not owner or owner.role == 'disabled':
@@ -360,7 +362,7 @@ async def _deliver(sessions, parent_id, connection):
                 await session.commit()
         finally:
             if ids:
-                async with sessions() as session:
+                async with managed_session(sessions) as session:
                     await session.execute(update(SubagentTask).where(SubagentTask.id.in_(ids), SubagentTask.delivery_status == 'delivering').values(delivery_status='available'))
                     await session.commit()
             release_generation(parent_id)
@@ -376,7 +378,7 @@ async def pause_delivery(parent_id):
 async def stop_parent(sessions, parent_id, foreground_only=False, parent_message_id=None):
     if not foreground_only:
         await pause_delivery(parent_id)
-    async with sessions() as session:
+    async with managed_session(sessions) as session:
         query = select(SubagentTask.id).where(SubagentTask.parent_chat_id == parent_id, SubagentTask.status.in_(ACTIVE))
         if foreground_only:
             query = query.where(SubagentTask.background.is_(False), SubagentTask.parent_message_id == parent_message_id)

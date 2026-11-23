@@ -19,3 +19,10 @@ result=agent.invoke({
 },config={"recursion_limit":10}
 )
 print(result["messages"][-1].content)
+
+from langchain.tools import tool
+from langchain.agents import create_agent
+@tool
+def tool1(id:str)->str:
+    return
+ agent=create_agent(model='gpt-4.1-mini',)

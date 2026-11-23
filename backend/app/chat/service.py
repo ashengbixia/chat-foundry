@@ -21,6 +21,7 @@ from backend.app.tools.registry import execute_tool, get_available_tools, get_to
 import asyncio  # 识别异步任务取消
 import anyio  # 为取消后的清理提供短暂保护
 from backend.app.core.database import SessionLocal  # 创建独立数据库会话
+from backend.app.core.db_session import managed_session, release_connection
 from backend.app.repositories.chat import cancel_message  # 保存取消状态
 from backend.app.repositories.knowledge import resolve_knowledge_scope
 from backend.app.repositories.resources import resolve_chat_files, describe_resources
@@ -87,6 +88,7 @@ async def stream_chat_history_events(
         nonlocal last_checkpoint
         if run_scope and assistant_message_id and (force or time.monotonic() - last_checkpoint >= 1):
             await update_message(session=session, message_id=assistant_message_id, content=''.join(text_parts), status='generating', output=output)
+            await release_connection(session)
             last_checkpoint = time.monotonic()
     try:
         # ① 查询数据库中的最近消息,组装模型输入
@@ -147,6 +149,7 @@ async def stream_chat_history_events(
                 from backend.app.models.chat import Chat
                 parent = await session.get(Chat, run_scope.parent_chat_id, populate_existing=True)
                 tool_context.web_search_enabled &= bool(parent and parent.web_search_enabled)
+            await release_connection(session)
             return set(initial_file_ids)  # 生成期间只撤销访问，新加入的资料下轮生效
         tool_context = ToolContext(session=session, allowed_file_ids=set(allowed_file_ids), history_sources=history_sources, connection=connection, check_access=current_scope, resource_tools=True, chat_id=chat_id, history=history, web_search_enabled=web_search_enabled)
         tool_context.session_factory = sessions
@@ -321,6 +324,7 @@ async def stream_chat_history_events(
             model_requests += 1
             metadata.update(model_request_count=model_requests, tool_call_iterations=tool_iterations, max_tool_call_iterations=iteration_limit)
             phase = 'model_request'
+            await release_connection(session)
             events = stream_model_events(messages, tools, connection) if connection is not None else stream_model_events(messages, tools)
             async with aclosing(events) as stream:
                 async for event in stream:
@@ -382,13 +386,16 @@ async def stream_chat_history_events(
             delegated_started = {}
             delegated_finished = {}
             phase = 'tool_execution'
+            await release_connection(session)
             if sessions and not run_scope and not asking:
                 from dataclasses import replace
                 async def execute_delegation(call):
-                    async with sessions() as isolated:
+                    async with managed_session(sessions) as isolated:
                         async def check():
                             from backend.app.chat.subagents import file_scope
-                            return await file_scope(isolated, chat_id)
+                            allowed = await file_scope(isolated, chat_id)
+                            await release_connection(isolated)
+                            return allowed
                         child_context = replace(tool_context, session=isolated, check_access=check,
                             allowed_file_ids=set(tool_context.allowed_file_ids), call_id=call['id'])
                         try:
@@ -472,7 +479,9 @@ async def stream_chat_history_events(
         if assistant_message_id is not None:
             with anyio.move_on_after(5, shield=True) as cleanup_scope:  # 最多用 5 秒保存取消状态
                 try:
-                    async with (sessions or SessionLocal)() as cancel_session:
+                    if isinstance(session, AsyncSession):
+                        await session.rollback()
+                    async with managed_session(sessions or SessionLocal) as cancel_session:
                         await cancel_message(cancel_session, assistant_message_id, "".join(text_parts), output=output)
                 except Exception:
                     logger.exception("保存取消状态失败")
@@ -522,6 +531,9 @@ async def stream_chat_history_events(
         )
 
     finally:
+        if isinstance(session, AsyncSession):
+            with anyio.CancelScope(shield=True):
+                await session.rollback()
         for task in delegated_tasks:
             if not task.done():
                 task.cancel()
@@ -534,7 +546,7 @@ async def stream_chat_history_events(
             from sqlalchemy import select
             with anyio.move_on_after(10, shield=True):
                 await stop_parent(sessions, chat_id, foreground_only=True, parent_message_id=assistant_message_id)
-                async with sessions() as pending_session:
+                async with managed_session(sessions) as pending_session:
                     pending = (await pending_session.execute(select(SubagentTask.id).where(SubagentTask.parent_chat_id == chat_id, SubagentTask.delivery_status == 'pending').limit(1))).scalar_one_or_none()
                 if pending:
                     kick_delivery(sessions, chat_id, connection)

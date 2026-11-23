@@ -3,6 +3,7 @@ from fastapi import APIRouter, Depends, Query, HTTPException, Response
 from fastapi.responses import StreamingResponse
 
 from backend.app.core.database import get_db
+from backend.app.core.db_session import managed_session, release_connection
 from backend.app.repositories.chat import get_latest_message, rename_chat, delete_chat, create_chat, list_chats, get_chat, list_messages_page, create_message
 from backend.app.schemas.chat import ChatCreate, ChatResponse, MessageResponse, MessagePageResponse, MessageCreate, ChatRename, ChatFeatures
 from backend.app.chat.service import stream_chat_history_events
@@ -99,6 +100,7 @@ async def create_message_endpoint(
     session: AsyncSession = Depends(get_db),
 ):
     """保存一条用户消息，暂不生成助手回答。"""
+    await release_connection(session)
     await subagents.pause_delivery(chat_id)
     if not acquire_generation(chat_id):
         raise HTTPException(409, '会话正在回答，请先停止当前回答')
@@ -149,15 +151,22 @@ async def respond_endpoint(chat_id: str, session: AsyncSession = Depends(get_db)
                 raise HTTPException(status_code=409, detail="最新回答已完成，请发送新问题")
         elif latest.role != "user" or latest.status != "completed":
             raise HTTPException(status_code=409, detail="最新消息不支持生成回答")
+        sessions = async_sessionmaker(session.bind, expire_on_commit=False)
+        web_search_enabled = chat.web_search_enabled
+        needs_title = chat.title_status == 'pending'
+        await release_connection(session)
+
         async def events():
-            async with aclosing(stream_chat_history_events(session=session, chat_id=chat_id, connection=connection, web_search_enabled=chat.web_search_enabled)) as stream:
-                async for event in stream:
-                    if event.startswith('event: done') and chat.title_status == 'pending':
-                        try:
-                            schedule_title(async_sessionmaker(session.bind, expire_on_commit=False), chat_id, connection)
-                        except Exception:
-                            logging.getLogger(__name__).warning('无法安排自动标题，聊天回答不受影响')
-                    yield event
+            # FastAPI 0.115 会在发送正文前清理 yield 依赖，流不能复用请求 Session。
+            async with managed_session(sessions) as stream_session:
+                async with aclosing(stream_chat_history_events(session=stream_session, chat_id=chat_id, connection=connection, web_search_enabled=web_search_enabled)) as stream:
+                    async for event in stream:
+                        if event.startswith('event: done') and needs_title:
+                            try:
+                                schedule_title(sessions, chat_id, connection)
+                            except Exception:
+                                logging.getLogger(__name__).warning('无法安排自动标题，聊天回答不受影响')
+                        yield event
         return ChatStreamingResponse(
             content=events(),
             chat_id=chat_id,
@@ -186,6 +195,8 @@ async def set_chat_features(chat_id: str, request: ChatFeatures, session: AsyncS
 
 @router.delete("/{chat_id}", status_code=204)
 async def delete_chat_endpoint(chat_id: str, session: AsyncSession = Depends(get_db)):  # 删除指定会话及全部消息
+    # 权限检查已完成；等待另一个 Session 停任务前，归还本请求的连接。
+    await release_connection(session)
     await subagents.pause_delivery(chat_id)
     if not acquire_generation(chat_id):
         raise HTTPException(409, '请先停止当前回答再删除会话')
@@ -229,6 +240,7 @@ async def subagent_messages(chat_id: str, task_id: str, before_sequence: int | N
 
 @router.post('/{chat_id}/subagents/{task_id}/cancel')
 async def cancel_subagent(chat_id: str, task_id: str, session: AsyncSession = Depends(get_db)):
+    await release_connection(session)
     try:
         return await subagents.cancel_task(async_sessionmaker(session.bind, expire_on_commit=False), chat_id, task_id)
     except ValueError:

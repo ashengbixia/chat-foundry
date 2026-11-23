@@ -80,6 +80,8 @@ async def summarize_history(history, previous, connection):
 async def compact_history(session, history, boundary, connection):
     anchor = history[boundary]
     previous = next((getattr(row, 'context_summary', None) for row in history if getattr(row, 'context_summary', None)), None)
+    from backend.app.core.db_session import release_connection
+    await release_connection(session)
     text = await summarize_history(history[:boundary], previous.get('text') if previous else None, connection)
     checkpoint = {'text': text, 'through_sequence': history[boundary - 1].sequence,
                   'anchor_sequence': anchor.sequence, 'created_at': int(time.time()),

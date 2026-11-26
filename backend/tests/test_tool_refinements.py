@@ -20,9 +20,9 @@ class ToolRefinementTests(unittest.IsolatedAsyncioTestCase):
     call = fixtures.AccountToolTests.call
 
     async def test_large_web_result_pages_before_marking_delivered(self):
-        ctx = ToolContext()
+        ctx = ToolContext(web_search_enabled=True)
         doc = {'url': 'https://example.com/doc', 'title': 'Example', 'text': 'x' * 1048576, 'retrieved_at': 0}
-        with patch.object(web, 'fetch_page', AsyncMock(return_value=doc)) as fetch:
+        with patch.object(web.settings, 'web_search_enabled', True), patch.object(web, 'fetch_page', AsyncMock(return_value=doc)) as fetch:
             first = json.loads(await execute_tool('read_webpage', json.dumps({'url': doc['url']}), context=ctx))
             self.assertLessEqual(len(json.dumps(first, ensure_ascii=False).encode()), 1048576)
             self.assertTrue(first['has_more'])

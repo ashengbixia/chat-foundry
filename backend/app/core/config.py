@@ -62,7 +62,7 @@ class Settings(BaseSettings):  # 优先读取环境变量，本机开发时也�
     embedding_preload: bool = True  # 小内存部署可关闭启动预加载；首次索引/检索仍会加载同一个模型
     embedding_query_prefix: str = "为这个句子生成表示以用于检索相关文章："  # 当前BGE模型的查询提示，更换模型时按需调整或清空
     retrieval_max_distance: float = Field(default=0.75, ge=0, le=2)  # 超出距离的纯语义候选不作为资料返回
-    web_search_enabled: bool = True
+    web_search_enabled: bool = False  # 与Open WebUI一致：部署者显式开启并选择搜索服务。
     web_browser_enabled: bool = False  # 兼容旧配置；显式true且未指定loader时使用auto。
     web_loader_engine: Literal['', 'safe_web', 'playwright', 'auto'] = 'safe_web'
     web_url_policy: Literal['public', 'sources'] = 'public'
@@ -70,7 +70,7 @@ class Settings(BaseSettings):  # 优先读取环境变量，本机开发时也�
     web_fetch_max_pages: int | None = Field(default=None, ge=1)
     subagents_enabled: bool = True
     subagent_timeout: int = Field(default=300, ge=10, le=1800)
-    web_search_provider: Literal['duckduckgo', 'bing', 'tavily', 'brave'] = 'bing'
+    web_search_provider: Literal['', 'duckduckgo', 'bing', 'bing_rss', 'tavily', 'brave'] = ''
     web_search_api_key: SecretStr = Field(default='', repr=False)  # 与模型服务Key完全分开
     web_search_result_count: int = Field(default=3, ge=1, le=100)
     web_search_max_attempts: int | None = Field(default=None, ge=1)

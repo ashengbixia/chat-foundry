@@ -95,7 +95,7 @@ function keydown(event: KeyboardEvent) {
       <template v-if="page === 'main'">
         <button type="button" @click="close(); emit('upload')"><AppIcon name="attach" /><span>上传文件</span><small>TXT</small></button>
         <button type="button" @click="openWeb"><AppIcon name="globe" /><span>引用网页</span></button>
-        <button type="button" role="switch" :disabled="webSearchDisabled" :aria-checked="!!webSearchEnabled" :aria-label="webSearchEnabled ? '联网搜索已开启，点击关闭' : '联网搜索未开启，点击开启'" @click="toggleWebSearch"><AppIcon name="globe" /><span class="search-description">联网搜索<small>允许模型按需搜索</small></span><small>{{ webSearchEnabled ? '已开启' : '未开启' }}</small><span class="resource-switch" :class="{ active: webSearchEnabled }" aria-hidden="true"></span></button>
+        <button type="button" role="switch" :disabled="webSearchDisabled" :aria-checked="!!webSearchEnabled" :aria-label="webSearchEnabled ? '联网搜索与网页读取已开启，点击关闭' : '联网搜索与网页读取未开启，点击开启'" @click="toggleWebSearch"><AppIcon name="globe" /><span class="search-description">联网搜索<small>允许模型搜索和读取网页</small></span><small>{{ webSearchEnabled ? '已开启' : '未开启' }}</small><span class="resource-switch" :class="{ active: webSearchEnabled }" aria-hidden="true"></span></button>
         <div class="menu-separator"></div>
         <button type="button" @click="navigate('files')"><AppIcon name="file" /><span>添加附件</span><AppIcon name="chevron" :size="15" /></button>
         <button type="button" :disabled="knowledgeDisabled" @click="navigate('knowledge')"><AppIcon name="database" /><span>引用知识库</span><AppIcon name="chevron" :size="15" /></button>

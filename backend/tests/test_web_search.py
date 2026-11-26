@@ -14,6 +14,9 @@ from backend.tests.test_webpage import ChunkStream
 
 class WebSearchTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
+        enabled = patch.object(webpage.settings, 'web_search_enabled', True)
+        enabled.start()
+        self.addCleanup(enabled.stop)
         self.config = SimpleNamespace(web_search_enabled=True, web_search_provider='bing', web_search_api_key=SecretStr(''), web_search_result_count=3, web_search_max_attempts=None)
         self.change = patch.object(web_search, 'settings', self.config)
         self.change.start()
@@ -97,7 +100,7 @@ class WebSearchTests(unittest.IsolatedAsyncioTestCase):
         document = {'title': 'Docs', 'url': found[0]['url'], 'text': 'Actual page content', 'retrieved_at': 100}
         with patch.object(webpage.settings, 'web_url_policy', 'sources'), patch.object(webpage, 'fetch_page', AsyncMock(return_value=document)):
             raw = await execute_tool('read_webpage', '{"url":"https://example.com/article"}', context=context)
-            next_turn = ToolContext(history=[message])
+            next_turn = ToolContext(web_search_enabled=True, history=[message])
             await execute_tool('read_webpage', '{"url":"https://example.com/article"}', context=next_turn)
             with self.assertRaisesRegex(ValueError, '不能自行拼接'):
                 await execute_tool('read_webpage', '{"url":"https://example.com/article?leak=secret"}', context=next_turn)
@@ -125,3 +128,38 @@ class WebSearchTests(unittest.IsolatedAsyncioTestCase):
         with patch.object(web_search, 'request_search', AsyncMock(return_value=b'<html>Verify you are human</html>')):
             with self.assertRaisesRegex(ValueError, '访问限制'):
                 await web_search.search_provider('query', 5)
+
+    async def test_web_switch_blocks_discovery_and_direct_execution_for_both_tools(self):
+        for server_enabled, chat_enabled in ((True, False), (False, True), (False, False)):
+            self.config.web_search_enabled = server_enabled
+            with patch.object(webpage.settings, 'web_search_enabled', server_enabled):
+                context = ToolContext(web_search_enabled=chat_enabled)
+                names = {tool['function']['name'] for tool in get_available_tools(set(), context=context)}
+                self.assertTrue({'search_web', 'read_webpage'}.isdisjoint(names))
+                discovered = json.loads(await execute_tool('search_tools', '{"query":"网页"}', context=context))
+                self.assertTrue({'search_web', 'read_webpage'}.isdisjoint(item['name'] for item in discovered['tools']))
+                with patch.object(web_search, 'search_provider', AsyncMock()) as search, patch.object(webpage, 'fetch_page', AsyncMock()) as fetch:
+                    for name, arguments in [('search_web', '{"query":"test"}'), ('read_webpage', '{"url":"https://example.com"}')]:
+                        with self.assertRaisesRegex(ValueError, '权限'):
+                            await execute_tool(name, arguments, context=context)
+                    search.assert_not_awaited()
+                    fetch.assert_not_awaited()
+
+    async def test_unconfigured_provider_is_explicit_and_legacy_bing_is_labelled_rss(self):
+        self.config.web_search_provider = ''
+        with patch.object(web_search, 'request_search', AsyncMock()) as request:
+            with self.assertRaisesRegex(ValueError, '尚未配置搜索服务'):
+                await web_search.search_provider('query', 3)
+            request.assert_not_awaited()
+        for provider in ('bing', 'bing_rss'):
+            self.config.web_search_provider = provider
+            rss = b'<rss><channel><item><title>Docs</title><link>https://example.com</link></item></channel></rss>'
+            with patch.object(web_search, 'request_search', AsyncMock(return_value=rss)):
+                data = json.loads(await execute_tool('search_web', '{"query":"docs"}', context=ToolContext(web_search_enabled=True)))
+            self.assertEqual(data['provider'], 'bing_rss')
+            self.assertEqual(data['status'], 'ok')
+
+    def test_candidate_snippets_keep_conditions_after_six_hundred_characters(self):
+        snippet = '说明' * 350 + '仅适用于周末，工作日不适用'
+        result = web_search.normalize_results([{'title': '说明', 'url': 'https://example.com', 'snippet': snippet}], 3)
+        self.assertEqual(result[0]['snippet'], snippet)

@@ -76,6 +76,21 @@
 
 ### 联网搜索与网页读取
 
+原生联网工具流程参照Open WebUI 0.13.4，提交`0666e59d26a4d056e0bacee41742486badd71cf8`：
+[search_web与fetch_url](https://github.com/open-webui/open-webui/blob/0666e59d26a4d056e0bacee41742486badd71cf8/backend/open_webui/tools/builtin.py#L296)、
+[工具开关](https://github.com/open-webui/open-webui/blob/0666e59d26a4d056e0bacee41742486badd71cf8/backend/open_webui/utils/tools.py#L864)、
+[静态页面加载](https://github.com/open-webui/open-webui/blob/0666e59d26a4d056e0bacee41742486badd71cf8/backend/open_webui/retrieval/web/utils.py#L1084)。
+
+服务器默认`WEB_SEARCH_ENABLED=false`、`WEB_SEARCH_PROVIDER`为空；启用时显式选择服务，并开启会话联网搜索。搜索、网页读取、工具发现和实际执行共用此权限。仅粘贴链接不会开启联网。旧环境显式设置的开关及服务仍有效，旧`bing`继续作为`bing_rss`兼容名，结果中的provider标明实际RSS来源；不等同于Open WebUI的Bing API。
+
+模型先搜索候选，再按需读取URL；搜索默认3条，管理员配置同时作为数量上限。摘要不再自行截到600字符，最终仍受响应、工具传输和模型输入预算保护。成功读取的正文分配真实引用编号；搜索摘要不分配编号。未配置服务、API失败、仅导航和无结果分别保留真实状态，不静默切换提供方。
+
+静态读取保留清理后的页面文本，不再用文章密度选择器舍弃短数据、表格或正文区域外的日期；短行多不判作加载失败。默认不执行JavaScript，playwright与auto仍需部署者显式选择。保留本项目的脚本/隐藏节点/明确导航过滤、分享对话提取、安全网络校验、引用快照和分页续读，因此并非逐行复制Open WebUI。
+
+每轮开启联网时提供引用规则，不依赖该轮有无附件或链接；抓取时间不代表资料日期，页面新闻日期不自动归属于其他数据。此规则帮助模型保留概率与适用条件，但不构成自动事实核验，也不保证模型不会引用错误。
+
+本次采用Open WebUI原生工具路径，没有另外引入其`process/web/search`自动加载网页、嵌入并建立临时向量集合的传统搜索路径。两条路径应分别比较，不能声称原生工具每次搜索都会自动建立向量索引。没有数据库迁移或新增依赖。更新前如旧部署未显式设置联网总开关，需在私有环境配置中写入`WEB_SEARCH_ENABLED=true`；免费RSS可设置`WEB_SEARCH_PROVIDER=bing_rss`。保留现有环境文件，不用示例文件覆盖生产配置。
+
 | 工具名 | 名称与用途 | 提供方式 |
 |---|---|---|
 | `search_web` | 联网搜索：搜索公开网页，返回标题、链接和摘要。结果只是候选，不是已核实正文，需要依据时调用read_webpage。可调整查询继续查找缺失信息；不要把密钥或无关私人资料发给搜索服务。 | 按条件提供 |

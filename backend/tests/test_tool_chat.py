@@ -35,6 +35,9 @@ class ToolChatTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(events[-1].startswith('event: error'))
 
     def setUp(self):  # 只模拟仓库与模型，不读写真实数据库或请求真实模型
+        enabled = patch.object(webpage.settings, "web_search_enabled", True)
+        enabled.start()
+        self.addCleanup(enabled.stop)
         for name, value in {"resolve_chat_files": AsyncMock(return_value=set()), "describe_resources": AsyncMock(return_value=[]), "prepare_auto_reference": AsyncMock(return_value=[])}.items():
             mock = patch.object(service, name, value)
             mock.start()
@@ -44,7 +47,7 @@ class ToolChatTests(unittest.IsolatedAsyncioTestCase):
         self.create = AsyncMock(return_value=SimpleNamespace(id="assistant-1"))
         self.update = AsyncMock()
         self.logger = Mock()
-        for name, value in {"resolve_knowledge_scope": AsyncMock(return_value=([], set())), "list_recent_messages": self.read, "create_message": self.create, "update_message": self.update, "logger": self.logger, "settings": SimpleNamespace(llm_model="test-model", llm_context_window=32768, llm_max_output_tokens=4096, llm_context_margin=1024)}.items():
+        for name, value in {"resolve_knowledge_scope": AsyncMock(return_value=([], set())), "list_recent_messages": self.read, "create_message": self.create, "update_message": self.update, "logger": self.logger, "settings": SimpleNamespace(web_search_enabled=True, llm_model="test-model", llm_context_window=32768, llm_max_output_tokens=4096, llm_context_margin=1024)}.items():
             mock = patch.object(service, name, value)
             mock.start()
             self.addCleanup(mock.stop)
@@ -139,7 +142,7 @@ class ToolChatTests(unittest.IsolatedAsyncioTestCase):
         requests, _ = self.model([[tool(name='read_webpage', arguments='{"url":"https://example.com/article","max_chars":3}', call_id='web1')], [tool(name='read_webpage', arguments='{"url":"https://example.com/article","offset":3}', call_id='web2')], [text('网页正文[1][2]')]])
         document = {'url': 'https://example.com/article', 'title': '网页文章', 'text': '第一段第二段', 'retrieved_at': 100}
         with patch.object(webpage, 'fetch_page', AsyncMock(return_value=document)) as fetch:
-            events = await self.run_chat()
+            events = await self.run_chat(web_search_enabled=True)
         fetch.assert_awaited_once()
         first, second = [json.loads(requests[index][0][-1]['content']) for index in (1, 2)]
         self.assertEqual(first['chunks'][0]['citation_id'], 1)
@@ -243,7 +246,7 @@ class ToolChatTests(unittest.IsolatedAsyncioTestCase):
         config = SimpleNamespace(llm_model="test", llm_context_window=budget + 10, llm_max_output_tokens=10, llm_context_margin=0)
         with patch.object(service, "settings", config):
             await self.run_chat()
-        self.assertEqual({item["function"]["name"] for item in requests[0][1]}, {"get_current_time", "read_webpage", "search_tools", "ask_user"})
+        self.assertEqual({item["function"]["name"] for item in requests[0][1]}, {"get_current_time", "search_tools", "ask_user"})
         self.assertEqual(sum(item["role"] == "user" for item in requests[0][0]), 1)
         self.assertIn("权限", json.dumps(requests[1][0], ensure_ascii=False))
         self.assertTrue(requests[1][1])  # 裁剪结果后仍保留工具，允许补齐缺失证据。

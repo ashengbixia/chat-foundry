@@ -27,12 +27,29 @@ def response(data, content_type='text/html; charset=utf-8', **headers):
 
 class WebpageTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
+        enabled = patch.object(webpage.settings, 'web_search_enabled', True)
+        enabled.start()
+        self.addCleanup(enabled.stop)
         strict = patch.object(webpage.settings, 'web_url_policy', 'sources')
         strict.start()
         self.addCleanup(strict.stop)
 
+    def test_page_text_keeps_short_tables_and_dates_outside_article(self):
+        rows = ''.join(f'<tr><td>项目{i}</td><td>{i}%</td></tr>' for i in range(40))
+        body = ('<html><head><title>公开数据</title></head><body><nav>导航垃圾</nav>'
+                '<div>数据日期：2026-01-15</div><article><p>' + '正文说明。' * 40 + '</p></article>'
+                '<section><table>' + rows + '</table></section><div hidden>隐藏垃圾</div></body></html>')
+        title, text = webpage.extract_page(body.encode(), 'text/html', 'utf-8')
+        self.assertEqual(title, '公开数据')
+        self.assertIn('2026-01-15', text)
+        self.assertIn('项目39', text)
+        self.assertIn('39%', text)
+        self.assertNotIn('垃圾', text)
+        self.assertFalse(webpage.poor_body('\n'.join(f'{i}%' for i in range(40))))
+        self.assertTrue(webpage.poor_body('正在加载'))
+
     async def test_public_mode_reads_unlisted_public_url_and_default_returns_full_document(self):
-        context = ToolContext(history=[SimpleNamespace(role='user', content='请查询公开资料')])
+        context = ToolContext(web_search_enabled=True, history=[SimpleNamespace(role='user', content='请查询公开资料')])
         document = {'url': 'https://new.example/doc', 'title': '资料', 'text': '正文' * 4000, 'retrieved_at': 1}
         with patch.object(webpage.settings, 'web_url_policy', 'public'), patch.object(webpage.settings, 'web_fetch_max_content_length', None), patch.object(webpage, 'fetch_page', AsyncMock(return_value=document)):
             data = json.loads(await execute_tool('read_webpage', '{"url":"https://new.example/doc"}', context=context))
@@ -51,7 +68,7 @@ class WebpageTests(unittest.IsolatedAsyncioTestCase):
             document = await webpage.fetch_page('https://example.com/')
         self.assertEqual(document['status'], 'navigation_only')
         self.assertEqual(len(document['links']), 6)
-        context = ToolContext(history=[SimpleNamespace(role='user', content='读取 https://example.com/')])
+        context = ToolContext(web_search_enabled=True, history=[SimpleNamespace(role='user', content='读取 https://example.com/')])
         article = {'url': 'https://example.com/channel/0', 'title': '频道', 'text': '频道内实际文章', 'retrieved_at': 1}
         with patch.object(webpage, 'fetch_page', AsyncMock(side_effect=[document, article])):
             raw = await execute_tool('read_webpage', '{"url":"https://example.com/"}', context=context)
@@ -121,7 +138,7 @@ class WebpageTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_pagination_uses_same_answer_snapshot_and_history_rebases_citations(self):
         document = {'url': 'https://example.com/article', 'title': '文章', 'text': '第一段😀第二段', 'retrieved_at': 100}
-        context = ToolContext()
+        context = ToolContext(web_search_enabled=True, )
         with patch.object(webpage, 'fetch_page', AsyncMock(return_value=document)) as fetch:
             first = await execute_tool('read_webpage', '{"url":"https://example.com/article","max_chars":4}', context=context)
             second = json.loads(await execute_tool('read_webpage', '{"url":"https://example.com/article","offset":4}', context=context))
@@ -152,7 +169,7 @@ class WebpageTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn('citation_id', add_citation_ids('read_webpage', json.dumps(bad), {}, set()))
 
     async def test_chat_cannot_construct_new_urls_or_query_parameters(self):
-        context = ToolContext(history=[SimpleNamespace(role='user', content='总结 [文章](https://example.com/article)。')])
+        context = ToolContext(web_search_enabled=True, history=[SimpleNamespace(role='user', content='总结 [文章](https://example.com/article)。')])
         document = {'url': 'https://example.com/final', 'title': '文章', 'text': '正文', 'retrieved_at': 100}
         with patch.object(webpage, 'fetch_page', AsyncMock(return_value=document)) as fetch:
             with self.assertRaisesRegex(ValueError, '不能自行拼接'):

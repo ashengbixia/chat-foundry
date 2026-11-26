@@ -11,6 +11,11 @@ from backend.app.chat.citations import missing_source_footer
 
 
 class ResearchFlowTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        enabled = patch.object(webpage.settings, "web_search_enabled", True)
+        enabled.start()
+        self.addCleanup(enabled.stop)
+
     def test_failure_report_counts_full_text_and_valid_chunks_and_shows_http_error(self):
         raw = {'read': json.dumps({'file_id': 'f1', 'text_content': '实际读取的附件正文', 'has_more': False}),
                'search': json.dumps({'chunks': [{'content': '实际检索片段'}, {'content': ''}, {'error': 'failed'}]}),
@@ -24,7 +29,7 @@ class ResearchFlowTests(unittest.IsolatedAsyncioTestCase):
     async def test_explicit_sites_allow_document_paths_without_granting_other_hosts_or_queries(self):
         history = [SimpleNamespace(role='user', content='查阅 https://docs.sample.example/ 的文档')]
         origins = requested_origins(history)
-        context = ToolContext(history=history, web_origins=origins, is_subagent=True)
+        context = ToolContext(web_search_enabled=True, history=history, web_origins=origins, is_subagent=True)
         url = 'https://docs.sample.example/guide/start.html'
         self.assertTrue(within_requested_site(context, url))
         for rejected in ('https://evil.example/guide', url + '?data=private', 'https://docs.sample.example.evil.example/guide', 'http://127.0.0.1/private'):

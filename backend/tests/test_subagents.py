@@ -32,6 +32,9 @@ def call(name, arguments, index=0, call_id='call'):
 
 class SubagentTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
+        enabled = patch.object(read_webpage.settings, "web_search_enabled", True)
+        enabled.start()
+        self.addCleanup(enabled.stop)
         self.temp = tempfile.TemporaryDirectory()
         self.engine = create_async_engine('sqlite+aiosqlite:///' + (Path(self.temp.name) / 'test.db').as_posix())
         self.sessions = async_sessionmaker(self.engine, expire_on_commit=False)
@@ -39,7 +42,7 @@ class SubagentTests(unittest.IsolatedAsyncioTestCase):
         async with self.sessions() as session:
             session.add_all([User(id='u', username='one', name='One', password_hash='test'), User(id='v', username='two', name='Two', password_hash='test')])
             await session.flush()
-            session.add_all([Chat(id='parent', user_id='u', title='父会话'), Chat(id='other', user_id='u', title='另一会话')])
+            session.add_all([Chat(id='parent', user_id='u', title='父会话', web_search_enabled=True), Chat(id='other', user_id='u', title='另一会话')])
             await session.commit()
             await create_message(session, 'parent', 'user', '比较 https://example.com/a 与 https://example.com/b')
         self.connection = ModelConnection('https://not-called.test/v1', 'test-model', 10, SecretStr('test-only'))
@@ -51,7 +54,7 @@ class SubagentTests(unittest.IsolatedAsyncioTestCase):
 
     async def run_parent(self):
         async with self.sessions() as session:
-            return [event async for event in service.stream_chat_history_events(session, 'parent', self.connection)]
+            return [event async for event in service.stream_chat_history_events(session, 'parent', self.connection, web_search_enabled=True)]
 
     async def test_explicit_sites_are_inherited_by_both_children_without_search_roundtrips(self):
         async with self.sessions() as session:
@@ -204,7 +207,7 @@ class SubagentTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(task.scope['urls'], [])
             self.assertEqual(task.scope['web_origins'], [])  # 候选线索不会变成站点授权。
             child = (await session.execute(select(Message).where(Message.chat_id == task.child_chat_id))).scalar_one()
-            child_context = ToolContext(is_subagent=True, history=[child])
+            child_context = ToolContext(web_search_enabled=True, is_subagent=True, history=[child])
             with patch.object(read_webpage.settings, 'web_url_policy', 'sources'), self.assertRaisesRegex(ValueError, '不能自行拼接'):
                 await execute_tool('read_webpage', '{"url":"https://unapproved.example/"}', context=child_context)
         with self.assertRaises(ValueError):

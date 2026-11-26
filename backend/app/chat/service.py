@@ -84,10 +84,12 @@ async def stream_chat_history_events(
     iteration_limit = None if iteration_limit == -1 else iteration_limit
     tool_iterations = 0
     model_requests = 0
+    usage = None
+    compaction_attempted = False
     async def checkpoint(force=False):
         nonlocal last_checkpoint
         if run_scope and assistant_message_id and (force or time.monotonic() - last_checkpoint >= 1):
-            await update_message(session=session, message_id=assistant_message_id, content=''.join(text_parts), status='generating', output=output)
+            await update_message(session=session, message_id=assistant_message_id, content=''.join(text_parts), status='generating', output=output, usage=usage)
             await release_connection(session)
             last_checkpoint = time.monotonic()
     try:
@@ -204,18 +206,20 @@ async def stream_chat_history_events(
         from backend.app.chat.compaction import select_boundary, compact_history
         from backend.app.chat.memory import replay_history
         systems = [item for item in messages if item.get('role') == 'system' and not item.get('content', '').startswith('此前完整轮次的压缩摘要')]
-        if getattr(settings, 'context_compaction_enabled', True):
+        if getattr(settings, 'context_compaction_enabled', False):
             boundary = select_boundary(history, available_tools, systems, connection=connection)
             if boundary is not None:
+                compaction_attempted = True
                 yield format_sse('context_status', {'status': 'generating', 'text': '正在整理较早的对话…'})
                 try:
                     history, summary = await compact_history(session, history, boundary, connection)
                     yield format_sse('context_checkpoint', {'message_id': history[0].id, 'summary': summary})
                     metadata['context_compaction'] = 'completed'
-                except Exception:
+                except Exception as error:
                     # A failed summary must never advance the persisted boundary.
                     logger.warning('上下文摘要未完成，沿用原历史并按完整轮次控制预算', exc_info=False)
                     metadata['context_compaction'] = 'failed'
+                    metadata['context_compaction_error'], _ = failure_info(error, 'context_compaction')
                     yield format_sse('context_status', {'status': 'failed', 'text': '历史摘要未完成，本轮可能仅保留近期对话；原历史仍可查看。'})
         replayed, snapshots, historical_results = replay_history(history, citation_sources)
         messages = systems + [item for item in build_model_messages(replayed, system_prompt='') if item.get('role') != 'system' or item.get('content', '').startswith('此前完整轮次的压缩摘要')]
@@ -278,11 +282,12 @@ async def stream_chat_history_events(
             tools = available_tools if supports_tools and (iteration_limit is None or tool_iterations < iteration_limit) and not finish_only else None
             # Newly returned evidence may exhaust the budget within the same turn.
             # Summarize only completed older turns; the running tool chain stays intact.
-            if getattr(settings, 'context_compaction_enabled', True) and metadata.get('context_compaction') != 'failed':
+            if getattr(settings, 'context_compaction_enabled', False) and not compaction_attempted:
                 latest_user = max((index for index, item in enumerate(messages) if item.get('role') == 'user'), default=len(messages) - 1)
                 running = messages[latest_user + 1:]
                 boundary = select_boundary(history, tools, systems, [capability_message] + running, connection=connection)
                 if boundary is not None:
+                    compaction_attempted = True
                     yield format_sse('context_status', {'status': 'generating', 'text': '正在整理较早的对话…'})
                     try:
                         history, summary = await compact_history(session, history, boundary, connection)
@@ -300,8 +305,9 @@ async def stream_chat_history_events(
                         yield format_sse('context_sources', {'chunks': list(merged.values())})
                         yield format_sse('context_checkpoint', {'message_id': history[0].id, 'summary': summary})
                         metadata['context_compaction'] = 'completed'
-                    except Exception:
+                    except Exception as error:
                         metadata['context_compaction'] = 'failed'
+                        metadata['context_compaction_error'], _ = failure_info(error, 'context_compaction')
                         logger.warning('工具返回后历史摘要未完成，未推进检查点', exc_info=False)
                         yield format_sse('context_status', {'status': 'failed', 'text': '历史摘要未完成，本轮可能仅保留近期对话；原历史仍可查看。'})
             from backend.app.llm.output import request_limits
@@ -310,7 +316,7 @@ async def stream_chat_history_events(
                 messages, raw_tool_results, tools, context_window,
                 output_reserve, settings.llm_context_margin, finish_only)
             metadata.update(output_limit=output_limit, output_reserve=output_reserve, context_window=context_window)
-            metadata['budget_estimator'] = 'utf8_bytes_upper_bound'
+            metadata['budget_estimator'] = 'mixed_text_estimate'
             if finish_only:
                 metadata['finish_only_reason'] = finish_reason or 'tool_iteration_limit'
                 if raw_tool_results:
@@ -325,10 +331,13 @@ async def stream_chat_history_events(
             metadata.update(model_request_count=model_requests, tool_call_iterations=tool_iterations, max_tool_call_iterations=iteration_limit)
             phase = 'model_request'
             await release_connection(session)
+            usage = None
             events = stream_model_events(messages, tools, connection) if connection is not None else stream_model_events(messages, tools)
             async with aclosing(events) as stream:
                 async for event in stream:
-                    if event['type'] == 'reasoning_delta':
+                    if event['type'] == 'usage':
+                        usage = {**(usage or {}), **event['usage']}
+                    elif event['type'] == 'reasoning_delta':
                         if reasoning_output is None:
                             reasoning_output = {'type': 'reasoning', 'text': ''}
                             output.append(reasoning_output)
@@ -471,10 +480,12 @@ async def stream_chat_history_events(
             content=full_text,
             status="completed",
             output=output,
+            usage=usage,
         )
-    except (asyncio.CancelledError, GeneratorExit):  # 任务被取消，或生成器被关闭
+    except (asyncio.CancelledError, GeneratorExit) as error:  # 不能仅据此推断是用户停止、断网还是服务退出。
         retain_cited_context_sources(output, ''.join(text_parts))
         metadata['duration_ms'] = round((time.time() - started) * 1000)
+        metadata['termination'] = 'task_cancelled' if isinstance(error, asyncio.CancelledError) else 'stream_closed'
         output.append(metadata)
         if assistant_message_id is not None:
             with anyio.move_on_after(5, shield=True) as cleanup_scope:  # 最多用 5 秒保存取消状态
@@ -514,6 +525,7 @@ async def stream_chat_history_events(
                     status="failed",
                     error=error_message,
                     output=output,  # 保留失败前已有的正文和工具记录
+                    usage=usage,
                 )
             except Exception:
                 logger.exception("保存失败状态时发生异常")

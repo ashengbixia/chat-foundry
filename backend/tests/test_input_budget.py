@@ -10,22 +10,29 @@ from backend.app.chat import service
 from backend.app.chat.context import build_model_messages, trim_model_messages
 from backend.app.core import database
 from backend.app.llm import client as llm
-from backend.app.llm.budget import InputBudgetError, ensure_input_budget, estimate_input_tokens, get_input_budget
+from backend.app.llm.budget import InputBudgetError, ensure_input_budget, estimate_input_tokens, get_input_budget, usage_tokens
 from backend.app.models.chat import Chat, Message
 from backend.app.repositories.chat import create_message
 from backend.app.tools.registry import get_available_tools
 
 class InputBudgetTests(unittest.TestCase):
+    def test_usage_requires_real_input_count_and_supports_provider_names(self):
+        self.assertEqual(usage_tokens({'prompt_tokens': 0, 'input_tokens': 100, 'output_tokens': 20}), 120)
+        self.assertEqual(usage_tokens({'prompt_eval_count': 100, 'eval_count': 20}), 120)
+        self.assertEqual(usage_tokens({'completion_tokens': 20}), 0)
+        self.assertEqual(usage_tokens({'prompt_tokens': True, 'completion_tokens': -2}), 0)
+
     def test_reserves_and_invalid_settings(self):
         self.assertEqual(get_input_budget(32768, 4096, 1024), 27648)
         for values in [(100, 100, 0), (100, 80, 20), (0, 1, 0), (100, -1, 0), (100, 1, -1), (True, 1, 0)]:
             with self.subTest(values=values), self.assertRaises(InputBudgetError):
                 get_input_budget(*values)
 
-    def test_utf8_estimate_and_tool_definitions_are_counted(self):
+    def test_mixed_text_estimate_and_tool_definitions_are_counted(self):
         messages = [{"role": "user", "content": "你好"}]
         payload = {"messages": messages}
-        self.assertEqual(estimate_input_tokens(messages), len(json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode()))
+        self.assertLess(estimate_input_tokens(messages), len(json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode()))
+        self.assertGreater(estimate_input_tokens([{'role': 'user', 'content': '中文' * 100}]), estimate_input_tokens([{'role': 'user', 'content': 'ab' * 100}]))
         self.assertGreater(estimate_input_tokens(messages, get_available_tools(set())), estimate_input_tokens(messages))
         self.assertEqual(estimate_input_tokens(messages, []), estimate_input_tokens(messages))
 
@@ -169,7 +176,7 @@ class BudgetServiceTests(unittest.IsolatedAsyncioTestCase):  # 真实数据库�
                 yield {"type": "tool_call_delta", "tool_calls": [{"index": 0, "id": "c1", "function": {"name": "get_current_time", "arguments": "{}"}}]}
             else:
                 yield {"type": "text_delta", "text": "回答"}
-        await self.run_chat(estimate_input_tokens(self.all_messages, self.tools) + 1200, stream, json.dumps({"result": "x" * 3000}))
+        await self.run_chat(estimate_input_tokens(self.all_messages, self.tools) + 1200, stream, json.dumps({"result": "x" * 8000}))
         self.assertEqual(len(requests), 2)
         self.assertEqual(len([message for message in requests[0] if message["role"] == "user"]), 2)
         self.assertEqual([message["role"] for message in requests[1] if message['role'] != 'system'], ["user", "assistant", "tool"])

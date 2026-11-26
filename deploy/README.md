@@ -112,3 +112,14 @@ docker compose --env-file deploy/.env -f deploy/compose.yaml up -d --force-recre
 ```
 
 以后更新代码时保留实际 `deploy/.env`，不要用示例覆盖。Windows部署使用独立Runtime目录的server.env，详见Windows部署说明。
+
+
+### 上下文与异常工具输出更新
+
+自动压缩默认关闭；如需开启，配置 `CONTEXT_COMPACTION_ENABLED=true`，默认压缩阈值为 `CONTEXT_COMPACTION_TOKEN_THRESHOLD=80000`，近期消息保留比例为 `CONTEXT_COMPACTION_RETENTION_PERCENTAGE=40`。80K是触发阈值，不是模型实际支持上限；需按模型限制配置。每轮最多尝试一次摘要，同一检查点失败后默认等待 `CONTEXT_COMPACTION_RETRY_SECONDS=300` 秒再试。模型返回用量时用于后续压缩判断，未返回时使用混合文本估算；请求硬预算始终独立检查，不再按UTF-8字节数直接计算Token，也不因预留收尾空间提前关闭工具。
+
+新配置模板不会覆盖已有运行配置。旧环境若保留 `CONTEXT_COMPACTION_ENABLED=true`，更新后仍开启；希望沿用新版默认行为时，应在实际运行配置中显式改为 `false`。已有摘要检查点继续用于历史恢复，不删除原消息、文件或引用快照。
+
+模型将DSML工具协议直接输出为正文时，现在返回明确失败，不执行其中的文本指令、不标记正常完成；代码块中的格式示例正常展示。历史中已有的异常助手正文仅在发送给模型时替换为说明，原始展示记录不修改。取消记录只区分任务取消与流关闭，不据此猜测用户点击、网络断开或服务退出。
+
+本次无需数据库迁移或新增依赖。更新后端及配置后重启服务；Windows修改独立运行目录的server.env，Docker修改实际env文件后重建后端容器以加载新环境变量。

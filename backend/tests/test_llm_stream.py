@@ -21,6 +21,43 @@ def chunk(delta: dict | None, finish_reason: str | None = None) -> str:  # 将�
     return "data: " + json.dumps({"choices": [{"delta": delta, "finish_reason": finish_reason}]})
 
 class LlmStreamTests(unittest.IsolatedAsyncioTestCase):
+    async def test_dsml_split_across_sse_chunks_is_an_error_and_not_executable_text(self):
+        marker = '<｜｜DSML｜｜tool_calls>'
+        for split in range(1, len(marker)):
+            with self.subTest(split=split):
+                _, stream = self.mock_model([chunk({'content': '已取得部分资料。'}), chunk({'content': marker[:split]}),
+                                             chunk({'content': marker[split:]}), chunk({}, 'stop'), 'data: [DONE]'])
+                seen = []
+                with self.assertRaises(llm.ModelProtocolError):
+                    async for event in llm.stream_model_events([]):
+                        seen.append(event)
+                self.assertEqual(seen, [{'type': 'text_delta', 'text': '已取得部分资料。'}])
+                self.assertTrue(stream.closed)
+
+    async def test_documented_markup_in_code_is_kept_as_an_example(self):
+        text = '格式示例：\n```xml\n<｜｜DSML｜｜tool_calls>\n```\n这只是示例。'
+        self.mock_model([chunk({'content': text[:10]}), chunk({'content': text[10:]}), chunk({}, 'stop'), 'data: [DONE]'])
+        self.assertEqual(''.join([part async for part in llm.stream_reply([])]), text)
+
+    async def test_usage_only_sse_frame_is_preserved_for_context_accounting(self):
+        usage = {'prompt_tokens': 1234, 'completion_tokens': 56, 'total_tokens': 1290}
+        self.mock_model([chunk({'content': '正文'}, 'stop'), 'data: ' + json.dumps({'choices': [], 'usage': usage}), 'data: [DONE]'])
+        events = [event async for event in llm.stream_model_events([])]
+        self.assertEqual(events[-1], {'type': 'usage', 'usage': usage})
+
+    async def test_nonstream_dsml_is_rejected_before_returning_body(self):
+        from backend.app.llm.connection import ModelConnection
+        from backend.app.llm.capabilities import ModelCapabilities
+        from pydantic import SecretStr
+        body = {'choices': [{'message': {'content': '<｜｜DSML｜｜tool_calls>'}, 'finish_reason': 'stop'}]}
+        real_client = self.real_client
+        connection = ModelConnection('https://model.test/v1', 'test', 5, SecretStr('test-only'), capabilities=ModelCapabilities(streaming=False))
+        with patch.object(llm.httpx, 'AsyncClient', side_effect=lambda **kwargs: real_client(transport=httpx.MockTransport(lambda request: httpx.Response(200, json=body)), **kwargs)):
+            with self.assertRaises(llm.ModelProtocolError):
+                _ = [event async for event in llm.stream_model_events([], connection=connection)]
+            with self.assertRaises(llm.ModelProtocolError):
+                await llm.generate_reply('测试', connection)
+
     async def test_output_defaults_to_provider_and_explicit_limits_are_not_clamped_to_4096(self):
         from backend.app.llm.connection import ModelConnection
         from backend.app.llm.capabilities import ModelCapabilities

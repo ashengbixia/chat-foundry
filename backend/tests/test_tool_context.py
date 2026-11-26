@@ -20,16 +20,29 @@ class ToolContextTests(unittest.TestCase):
                     {'role': 'assistant', 'reasoning_content': reasoning, 'tool_calls': [{'id': 't', 'function': {'name': 'delegate_task', 'arguments': '{}'}}]},
                     {'role': 'tool', 'tool_call_id': 't', 'content': raw}]
         tools = [{'type': 'function', 'function': {'name': 'delegate_task', 'description': '工具说明' * 2000}}]
-        projected, offered, final, reason = prepare_model_request(messages, {'t': raw}, tools, 12000, 1000, 100)
+        projected, offered, final, reason = prepare_model_request(messages, {'t': raw}, tools, 12000, 1000, 100, finish_only=True)
         self.assertIsNone(offered)
         self.assertTrue(final)
-        self.assertEqual(reason, 'input_budget')
+        self.assertEqual(reason, 'previous_final_phase')
         self.assertEqual(messages[1]['reasoning_content'], reasoning)
         self.assertEqual(next(item['reasoning_content'] for item in projected if 'reasoning_content' in item), reasoning)
         self.assertIn('结论', json.dumps(projected, ensure_ascii=False))
         self.assertLessEqual(estimate_input_tokens(projected), 10900)
         with self.assertRaises(InputBudgetError):
             prepare_model_request(messages, {'t': raw}, tools, 1000, 200, 100)
+
+    def test_near_budget_retains_tools_and_reasoning_instead_of_forcing_final_answer(self):
+        raw = json.dumps({'status': 'ok', 'results': [{'url': 'https://example.com', 'snippet': '候选摘要'}]})
+        messages = [{'role': 'user', 'content': '查资料'},
+                    {'role': 'assistant', 'reasoning_content': '真实思考', 'tool_calls': [{'id': 's', 'function': {'name': 'search_web', 'arguments': '{}'}}]},
+                    {'role': 'tool', 'tool_call_id': 's', 'content': raw}]
+        tools = [{'type': 'function', 'function': {'name': 'read_webpage', 'description': '读取原文'}}]
+        size = estimate_input_tokens(messages, tools)
+        projected, offered, final, reason = prepare_model_request(messages, {'s': raw}, tools, size + 200, 100, 0)
+        self.assertEqual(offered, tools)
+        self.assertFalse(final)
+        self.assertEqual(reason, '')
+        self.assertEqual(projected[1]['reasoning_content'], '真实思考')
 
     def test_search_budget_compacts_snippets_without_changing_saved_results(self):
         data = {'status': 'ok', 'query': 'Python', 'results': [{'title': 'Docs', 'url': 'https://example.com/docs', 'snippet': '摘要' * 2000}, {'title': 'Guide', 'url': 'https://example.com/guide', 'snippet': '片段' * 2000}]}

@@ -10,6 +10,7 @@ from backend.app.llm.connection import ModelConnection
 from backend.app.llm.messages import complete_tool_reasoning
 from backend.app.llm.capabilities import apply_model_capabilities
 from backend.app.llm.output import request_limits, apply_output_limit
+from backend.app.llm.protocol import ToolMarkupGuard, UnexpectedToolMarkup
 
 class ModelStreamError(RuntimeError):
     """模型流未完整结束，或回答被服务端截断；说明可直接展示给用户。"""
@@ -17,6 +18,25 @@ class ModelStreamError(RuntimeError):
 
 class OutputLimitError(ModelStreamError):
     """供应商明确以length结束，已返回的正文仍保留。"""
+
+
+class ModelProtocolError(ModelStreamError):
+    """工具协议泄漏到正文，不能作为成功回答或可执行指令。"""
+
+
+def checked_text(guard, text, *, final=False):
+    try:
+        return guard.feed(text, final=final)
+    except UnexpectedToolMarkup as error:
+        raise ModelProtocolError(str(error)) from None
+
+
+def model_usage(value):
+    if not isinstance(value, dict):
+        return {}
+    return {key: value[key] for key in ('prompt_tokens', 'input_tokens', 'prompt_eval_count',
+            'completion_tokens', 'output_tokens', 'eval_count', 'total_tokens')
+            if type(value.get(key)) is int and value[key] >= 0}
 
 
 def output_limit_error(limit):
@@ -76,7 +96,7 @@ async def generate_reply(message: str, connection: ModelConnection | None = None
         if not isinstance(content, str):
             raise ValueError("模型没有返回文本回答")
 
-        return content
+        return checked_text(ToolMarkupGuard(), content, final=True)
 
 async def stream_model_events(messages: list[dict[str, Any]], tools: list[dict[str, Any]] | None = None, connection: ModelConnection | None = None, *, max_output_tokens: int | None = None, tool_choice: Any = None) -> AsyncIterator[dict[str, Any]]:
     """流式读取模型的正文和工具调用片段，不执行工具。"""
@@ -110,6 +130,7 @@ async def stream_model_events(messages: list[dict[str, Any]], tools: list[dict[s
         payload['tool_choice'] = 'none'  # 显式禁止调用，不能依赖供应商的默认行为。
     payload = apply_output_limit(apply_model_capabilities(payload, connection), connection, output_limit)
     ensure_input_budget(payload['messages'], payload.get('tools'), window, output_tokens, settings.llm_context_margin)
+    text_guard = ToolMarkupGuard()
 
     async with model_client(connection,
         timeout=connection.timeout
@@ -117,14 +138,20 @@ async def stream_model_events(messages: list[dict[str, Any]], tools: list[dict[s
         if not connection.capabilities.streaming:
             response = await client.post(url, headers=headers, json=payload)
             response.raise_for_status()
-            choice = response.json()['choices'][0]
+            body = response.json()
+            usage = model_usage(body.get('usage'))
+            if usage:
+                yield {'type': 'usage', 'usage': usage}
+            choice = body['choices'][0]
             message = choice.get('message') or {}
             reasoning = message.get('reasoning_content') or message.get('reasoning') or message.get('thinking')
             if isinstance(reasoning, str) and reasoning:
                 yield {'type': 'reasoning_delta', 'text': reasoning}
             content = message.get('content')
             if isinstance(content, str) and content:
-                yield {'type': 'text_delta', 'text': content}
+                content = checked_text(text_guard, content, final=True)
+                if content:
+                    yield {'type': 'text_delta', 'text': content}
             calls = message.get('tool_calls') or []
             if calls:
                 yield {'type': 'tool_call_delta', 'tool_calls': [dict(call, index=index) for index, call in enumerate(calls)]}
@@ -166,6 +193,10 @@ async def stream_model_events(messages: list[dict[str, Any]], tools: list[dict[s
                 if "error" in chunk:
                     raise RuntimeError("模型服务在流式响应中返回了错误")
 
+                usage = model_usage(chunk.get('usage'))
+                if usage:
+                    yield {'type': 'usage', 'usage': usage}
+
                 choices = chunk.get("choices", [])
                 if not choices:
                     continue
@@ -182,12 +213,17 @@ async def stream_model_events(messages: list[dict[str, Any]], tools: list[dict[s
                 content = delta.get("content")  # 本次正文片段
                 if isinstance(content, str) and content:
                     received_text = received_text or bool(content.strip())
-                    yield {"type": "text_delta", "text": content}
+                    text = checked_text(text_guard, content)
+                    if text:
+                        yield {"type": "text_delta", "text": text}
                 tool_calls = delta.get("tool_calls")  # 参数可能分多次返回，交给上层拼接
                 if tool_calls:
                     received_tool = True
                     yield {"type": "tool_call_delta", "tool_calls": tool_calls}
 
+            tail = checked_text(text_guard, '', final=True)
+            if tail:
+                yield {'type': 'text_delta', 'text': tail}
             if finish_reason == "length":
                 raise output_limit_error(output_limit)
             if finish_reason == "content_filter":

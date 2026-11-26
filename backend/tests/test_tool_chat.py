@@ -6,7 +6,7 @@ from contextlib import aclosing
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 from backend.app.chat import service
-from backend.app.llm.client import ModelStreamError
+from backend.app.llm.client import ModelStreamError, ModelProtocolError
 from backend.app.tools.registry import get_available_tools
 from backend.app.chat.context import build_model_messages, restore_assistant_messages
 from backend.app.tools.runtime import ToolArguments, ToolSpec, registry
@@ -21,6 +21,19 @@ def tool(index: int = 0, name: str = "get_current_time", arguments: str = "{}", 
     return {"type": "tool_call_delta", "tool_calls": [{"index": index, "id": call_id, "function": {"name": name, "arguments": arguments}}]}
 
 class ToolChatTests(unittest.IsolatedAsyncioTestCase):
+    async def test_protocol_error_saves_partial_answer_as_failed_and_cannot_execute_markup(self):
+        self.model([[text('已取得的部分结论。'), ModelProtocolError('模型把工具协议标记放进了正文，未执行其中的调用。')]])
+        with patch.object(service, 'execute_tool', AsyncMock()) as execute:
+            events = await self.run_chat()
+        execute.assert_not_awaited()
+        saved = self.update.call_args.kwargs
+        self.assertEqual(saved['status'], 'failed')
+        self.assertEqual(saved['content'], '已取得的部分结论。')
+        self.assertNotIn('DSML', saved['content'])
+        metadata = next(item for item in saved['output'] if item.get('type') == 'turn_metadata')
+        self.assertEqual(metadata['error_info']['code'], 'model_tool_protocol_error')
+        self.assertTrue(events[-1].startswith('event: error'))
+
     def setUp(self):  # 只模拟仓库与模型，不读写真实数据库或请求真实模型
         for name, value in {"resolve_chat_files": AsyncMock(return_value=set()), "describe_resources": AsyncMock(return_value=[]), "prepare_auto_reference": AsyncMock(return_value=[])}.items():
             mock = patch.object(service, name, value)
@@ -82,7 +95,7 @@ class ToolChatTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_budget_failure_after_tools_saves_useful_body_and_error_stage(self):
         self.model([[tool()], [text('不应请求第二次模型')]])
-        with patch.object(service, 'execute_tool', AsyncMock(return_value=json.dumps({'result': 'x' * 100000}))):
+        with patch.object(service, 'execute_tool', AsyncMock(return_value=json.dumps({'result': 'x' * 200000}))):
             events = await self.run_chat()
         saved = self.update.call_args.kwargs
         self.assertEqual(saved['status'], 'failed')
@@ -233,7 +246,7 @@ class ToolChatTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual({item["function"]["name"] for item in requests[0][1]}, {"get_current_time", "read_webpage", "search_tools", "ask_user"})
         self.assertEqual(sum(item["role"] == "user" for item in requests[0][0]), 1)
         self.assertIn("权限", json.dumps(requests[1][0], ensure_ascii=False))
-        self.assertIsNone(requests[1][1])
+        self.assertTrue(requests[1][1])  # 裁剪结果后仍保留工具，允许补齐缺失证据。
 
     async def test_next_turn_restores_saved_tool_history(self):  # 使用上一轮实际保存的 output 构造下一轮输入
         self.model([[tool()], [text("当前是北京时间。")]])

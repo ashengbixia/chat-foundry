@@ -27,7 +27,7 @@ def synthesis_context(messages):
 def prepare_model_request(messages, raw_results, tools, context_window, output_tokens, margin, finish_only=False):
     """保留供应商要求的思考与调用配对，只压缩资料视图和完整旧轮次。"""
     reason = 'previous_final_phase' if finish_only else ''
-    candidates = [None] if reason else [tools, None] if tools else [None]
+    candidates = [None] if reason or not tools else [tools]
     for candidate in candidates:
         final = candidate is None
         for independent in ([False, True] if final and raw_results else [False]):
@@ -46,12 +46,9 @@ def prepare_model_request(messages, raw_results, tools, context_window, output_t
                     continue  # 原调用链确实放不下时，才另起只读汇总请求。
                 if final:
                     raise
-                reason = 'input_budget'
-                break
-            budget = get_input_budget(context_window, output_tokens, margin)
-            if candidate and raw_results and estimate_input_tokens(trimmed, candidate) > budget - min(2048, budget // 8):
-                reason = 'synthesis_reserve'
-                break
+                # 先投影工具结果、裁掉完整旧轮次；必要输入仍超限则明确报错。
+                # 不能靠撤掉工具清单让尚未完成的任务伪装成最终回答。
+                raise
             return trimmed, candidate, final, reason
     raise InputBudgetError('本轮必要输入超过预算，无法继续请求模型')
 

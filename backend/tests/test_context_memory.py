@@ -23,7 +23,66 @@ def evidence(file_id, text):
 
 
 class ContextMemoryTests(unittest.IsolatedAsyncioTestCase):
+    async def test_provider_usage_takes_precedence_and_model_switch_uses_fallback(self):
+        async with self.sessions() as session:
+            rows = await list_recent_messages(session, 'main')
+            rows[-2].usage = {'prompt_tokens': 90000, 'completion_tokens': 100}
+            rows[-2].model = 'tested-model'
+            connection = SimpleNamespace(model='tested-model')
+            self.assertIsNotNone(compaction.select_boundary(rows, None, [], connection=connection))
+            rows[-2].usage = {'prompt_tokens': 100, 'completion_tokens': 10}
+            rows[0].content = '中文历史' * 30000
+            self.assertIsNone(compaction.select_boundary(rows, None, [], connection=connection))
+            self.assertIsNotNone(compaction.select_boundary(rows, None, [], connection=SimpleNamespace(model='different-model')))
+
+    async def test_failed_summary_cools_down_the_same_checkpoint_without_moving_it(self):
+        async with self.sessions() as session:
+            rows = await list_recent_messages(session, 'main')
+            with patch.object(compaction.settings, 'context_compaction_token_threshold', 1):
+                with patch.object(compaction, 'summarize_history', AsyncMock(side_effect=ValueError('simulated'))):
+                    with self.assertRaises(ValueError):
+                        await compaction.compact_history(session, rows, 4, None)
+                self.assertIsNone(compaction.select_boundary(rows, None, []))
+                self.assertEqual([row.sequence for row in await list_recent_messages(session, 'main')], list(range(1, 8)))
+                with patch.object(compaction.time, 'monotonic', return_value=10**20):
+                    self.assertIsNotNone(compaction.select_boundary(rows, None, []))
+
+    async def test_summary_failure_is_attempted_once_per_turn_and_usage_is_saved(self):
+        count = 0
+        async def model(messages, tools, connection=None):
+            nonlocal count
+            count += 1
+            self.assertTrue(tools)
+            if count == 1:
+                yield {'type': 'tool_call_delta', 'tool_calls': [{'index': 0, 'id': 'live', 'function': {'name': 'get_current_time', 'arguments': '{}'}}]}
+            else:
+                yield {'type': 'text_delta', 'text': '继续回答'}
+                yield {'type': 'usage', 'usage': {'prompt_tokens': 1200, 'completion_tokens': 20}}
+        with patch.object(service.settings, 'context_compaction_enabled', True), patch.object(compaction, 'select_boundary', return_value=4) as boundary, patch.object(compaction, 'summarize_history', AsyncMock(side_effect=ValueError('simulated'))) as summary, patch.object(service, 'stream_model_events', model), patch.object(service, 'prepare_auto_reference', AsyncMock(return_value=[])), patch.object(service, 'execute_tool', AsyncMock(return_value='{}')), self.assertLogs(service.logger, level='WARNING'):
+            async with self.sessions() as session:
+                events = [event async for event in service.stream_chat_history_events(session, 'main')]
+                saved = await session.scalar(select(Message).where(Message.chat_id == 'main').order_by(Message.sequence.desc()).limit(1))
+                self.assertEqual(saved.usage, {'prompt_tokens': 1200, 'completion_tokens': 20})
+                self.assertEqual(saved.status, 'completed')
+                self.assertEqual(summary.await_count, 1)
+                self.assertEqual(boundary.call_count, 1)
+                self.assertTrue(events[-1].startswith('event: done'))
+
+    async def test_old_protocol_text_is_not_replayed_or_mutated(self):
+        text = '<｜｜DSML｜｜tool_calls><｜｜DSML｜｜invoke name="read_webpage"></｜｜DSML｜｜invoke></｜｜DSML｜｜tool_calls>'
+        output = [{'type': 'message', 'content': [{'type': 'output_text', 'text': text}]}]
+        row = SimpleNamespace(id='old', role='assistant', status='completed', content=text, output=copy.deepcopy(output))
+        replayed, _, _ = replay_history([row], {})
+        messages = build_model_messages(replayed)
+        self.assertNotIn('DSML', str(messages))
+        self.assertIn('未执行', str(messages))
+        self.assertEqual(row.output, output)
+        self.assertEqual(row.content, text)
+
     async def asyncSetUp(self):
+        current = patch.object(compaction, '_failures', compaction.OrderedDict())
+        current.start()
+        self.addCleanup(current.stop)
         self.engine = create_async_engine('sqlite+aiosqlite:///:memory:')
         self.sessions = async_sessionmaker(self.engine, expire_on_commit=False)
         await create_tables(self.engine)
@@ -116,7 +175,8 @@ class ContextMemoryTests(unittest.IsolatedAsyncioTestCase):
         async with self.sessions() as session:
             rows = await list_recent_messages(session, 'main')
             rows[0].content = '很长的旧问题' * 3000
-            boundary = compaction.select_boundary(rows, None, [])
+            with patch.object(compaction.settings, 'context_compaction_token_threshold', 1000):
+                boundary = compaction.select_boundary(rows, None, [])
             self.assertIsNotNone(boundary)
             self.assertEqual(rows[boundary].role, 'user')
             self.assertEqual(rows[boundary - 1].role, 'assistant')
@@ -132,7 +192,7 @@ class ContextMemoryTests(unittest.IsolatedAsyncioTestCase):
                 self.assertTrue(any(call['id'] == 'live-call' for item in messages for call in item.get('tool_calls', [])))
                 self.assertIn('压缩后的旧背景', str(messages))
                 yield {'type': 'text_delta', 'text': '已完成[1]'}
-        with patch.object(compaction, 'select_boundary', side_effect=[None, None, 4, None]), patch.object(compaction, 'summarize_history', AsyncMock(return_value='压缩后的旧背景')), patch.object(service, 'stream_model_events', model), patch.object(service, 'prepare_auto_reference', AsyncMock(return_value=[])), patch.object(service, 'execute_tool', AsyncMock(return_value='{"time":"12:00"}')):
+        with patch.object(service.settings, 'context_compaction_enabled', True), patch.object(compaction, 'select_boundary', side_effect=[None, None, 4]), patch.object(compaction, 'summarize_history', AsyncMock(return_value='压缩后的旧背景')), patch.object(service, 'stream_model_events', model), patch.object(service, 'prepare_auto_reference', AsyncMock(return_value=[])), patch.object(service, 'execute_tool', AsyncMock(return_value='{"time":"12:00"}')):
             async with self.sessions() as session:
                 events = [event async for event in service.stream_chat_history_events(session, 'main')]
                 saved = await session.scalar(select(Message).where(Message.chat_id == 'main').order_by(Message.sequence.desc()).limit(1))

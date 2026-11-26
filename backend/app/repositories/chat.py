@@ -190,6 +190,7 @@ async def update_message(
     status: Literal["completed", "cancelled", "failed"],
     error: str | None = None,
     output: list | None = None,
+    usage: dict | None = None,
 ) -> Message:
     """更新消息正文、最终状态和结构化输出。"""
     try:
@@ -203,6 +204,8 @@ async def update_message(
         # 没传 output 时，保留原值；传入 [] 则清空。
         if output is not None:
             message.output = output
+        if usage is not None:
+            message.usage = usage
         # 消息更新后，同时更新所属会话的时间。
         await session.execute(
             update(Chat)
